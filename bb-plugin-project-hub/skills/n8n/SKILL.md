@@ -54,8 +54,7 @@ Agents in Blackbox can call the following registered tools directly:
 ### 3. Server Process Control
 - `project_hub_server_status`: Checks whether the local n8n server is listening on port 5678, reports PID, and returns recent console output logs.
 - `project_hub_manage_server`:
-  - `action`: `"start"` or `"stop"`.
-  - Safely starts or terminates the local n8n daemon process, automatically resolving PID and port locks.
+  - `action`: `"start"` or `"status"`. Checks server status or launches the daemon process. (Stopping the server is restricted to the human operator via UI to prevent autonomous downtime).
 
 ---
 

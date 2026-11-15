@@ -10,7 +10,7 @@
       "name": "Локальный n8n (Master)",
       "channel": "n8n",
       "url": "http://localhost:5678",
-      "status": "online",
+      "status": "offline",
       "workflowsCount": 0,
       "executionsCount": 0,
       "unreadTotal": 0,

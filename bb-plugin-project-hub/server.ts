@@ -201,6 +201,80 @@ export const rpcContract = defineRpcContract({
       project: projectSchema.optional(),
     }),
   },
+  ping_instance: {
+    input: z.object({ accountId: z.string() }),
+    output: z.object({
+      ok: z.boolean(),
+      status: z.enum(["online", "offline"]),
+      latencyMs: z.number(),
+      version: z.string().optional(),
+      error: z.string().optional(),
+    }),
+  },
+  get_workflows: {
+    input: z.object({ accountId: z.string() }),
+    output: z.object({
+      ok: z.boolean(),
+      workflows: z.array(
+        z.object({
+          id: z.string(),
+          name: z.string(),
+          active: z.boolean(),
+          tags: z.array(z.string()).optional(),
+          createdAt: z.string().optional(),
+          updatedAt: z.string().optional(),
+          lastExecution: z
+            .object({
+              id: z.string(),
+              status: z.enum(["success", "running", "error"]),
+              startedAt: z.string(),
+              durationMs: z.number().optional(),
+            })
+            .optional(),
+        })
+      ),
+      error: z.string().optional(),
+    }),
+  },
+  get_executions: {
+    input: z.object({
+      accountId: z.string(),
+      workflowId: z.string().optional(),
+    }),
+    output: z.object({
+      ok: z.boolean(),
+      executions: z.array(
+        z.object({
+          id: z.string(),
+          workflowId: z.string(),
+          workflowName: z.string().optional(),
+          status: z.enum(["success", "running", "error", "waiting", "canceled"]),
+          startedAt: z.string(),
+          stoppedAt: z.string().optional(),
+          durationMs: z.number().optional(),
+          mode: z.enum(["manual", "trigger", "webhook", "retry", "integrated"]),
+          errorMessage: z.string().optional(),
+          errorNodeName: z.string().optional(),
+        })
+      ),
+      error: z.string().optional(),
+    }),
+  },
+  dispatch_webhook: {
+    input: z.object({
+      accountId: z.string(),
+      path: z.string(),
+      method: z.enum(["POST", "GET"]).optional(),
+      payload: z.record(z.unknown()).optional(),
+    }),
+    output: z.object({
+      ok: z.boolean(),
+      statusCode: z.number().optional(),
+      durationMs: z.number().optional(),
+      response: z.unknown().optional(),
+      error: z.string().optional(),
+    }),
+  },
 });
 
 // --- PERSISTENCE & DATA STORE ---
@@ -1110,6 +1184,117 @@ export default function (bb: BbPluginApi) {
         ok: !!project,
         project,
       };
+    },
+
+    ping_instance: async ({ accountId }) => {
+      const acc = store.getAccountById(accountId);
+      if (!acc) return { ok: false, status: "offline" as const, latencyMs: 0, error: "Инстанс не найден" };
+      const start = Date.now();
+      try {
+        const health = await checkN8nHealth(acc.url, acc.apiKey);
+        const latencyMs = Date.now() - start;
+        acc.status = health.connected ? "online" : "offline";
+        acc.latencyMs = latencyMs;
+        acc.lastSync = new Date().toISOString();
+        store.save();
+        return {
+          ok: health.connected,
+          status: (health.connected ? "online" : "offline") as "online" | "offline",
+          latencyMs,
+          version: health.version,
+          error: health.connected ? undefined : "Connection failed",
+        };
+      } catch (err: any) {
+        acc.status = "offline";
+        store.save();
+        return { ok: false, status: "offline" as const, latencyMs: Date.now() - start, error: err?.message };
+      }
+    },
+
+    get_workflows: async ({ accountId }) => {
+      const acc = store.getAccountById(accountId);
+      if (!acc) return { ok: false, workflows: [], error: "Инстанс не найден" };
+      try {
+        const res = await fetchN8nWorkflowsAndExecutions(acc.url, acc.apiKey);
+        if (res.ok) {
+          const workflows = res.workflows.map((w: any) => {
+            const exec = res.executions.find((e: any) => e.workflowId === w.id);
+            return {
+              id: w.id,
+              name: w.name,
+              active: w.active,
+              tags: w.tags?.map((t: any) => (typeof t === "string" ? t : t.name)) || [],
+              updatedAt: w.updatedAt,
+              lastExecution: exec
+                ? {
+                    id: exec.id,
+                    status: (exec.status === "success" || exec.status === "error" || exec.status === "running")
+                      ? exec.status
+                      : "running",
+                    startedAt: exec.startedAt,
+                    durationMs: exec.durationMs,
+                  }
+                : undefined,
+            };
+          });
+          return { ok: true, workflows };
+        }
+        // Fallback to cached projects if n8n is offline
+        const cached = store.getProjects(accountId).map((p) => ({
+          id: p.workflowId || p.id,
+          name: p.name,
+          active: p.status === "online",
+          tags: p.tags,
+        }));
+        return { ok: true, workflows: cached, error: res.error };
+      } catch (err: any) {
+        return { ok: false, workflows: [], error: err?.message };
+      }
+    },
+
+    get_executions: async ({ accountId, workflowId }) => {
+      const acc = store.getAccountById(accountId);
+      if (!acc) return { ok: false, executions: [], error: "Инстанс не найден" };
+      try {
+        const res = await fetchN8nWorkflowsAndExecutions(acc.url, acc.apiKey);
+        let execs = res.executions;
+        if (workflowId) {
+          execs = execs.filter((e: any) => e.workflowId === workflowId);
+        }
+        return { ok: true, executions: execs };
+      } catch (err: any) {
+        return { ok: false, executions: [], error: err?.message };
+      }
+    },
+
+    dispatch_webhook: async ({ accountId, path: webhookPath, method = "POST", payload }) => {
+      const acc = store.getAccountById(accountId);
+      if (!acc) return { ok: false, error: "Инстанс не найден" };
+      const cleanBase = acc.url.replace(/\/+$/, "");
+      const cleanPath = webhookPath.startsWith("/") ? webhookPath : "/" + webhookPath;
+      const targetUrl = `${cleanBase}${cleanPath.startsWith("/webhook") ? cleanPath : "/webhook" + cleanPath}`;
+      const start = Date.now();
+      try {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (acc.apiKey) headers["X-N8N-API-KEY"] = acc.apiKey;
+        const res = await fetch(targetUrl, {
+          method,
+          headers,
+          body: method === "POST" ? JSON.stringify(payload || {}) : undefined,
+          signal: AbortSignal.timeout(10000),
+        });
+        const durationMs = Date.now() - start;
+        const responseData = await res.json().catch(() => ({ statusText: res.statusText }));
+        return {
+          ok: res.ok,
+          statusCode: res.status,
+          durationMs,
+          response: responseData,
+          error: res.ok ? undefined : `HTTP ${res.status}: ${res.statusText}`,
+        };
+      } catch (err: any) {
+        return { ok: false, durationMs: Date.now() - start, error: err?.message || "Ошибка вызова вебхука" };
+      }
     },
   });
 

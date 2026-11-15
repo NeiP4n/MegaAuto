@@ -1415,6 +1415,8 @@ export default function (bb: BbPluginApi) {
             N8N_PORT: "5678",
             N8N_HOST: "127.0.0.1",
             N8N_PROTOCOL: "http",
+            N8N_RUNNERS_ENABLED: "false",
+            N8N_DIAGNOSTICS_ENABLED: "false",
           },
         });
 

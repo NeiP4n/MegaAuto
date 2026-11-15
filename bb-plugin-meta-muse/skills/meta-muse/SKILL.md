@@ -29,7 +29,7 @@ bb muse tasks cancel <taskId>
 # 4. Проверка состояния безопасной песочницы / процесса хоста
 bb muse vm
 bb muse vm status
-bb muse vm audit
+bb muse vm isolate
 
 # 5. Поиск и сохранение долговременных воспоминаний
 bb muse memory list

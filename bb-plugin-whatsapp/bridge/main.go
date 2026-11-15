@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand"
@@ -27,6 +28,7 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/proto/waMmsRetry"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -506,7 +508,8 @@ func extractMediaInfo(msg *waProto.Message) (mediaType string, filename string, 
 }
 
 // Handle regular incoming messages with media support
-func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *events.Message, logger waLog.Logger) {
+func handleMessage(sess *Session, messageStore *MessageStore, msg *events.Message, logger waLog.Logger) {
+	client := sess.Client
 	// Save message to database
 	chatJID := msg.Info.Chat.String()
 	sender := msg.Info.Sender.User
@@ -552,6 +555,17 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 	if err != nil {
 		logger.Warnf("Failed to store message: %v", err)
 	} else {
+		// Cache fresh media bytes right away: WhatsApp media URLs expire
+		// after a while, so prefetching on arrival keeps recent photos
+		// previewable without hitting a 403 later. Only live arrivals
+		// (this handler) - history sync would pull gigabytes at once.
+		if mediaType != "" && fileLength > 0 && fileLength <= 25*1024*1024 {
+			go func(id, chat string) {
+				if _, _, _, _, derr := downloadMedia(sess, messageStore, id, chat); derr != nil {
+					logger.Warnf("Prefetch of media %s failed: %v", id, derr)
+				}
+			}(msg.Info.ID, chatJID)
+		}
 		// Log message reception
 		timestamp := msg.Info.Timestamp.Format("2006-01-02 15:04:05")
 		direction := "←"
@@ -652,7 +666,8 @@ func (d *MediaDownloader) GetMediaType() whatsmeow.MediaType {
 }
 
 // Function to download media from a message
-func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, messageID, chatJID string) (bool, string, string, string, error) {
+func downloadMedia(sess *Session, messageStore *MessageStore, messageID, chatJID string) (bool, string, string, string, error) {
+	client := sess.Client
 	// Query the database for the message
 	var mediaType, filename, url string
 	var mediaKey, fileSHA256, fileEncSHA256 []byte
@@ -741,7 +756,20 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 	// Download the media using whatsmeow client
 	mediaData, err := client.Download(context.Background(), downloader)
 	if err != nil {
-		return false, "", "", "", fmt.Errorf("failed to download media: %v", err)
+		// 403/404 means the media URL expired on WhatsApp's servers. The
+		// documented recovery is a media retry receipt: the phone answers
+		// with a fresh direct path that downloads fine.
+		var dhe whatsmeow.DownloadHTTPError
+		if errors.As(err, &dhe) && (dhe.StatusCode == http.StatusForbidden || dhe.StatusCode == http.StatusNotFound) {
+			fmt.Printf("Media %s returned %d, requesting a fresh path from the phone...\n", messageID, dhe.StatusCode)
+			if retried, rerr := retryMediaDownload(sess, messageStore, messageID, chatJID, mediaKey, downloader); rerr == nil {
+				mediaData = retried
+			} else {
+				return false, "", "", "", fmt.Errorf("failed to download media: %v (retry: %v)", err, rerr)
+			}
+		} else {
+			return false, "", "", "", fmt.Errorf("failed to download media: %v", err)
+		}
 	}
 
 	// Save the downloaded media to file
@@ -751,6 +779,69 @@ func downloadMedia(client *whatsmeow.Client, messageStore *MessageStore, message
 
 	fmt.Printf("Successfully downloaded %s media to %s (%d bytes)\n", mediaType, absPath, len(mediaData))
 	return true, mediaType, filename, absPath, nil
+}
+
+// retryMediaDownload asks the phone for a fresh direct path after WhatsApp's
+// media host answers 403/404 (expired URL). It sends a media retry receipt,
+// waits for the matching events.MediaRetry (routed via sess.mediaRetries),
+// decrypts it with the message's media key and downloads again using the
+// returned direct path.
+func retryMediaDownload(sess *Session, messageStore *MessageStore, messageID, chatJID string, mediaKey []byte, downloader *MediaDownloader) ([]byte, error) {
+	if sess == nil || sess.Client == nil {
+		return nil, fmt.Errorf("session not available for media retry")
+	}
+
+	chat, err := types.ParseJID(chatJID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid chat JID %q: %v", chatJID, err)
+	}
+	var sender string
+	var isFromMe bool
+	if err := messageStore.db.QueryRow(
+		"SELECT sender, is_from_me FROM messages WHERE id = ? AND chat_jid = ?",
+		messageID, chatJID,
+	).Scan(&sender, &isFromMe); err != nil {
+		return nil, fmt.Errorf("cannot find message info for retry: %v", err)
+	}
+	info := types.MessageInfo{
+		MessageSource: types.MessageSource{
+			Chat:     chat,
+			IsFromMe: isFromMe,
+			IsGroup:  chat.Server == types.GroupServer,
+		},
+		ID: messageID,
+	}
+	if info.IsGroup {
+		if senderJID, perr := types.ParseJID(sender); perr == nil {
+			info.Sender = senderJID
+		}
+	}
+
+	ch := make(chan *events.MediaRetry, 1)
+	sess.mediaRetries.Store(messageID, ch)
+	defer sess.mediaRetries.Delete(messageID)
+
+	if err := sess.Client.SendMediaRetryReceipt(context.Background(), &info, mediaKey); err != nil {
+		return nil, fmt.Errorf("failed to send media retry request: %v", err)
+	}
+
+	select {
+	case evt := <-ch:
+		if evt.Error != nil {
+			return nil, fmt.Errorf("phone rejected the media retry (code=%d)", evt.Error.Code)
+		}
+		retryData, derr := whatsmeow.DecryptMediaRetryNotification(evt, mediaKey)
+		if derr != nil {
+			return nil, fmt.Errorf("failed to decrypt media retry response: %v", derr)
+		}
+		if retryData.GetResult() != waMmsRetry.MediaRetryNotification_SUCCESS {
+			return nil, fmt.Errorf("media retry rejected (result=%v)", retryData.GetResult())
+		}
+		downloader.DirectPath = retryData.GetDirectPath()
+		return sess.Client.Download(context.Background(), downloader)
+	case <-time.After(20 * time.Second):
+		return nil, fmt.Errorf("timed out waiting for the phone's media retry response")
+	}
 }
 
 // Extract direct path from a WhatsApp media URL
@@ -2134,7 +2225,7 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 			return
 		}
 
-		success, mediaType, filename, path, err := downloadMedia(sess.Client, sess.MessageStore, req.MessageID, req.ChatJID)
+		success, mediaType, filename, path, err := downloadMedia(sess, sess.MessageStore, req.MessageID, req.ChatJID)
 
 		w.Header().Set("Content-Type", "application/json")
 		if !success || err != nil {
@@ -2173,7 +2264,7 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 			return
 		}
 
-		success, _, _, path, err := downloadMedia(sess.Client, sess.MessageStore, messageID, chatJID)
+		success, _, _, path, err := downloadMedia(sess, sess.MessageStore, messageID, chatJID)
 		if !success || err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusNotFound)

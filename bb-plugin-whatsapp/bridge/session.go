@@ -83,6 +83,10 @@ type Session struct {
 	connGen atomic.Uint64
 
 	sendGuard *sendGuard
+
+	// mediaRetries routes incoming events.MediaRetry responses to the
+	// downloadMedia call waiting for them (keyed by message ID).
+	mediaRetries sync.Map
 }
 
 func (s *Session) setErr(msg string) {
@@ -332,11 +336,22 @@ func (sm *SessionManager) startSession(s *Session) {
 	s.Client.AddEventHandler(func(evt interface{}) {
 		switch v := evt.(type) {
 		case *events.Message:
-			handleMessage(s.Client, s.MessageStore, v, s.logger)
+			handleMessage(s, s.MessageStore, v, s.logger)
 		case *events.HistorySync:
 			s.logger.Infof("Session %s received history sync blob", s.ID)
 			handleHistorySync(s.Client, s.MessageStore, v, s.logger)
 			s.syncing.Store(false)
+		case *events.MediaRetry:
+			// The phone answered a media retry request; hand it to the
+			// download that is waiting for it (drop silently otherwise).
+			if ch, ok := s.mediaRetries.Load(v.MessageID); ok {
+				if c, ok := ch.(chan *events.MediaRetry); ok {
+					select {
+					case c <- v:
+					default:
+					}
+				}
+			}
 		case *events.PairSuccess:
 			s.logger.Infof("Session %s pair success (phone %s, platform %s) - initial sync starting, this can take several minutes", s.ID, v.ID.User, v.Platform)
 		case *events.PairError:

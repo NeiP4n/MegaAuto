@@ -46,6 +46,7 @@ function MediaImagePreview({
   const rpc = useRpc<typeof rpcContract>();
   const [dataUrl, setDataUrl] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -55,8 +56,10 @@ function MediaImagePreview({
           chat_jid: msg.chat_jid,
         });
         if (cancelled) return;
-        if (res.success && res.data_url) setDataUrl(res.data_url);
-        else setFailed(true);
+        if (res.success && res.data_url) {
+          setDataUrl(res.data_url);
+          setFailed(false);
+        } else setFailed(true);
       } catch {
         if (!cancelled) setFailed(true);
       }
@@ -64,9 +67,22 @@ function MediaImagePreview({
     return () => {
       cancelled = true;
     };
-  }, [msg.id, msg.chat_jid]);
+  }, [msg.id, msg.chat_jid, attempt]);
 
-  if (failed) return null;
+  if (failed) {
+    return (
+      <button
+        onClick={() => {
+          setFailed(false);
+          setDataUrl(null);
+          setAttempt((a) => a + 1);
+        }}
+        className="mx-1 mt-1.5 text-[12px] text-[var(--wa-text-secondary)] underline decoration-dotted underline-offset-2 hover:text-[var(--wa-text)] transition-colors"
+      >
+        Не удалось загрузить — повторить
+      </button>
+    );
+  }
   if (!dataUrl) {
     return (
       <div className="mx-1 mt-1.5 w-[280px] h-[180px] rounded-md bg-[rgba(0,0,0,0.15)] flex items-center justify-center">
@@ -846,12 +862,11 @@ export function WhatsAppView() {
         setDownloadingMedia((prev) => ({ ...prev, [msg.id]: "downloaded" }));
         setDownloadedPaths((prev) => ({ ...prev, [msg.id]: res.path! }));
       } else {
+        // Quiet per-bubble failure state (retry inline), not the global banner.
         setDownloadingMedia((prev) => ({ ...prev, [msg.id]: "failed" }));
-        setErrorMessage(res.message || "Failed to download media. It may have expired on WhatsApp servers.");
       }
-    } catch (e: any) {
+    } catch {
       setDownloadingMedia((prev) => ({ ...prev, [msg.id]: "failed" }));
-      setErrorMessage(e?.message || "Communication error with WhatsApp bridge.");
     }
   };
 
@@ -1757,6 +1772,14 @@ export function WhatsAppView() {
                                     <div className="mt-1 text-[11px] text-[var(--wa-text-secondary)] truncate">
                                       Saved: {dlPath}
                                     </div>
+                                  )}
+                                  {dlStatus === "failed" && !dlPath && (
+                                    <button
+                                      onClick={() => handleDownloadMedia(msg)}
+                                      className="mt-1 text-[12px] text-[var(--wa-text-secondary)] underline decoration-dotted underline-offset-2 hover:text-[var(--wa-text)] transition-colors"
+                                    >
+                                      Не удалось загрузить — повторить
+                                    </button>
                                   )}
                                 </div>
                                 </>

@@ -719,6 +719,14 @@ process.on("exit", cleanupLocalN8n);
 process.on("SIGINT", cleanupLocalN8n);
 process.on("SIGTERM", cleanupLocalN8n);
 
+function getCanonicalBase(url: string): string {
+  const clean = url.trim().replace(/\/+$/, "");
+  if (/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(clean)) {
+    return clean.replace(/localhost|\[::1\]/i, "127.0.0.1");
+  }
+  return clean;
+}
+
 // Single-pass n8n probe: tries health/version endpoints in parallel, first OK wins.
 // Never falls back to 127.0.0.1 for a remote baseUrl - a remote instance must not
 // report "connected" (or receive commands) because a local n8n happens to answer.
@@ -738,12 +746,12 @@ async function probeN8n(
 
   const urls: string[] = [];
   for (const b of bases) {
-    urls.push(`${b}/healthz`, `${b}/api/v1/version`, `${b}/rest/settings`, b);
+    urls.push(`${b}/healthz/readiness`, `${b}/healthz`, `${b}/api/v1/version`, `${b}/rest/settings`);
   }
 
   const probeOne = async (url: string): Promise<{ version: string } | null> => {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2000);
+    const timeout = setTimeout(() => controller.abort(), 3500);
     try {
       const res = await fetch(url, { signal: controller.signal, headers });
       if (!res.ok) return null;
@@ -752,10 +760,11 @@ async function probeN8n(
         const data = (await res.json()) as any;
         if (data?.version) version = String(data.version);
         else if (data?.n8nVersion) version = String(data.n8nVersion);
+        else if (data?.status === "ok") version = version || "online";
       } catch {
         // not json - header version or "unknown" is fine
       }
-      return { version: version || "unknown" };
+      return { version: version || "online" };
     } catch {
       return null;
     } finally {
@@ -764,24 +773,28 @@ async function probeN8n(
   };
 
   const results = await Promise.all(urls.map(probeOne));
-  // prefer a hit that actually carries a version over a bare /healthz OK
-  const hit = results.find((r) => r && r.version !== "unknown") || results.find((r) => r !== null);
+  // prefer a hit that actually carries a specific version over bare "online"
+  const hit = results.find((r) => r && r.version !== "online" && r.version !== "unknown") || results.find((r) => r !== null);
   return hit ? { connected: true, version: hit.version } : { connected: false, version: "unknown" };
 }
 
-// Cached health check: the UI polls get_status every few seconds, probing must not
-// block the poll or hammer the instance. TTL keeps answers fresh without overlap.
-const HEALTH_TTL_MS = 15000;
+// Cached health check with short TTL and canonical URL keys to prevent false offline locks
+const HEALTH_TTL_MS = 2500;
 const healthCache = new Map<string, { connected: boolean; version: string; at: number }>();
 
 async function checkN8nHealth(
   baseUrl: string,
-  apiKey?: string
+  apiKey?: string,
+  forceFresh: boolean = false
 ): Promise<{ connected: boolean; version: string }> {
-  const key = `${baseUrl}|${apiKey || ""}`;
-  const cached = healthCache.get(key);
-  if (cached && Date.now() - cached.at < HEALTH_TTL_MS) {
-    return { connected: cached.connected, version: cached.version };
+  const canonical = getCanonicalBase(baseUrl);
+  const key = `${canonical}|${apiKey || ""}`;
+  if (!forceFresh) {
+    const cached = healthCache.get(key);
+    const ttl = cached?.connected ? HEALTH_TTL_MS : 1000;
+    if (cached && Date.now() - cached.at < ttl) {
+      return { connected: cached.connected, version: cached.version };
+    }
   }
   const result = await probeN8n(baseUrl, apiKey);
   healthCache.set(key, { ...result, at: Date.now() });
@@ -1256,7 +1269,7 @@ export default function (bb: BbPluginApi) {
       if (!acc) return { ok: false, status: "offline" as const, latencyMs: 0, error: "Инстанс не найден" };
       const start = Date.now();
       try {
-        const health = await checkN8nHealth(acc.url, acc.apiKey);
+        const health = await checkN8nHealth(acc.url, acc.apiKey, true);
         const latencyMs = Date.now() - start;
         acc.status = health.connected ? "online" : "offline";
         acc.latencyMs = latencyMs;
@@ -1363,7 +1376,8 @@ export default function (bb: BbPluginApi) {
     },
 
     start_local_server: async () => {
-      const health = await checkN8nHealth("http://localhost:5678");
+      healthCache.clear();
+      const health = await checkN8nHealth("http://127.0.0.1:5678", undefined, true);
       if (health.connected) {
         return {
           ok: true,
@@ -1421,11 +1435,13 @@ export default function (bb: BbPluginApi) {
         localN8nProcess.on("exit", (code: any) => {
           appendServerLog(`Сервер n8n завершил работу (код ${code})`);
           localN8nProcess = null;
+          healthCache.clear();
         });
 
         localN8nProcess.on("error", (err: any) => {
           appendServerLog(`Ошибка процесса n8n: ${err.message}`);
           localN8nProcess = null;
+          healthCache.clear();
         });
 
         return {
@@ -1444,6 +1460,7 @@ export default function (bb: BbPluginApi) {
 
     stop_local_server: async () => {
       appendServerLog("Остановка локального сервера n8n...");
+      healthCache.clear();
       if (localN8nProcess) {
         const pid = localN8nProcess.pid;
         if (pid) {
@@ -1458,13 +1475,11 @@ export default function (bb: BbPluginApi) {
           }
         }
         localN8nProcess = null;
-        healthCache.delete("http://localhost:5678|");
-        healthCache.delete("http://127.0.0.1:5678|");
         appendServerLog("Сервер n8n остановлен");
         return { ok: true, message: "Сервер n8n остановлен" };
       }
 
-      const health = await checkN8nHealth("http://localhost:5678");
+      const health = await checkN8nHealth("http://127.0.0.1:5678", undefined, true);
       if (health.connected) {
         return {
           ok: false,
@@ -1476,14 +1491,14 @@ export default function (bb: BbPluginApi) {
     },
 
     get_local_server_status: async () => {
-      const health = await checkN8nHealth("http://localhost:5678");
+      const health = await checkN8nHealth("http://127.0.0.1:5678", undefined, true);
       const isManaged = localN8nProcess !== null && !localN8nProcess.killed;
       return {
         ok: true,
         running: health.connected,
         managedByPlugin: isManaged,
         pid: localN8nProcess?.pid,
-        logs: serverLogs.slice(-40),
+        logs: serverLogs.slice(-50),
       };
     },
   });

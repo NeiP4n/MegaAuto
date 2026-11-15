@@ -98,13 +98,17 @@ export function WorkflowList({
           <div className="flex-1 flex flex-col items-center justify-center text-center py-12 px-4 text-xs text-muted-foreground">
             {isLocalInstance && isOffline ? (
               <div className="p-4 rounded-xl border border-border/40 bg-card/60 max-w-xs text-center space-y-3">
-                <div className="w-9 h-9 rounded-full bg-rose-500/10 text-rose-400 mx-auto flex items-center justify-center font-bold text-sm">
-                  !
+                <div className={`w-9 h-9 rounded-full ${isServerStarting ? "bg-amber-500/15 text-amber-400 animate-pulse" : "bg-rose-500/10 text-rose-400"} mx-auto flex items-center justify-center font-bold text-sm`}>
+                  {isServerStarting ? "⏳" : "!"}
                 </div>
                 <div>
-                  <div className="font-semibold text-foreground text-xs">Локальный сервер выключен</div>
+                  <div className="font-semibold text-foreground text-xs">
+                    {isServerStarting ? "Локальный n8n запускается..." : "Локальный сервер выключен"}
+                  </div>
                   <div className="text-[11px] text-muted-foreground mt-1">
-                    Запустите n8n для загрузки сценариев и отправки вебхук-команд.
+                    {isServerStarting
+                      ? "Инициализация нод и запуск n8n процесса (обычно 10-25 сек)..."
+                      : "Запустите n8n для загрузки сценариев и отправки вебхук-команд."}
                   </div>
                 </div>
                 {onStartServer && (

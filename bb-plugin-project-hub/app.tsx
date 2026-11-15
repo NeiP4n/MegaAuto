@@ -53,11 +53,30 @@ export function ProjectHubView() {
       if (res?.ok) {
         setIsServerRunning(res.running);
         if (res.logs) setServerLogs(res.logs);
+
+        // Sync local account badge immediately if local server status matches
+        if (res.running) {
+          setAccounts((prev) =>
+            prev.map((a) =>
+              (a.url.includes("localhost") || a.url.includes("127.0.0.1")) && a.status !== "online"
+                ? { ...a, status: "online", lastSync: new Date().toISOString() }
+                : a
+            )
+          );
+        } else if (!isServerBusy) {
+          setAccounts((prev) =>
+            prev.map((a) =>
+              (a.url.includes("localhost") || a.url.includes("127.0.0.1")) && a.status === "online"
+                ? { ...a, status: "offline" }
+                : a
+            )
+          );
+        }
       }
     } catch {
       // ignore
     }
-  }, [rpc]);
+  }, [rpc, isServerBusy]);
 
   useEffect(() => {
     pollServerStatus();
@@ -181,12 +200,28 @@ export function ProjectHubView() {
       if (isServerRunning) {
         await rpc.call("stop_local_server", {});
         setIsServerRunning(false);
+        setAccounts((prev) =>
+          prev.map((a) =>
+            a.url.includes("localhost") || a.url.includes("127.0.0.1")
+              ? { ...a, status: "offline" }
+              : a
+          )
+        );
         if (activeAccount?.id) {
           handlePingAccount(activeAccount.id);
         }
       } else {
         await rpc.call("start_local_server", {});
+        setAccounts((prev) =>
+          prev.map((a) =>
+            a.url.includes("localhost") || a.url.includes("127.0.0.1")
+              ? { ...a, status: "syncing" }
+              : a
+          )
+        );
+
         let attempts = 0;
+        const maxAttempts = 60;
         const checkInterval = setInterval(async () => {
           attempts++;
           try {
@@ -196,6 +231,13 @@ export function ProjectHubView() {
               clearInterval(checkInterval);
               setIsServerRunning(true);
               setIsServerBusy(false);
+              setAccounts((prev) =>
+                prev.map((a) =>
+                  a.url.includes("localhost") || a.url.includes("127.0.0.1")
+                    ? { ...a, status: "online", lastSync: new Date().toISOString() }
+                    : a
+                )
+              );
               if (activeAccount?.id) {
                 handlePingAccount(activeAccount.id);
                 loadWorkflows(activeAccount.id);
@@ -205,7 +247,7 @@ export function ProjectHubView() {
           } catch {
             // keep checking
           }
-          if (attempts >= 15) {
+          if (attempts >= maxAttempts) {
             clearInterval(checkInterval);
             setIsServerBusy(false);
             if (activeAccount?.id) handlePingAccount(activeAccount.id);
@@ -291,7 +333,9 @@ export function ProjectHubView() {
             <div className="flex items-center gap-2 text-xs font-mono">
               <span
                 className={`w-2 h-2 rounded-full ${
-                  activeAccount.status === "online"
+                  isServerBusy || activeAccount.status === "syncing"
+                    ? "bg-amber-400 animate-pulse shadow-[0_0_8px_rgba(251,191,36,0.6)]"
+                    : activeAccount.status === "online"
                     ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]"
                     : "bg-rose-500"
                 }`}
@@ -299,8 +343,20 @@ export function ProjectHubView() {
               <span className="text-muted-foreground">
                 {activeAccount.name}:
               </span>
-              <span className={activeAccount.status === "online" ? "text-emerald-400" : "text-rose-400"}>
-                {activeAccount.status === "online" ? "CONNECTED" : "OFFLINE"}
+              <span
+                className={
+                  isServerBusy || activeAccount.status === "syncing"
+                    ? "text-amber-400 font-bold"
+                    : activeAccount.status === "online"
+                    ? "text-emerald-400 font-bold"
+                    : "text-rose-400"
+                }
+              >
+                {isServerBusy || activeAccount.status === "syncing"
+                  ? "STARTING..."
+                  : activeAccount.status === "online"
+                  ? "CONNECTED"
+                  : "OFFLINE"}
               </span>
               {activeAccount.latencyMs !== undefined && (
                 <span className="text-muted-foreground text-[10px]">

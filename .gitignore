@@ -12,6 +12,10 @@
 **/bridge/store/*.db-shm
 **/bridge/store/sessions/
 
+# Project Hub data & secrets
+**/bb-plugin-project-hub/data/
+**/project-hub-store.json
+
 # Temporary and backup files
 *.tmp
 *.bak

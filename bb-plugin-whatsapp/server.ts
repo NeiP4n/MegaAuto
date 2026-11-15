@@ -369,7 +369,7 @@ export class WhatsAppBridgeController {
     // Stale or unstamped bridge: ask it to exit gracefully first.
     let portFree = false;
     try {
-      await fetch("http://127.0.0.1:${this.bridgePort}/api/shutdown", {
+      await fetch(`http://127.0.0.1:${this.bridgePort}/api/shutdown`, {
         method: "POST",
         signal: AbortSignal.timeout(2000),
       });
@@ -534,7 +534,7 @@ export class WhatsAppBridgeController {
         }
         await new Promise<void>((r) => setTimeout(r, 200));
         try {
-          const res = await fetch("http://127.0.0.1:${this.bridgePort}/api/status", {
+          const res = await fetch(`http://127.0.0.1:${this.bridgePort}/api/status`, {
             signal: AbortSignal.timeout(500),
           });
           if (res.ok) return true;
@@ -590,7 +590,7 @@ export class WhatsAppBridgeController {
   public async getSessions(): Promise<WhatsAppSessionInfo[]> {
     await this.ensureRunning();
     try {
-      const res = await fetch("http://127.0.0.1:${this.bridgePort}/api/sessions", {
+      const res = await fetch(`http://127.0.0.1:${this.bridgePort}/api/sessions`, {
         signal: AbortSignal.timeout(5000),
       });
       if (res.ok) {
@@ -605,7 +605,7 @@ export class WhatsAppBridgeController {
   public async createSession(name?: string): Promise<{ success: boolean; session?: WhatsAppSessionInfo; message?: string }> {
     await this.ensureRunning();
     try {
-      const res = await fetch("http://127.0.0.1:${this.bridgePort}/api/sessions/create", {
+      const res = await fetch(`http://127.0.0.1:${this.bridgePort}/api/sessions/create`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: name || "" }),
@@ -625,7 +625,7 @@ export class WhatsAppBridgeController {
   public async restartSession(sessionId: string): Promise<{ success: boolean; message?: string }> {
     await this.ensureRunning();
     try {
-      const res = await fetch("http://127.0.0.1:${this.bridgePort}/api/sessions/restart", {
+      const res = await fetch(`http://127.0.0.1:${this.bridgePort}/api/sessions/restart`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: sessionId }),
@@ -644,7 +644,7 @@ export class WhatsAppBridgeController {
   public async switchSession(sessionId: string): Promise<{ success: boolean; active?: string; message?: string }> {
     await this.ensureRunning();
     try {
-      const res = await fetch("http://127.0.0.1:${this.bridgePort}/api/sessions/switch", {
+      const res = await fetch(`http://127.0.0.1:${this.bridgePort}/api/sessions/switch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: sessionId }),
@@ -664,7 +664,7 @@ export class WhatsAppBridgeController {
   public async deleteSession(sessionId: string): Promise<{ success: boolean; message?: string }> {
     await this.ensureRunning();
     try {
-      const res = await fetch("http://127.0.0.1:${this.bridgePort}/api/sessions/delete", {
+      const res = await fetch(`http://127.0.0.1:${this.bridgePort}/api/sessions/delete`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: sessionId }),
@@ -684,7 +684,7 @@ export class WhatsAppBridgeController {
     try {
       const url = sessionId
         ? `http://127.0.0.1:${this.bridgePort}/api/status?session=${encodeURIComponent(sessionId)}`
-        : "http://127.0.0.1:${this.bridgePort}/api/status";
+        : `http://127.0.0.1:${this.bridgePort}/api/status`;
       const res = await fetch(url, {
         signal: AbortSignal.timeout(1500),
       });
@@ -749,7 +749,7 @@ export class WhatsAppBridgeController {
     try {
       const url = sessionId
         ? `http://127.0.0.1:${this.bridgePort}/api/chats?session=${encodeURIComponent(sessionId)}`
-        : "http://127.0.0.1:${this.bridgePort}/api/chats";
+        : `http://127.0.0.1:${this.bridgePort}/api/chats`;
       const res = await fetch(url, {
         signal: AbortSignal.timeout(5000),
       });
@@ -811,7 +811,7 @@ export class WhatsAppBridgeController {
   ): Promise<{ success: boolean; message: string; id?: string; timestamp?: string; chat_jid?: string }> {
     await this.ensureRunning();
     try {
-      const res = await fetch("http://127.0.0.1:${this.bridgePort}/api/send", {
+      const res = await fetch(`http://127.0.0.1:${this.bridgePort}/api/send`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -848,7 +848,7 @@ export class WhatsAppBridgeController {
   ): Promise<{ success: boolean; message: string; id?: string; timestamp?: string; chat_jid?: string }> {
     await this.ensureRunning();
     try {
-      const res = await fetch("http://127.0.0.1:${this.bridgePort}/api/send-media", {
+      const res = await fetch(`http://127.0.0.1:${this.bridgePort}/api/send-media`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -885,7 +885,7 @@ export class WhatsAppBridgeController {
   ): Promise<{ success: boolean; message: string; filename?: string; path?: string }> {
     await this.ensureRunning();
     try {
-      const res = await fetch("http://127.0.0.1:${this.bridgePort}/api/download", {
+      const res = await fetch(`http://127.0.0.1:${this.bridgePort}/api/download`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

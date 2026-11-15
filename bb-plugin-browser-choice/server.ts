@@ -365,7 +365,7 @@ class BrowserController {
 
   private async capture(tab: TabState): Promise<void> {
     try {
-      const buf = await tab.page.screenshot({ type: "jpeg", quality: 80 });
+      const buf = await tab.page.screenshot({ type: "jpeg", quality: 60 });
       tab.screenshot = `data:image/jpeg;base64,${buf.toString("base64")}`;
       this.shotRev++;
       tab.title = (await tab.page.title()) || "New Tab";
@@ -381,7 +381,8 @@ class BrowserController {
       this.log(`Navigating tab ${tab.id} to ${resolvedUrl}...`);
       await tab.page.goto(resolvedUrl, { waitUntil: "domcontentloaded", timeout: 20000 });
       // Give pages with dynamic content (e.g. WhatsApp Web QR code) time to initialize
-      await new Promise((r) => setTimeout(r, 1200));
+      await tab.page.waitForLoadState("load", { timeout: 2000 }).catch(() => null);
+      await new Promise((r) => setTimeout(r, 150));
 
       tab.url = tab.page.url();
       await this.capture(tab);
@@ -451,7 +452,7 @@ class BrowserController {
 
     try {
       await tab.page.reload({ waitUntil: "domcontentloaded", timeout: 15000 });
-      await new Promise((r) => setTimeout(r, 1000));
+      await tab.page.waitForLoadState("load", { timeout: 2000 }).catch(() => null);
       await this.capture(tab);
     } catch {}
     return this.getActionOutput();
@@ -469,7 +470,7 @@ class BrowserController {
         await tab.page.mouse.click(params.x, params.y);
       }
 
-      await new Promise((r) => setTimeout(r, 400));
+      await new Promise((r) => setTimeout(r, 120));
       await this.capture(tab);
       return this.getActionOutput();
     } catch (err: any) {
@@ -484,7 +485,7 @@ class BrowserController {
 
     try {
       await tab.page.fill(selector, value, { timeout: 4000 });
-      await new Promise((r) => setTimeout(r, 200));
+      await new Promise((r) => setTimeout(r, 60));
       await this.capture(tab);
       return this.getActionOutput();
     } catch (err: any) {
@@ -498,7 +499,7 @@ class BrowserController {
 
     try {
       await tab.page.keyboard.type(text);
-      await new Promise((r) => setTimeout(r, 200));
+      await new Promise((r) => setTimeout(r, 60));
       await this.capture(tab);
       return this.getActionOutput();
     } catch (err: any) {
@@ -512,7 +513,7 @@ class BrowserController {
 
     try {
       await tab.page.keyboard.press(key);
-      await new Promise((r) => setTimeout(r, 200));
+      await new Promise((r) => setTimeout(r, 60));
       await this.capture(tab);
       return this.getActionOutput();
     } catch (err: any) {
@@ -536,7 +537,7 @@ class BrowserController {
         await tab.page.mouse.wheel(params.deltaX ?? 0, dy);
       }
 
-      await new Promise((r) => setTimeout(r, 250));
+      await new Promise((r) => setTimeout(r, 100));
       await this.capture(tab);
       return this.getActionOutput();
     } catch (err: any) {

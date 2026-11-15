@@ -41,6 +41,9 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Rebase first: a parallel or previous run may have pushed meanwhile.
+          git fetch origin main
+          git rebase origin/main
           git add bb-plugin-whatsapp/bridge/whatsapp-bridge.exe
           if git diff --cached --quiet; then
             echo "exe unchanged, nothing to commit"

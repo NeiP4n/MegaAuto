@@ -87,6 +87,9 @@ export function WhatsAppView() {
   // Error banner feedback
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // Account creation in progress (blocks double-click session collisions)
+  const [creatingSession, setCreatingSession] = useState(false);
+
   // New Chat Modal state
   const [showNewChatDialog, setShowNewChatDialog] = useState(false);
   const [newChatInput, setNewChatInput] = useState("");
@@ -211,6 +214,9 @@ export function WhatsAppView() {
   };
 
   const handleCreateSession = async (name?: string) => {
+    if (creatingSession) return;
+    setCreatingSession(true);
+    setErrorMessage(null);
     try {
       const res = await rpc.call("create_session", { name });
       if (res.success && res.session) {
@@ -223,9 +229,13 @@ export function WhatsAppView() {
         setMessages([]);
         await fetchStatus(newSid);
         await fetchSessions();
+      } else {
+        setErrorMessage(res.message || "Failed to add a new account. Check the bridge and try again.");
       }
-    } catch (e) {
-      console.error("Failed to create session:", e);
+    } catch (e: any) {
+      setErrorMessage(e?.message || "Failed to add a new account. Check the bridge and try again.");
+    } finally {
+      setCreatingSession(false);
     }
   };
 
@@ -365,43 +375,30 @@ export function WhatsAppView() {
     }
   };
 
-  // Media download handler
+  // Media download handler: goes through the plugin RPC and reports real
+  // failures. Never fake a saved file.
   const handleDownloadMedia = async (msg: WhatsAppMessage) => {
     if (!msg.id || downloadingMedia[msg.id] === "loading") return;
 
     setDownloadingMedia((prev) => ({ ...prev, [msg.id]: "loading" }));
+    setErrorMessage(null);
     try {
-      const res = await fetch("http://127.0.0.1:8080/api/download", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message_id: msg.id,
-          chat_jid: msg.chat_jid || selectedChat?.jid || "",
-        }),
+      const res = await rpc.call("download_media", {
+        message_id: msg.id,
+        chat_jid: msg.chat_jid || selectedChat?.jid || "",
+        session_id: activeSessionId,
       });
 
-      if (res.ok) {
-        const data = (await res.json()) as { success?: boolean; path?: string; message?: string; filename?: string };
-        if (data.success && typeof data.path === "string" && data.path.length > 0) {
-          const filePath = data.path;
-          setDownloadingMedia((prev) => ({ ...prev, [msg.id]: "downloaded" }));
-          setDownloadedPaths((prev) => ({ ...prev, [msg.id]: filePath }));
-          return;
-        }
+      if (res.success && res.path) {
+        setDownloadingMedia((prev) => ({ ...prev, [msg.id]: "downloaded" }));
+        setDownloadedPaths((prev) => ({ ...prev, [msg.id]: res.path! }));
+      } else {
+        setDownloadingMedia((prev) => ({ ...prev, [msg.id]: "failed" }));
+        setErrorMessage(res.message || "Failed to download media. It may have expired on WhatsApp servers.");
       }
-      // If direct fetch returns standard payload
-      setDownloadingMedia((prev) => ({ ...prev, [msg.id]: "downloaded" }));
-      setDownloadedPaths((prev) => ({
-        ...prev,
-        [msg.id]: msg.filename ? `Saved: ${msg.filename}` : "Saved to downloads",
-      }));
-    } catch {
-      // Graceful fallback: mark downloaded for user feedback
-      setDownloadingMedia((prev) => ({ ...prev, [msg.id]: "downloaded" }));
-      setDownloadedPaths((prev) => ({
-        ...prev,
-        [msg.id]: msg.filename ? `Saved: ${msg.filename}` : "Saved to downloads",
-      }));
+    } catch (e: any) {
+      setDownloadingMedia((prev) => ({ ...prev, [msg.id]: "failed" }));
+      setErrorMessage(e?.message || "Communication error with WhatsApp bridge.");
     }
   };
 
@@ -467,6 +464,7 @@ export function WhatsAppView() {
       const res = await rpc.call("send_message", {
         recipient: testRecipient.trim(),
         message: testMessage.trim(),
+        session_id: activeSessionId,
       });
       setTestResult(res.success ? "✓ Sent successfully" : `✗ Error: ${res.message}`);
       if (res.success) {
@@ -529,11 +527,16 @@ export function WhatsAppView() {
 
         <button
           onClick={() => handleCreateSession()}
+          disabled={creatingSession}
           title="Add New WhatsApp Account / Session"
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs text-neutral-400 hover:text-emerald-400 hover:bg-[#15171d] transition-colors ml-1 border border-dashed border-[rgba(255,255,255,0.12)] hover:border-emerald-500/40"
+          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs text-neutral-400 hover:text-emerald-400 hover:bg-[#15171d] transition-colors ml-1 border border-dashed border-[rgba(255,255,255,0.12)] hover:border-emerald-500/40 disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          <SvgPlus className="w-3 h-3" />
-          <span className="text-[11px] font-medium">+ Account</span>
+          {creatingSession ? (
+            <SvgRefresh className="w-3 h-3 animate-spin" />
+          ) : (
+            <SvgPlus className="w-3 h-3" />
+          )}
+          <span className="text-[11px] font-medium">{creatingSession ? "Adding..." : "+ Account"}</span>
         </button>
       </div>
 
@@ -557,7 +560,15 @@ export function WhatsAppView() {
                     : "bg-neutral-800 text-neutral-400 border-neutral-700"
                 }`}
               >
-                ● {status.connected ? "Connected" : status.status === "needs_scan" ? "Pairing Needed" : "Starting..."}
+                ● {status.connected
+                  ? "Connected"
+                  : status.status === "needs_scan"
+                  ? "Pairing Needed"
+                  : status.status === "stopped"
+                  ? "Bridge Stopped"
+                  : status.status === "error"
+                  ? "Error"
+                  : "Connecting..."}
               </span>
             </div>
             {status.phone && (

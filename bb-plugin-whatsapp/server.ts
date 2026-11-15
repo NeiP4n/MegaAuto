@@ -807,7 +807,8 @@ export class WhatsAppBridgeController {
     recipient: string,
     message: string,
     mediaPath?: string,
-    sessionId?: string
+    sessionId?: string,
+    allowUnknownBlast?: boolean
   ): Promise<{ success: boolean; message: string; id?: string; timestamp?: string; chat_jid?: string }> {
     await this.ensureRunning();
     try {
@@ -819,8 +820,11 @@ export class WhatsAppBridgeController {
           recipient,
           message,
           media_path: mediaPath || "",
+          allow_unknown_blast: allowUnknownBlast || undefined,
         }),
-        signal: AbortSignal.timeout(15000),
+        // The bridge serializes sends per session with min spacing, so a
+        // queued send can legitimately take tens of seconds.
+        signal: AbortSignal.timeout(60000),
       });
 
       const data = (await res.json()) as Record<string, unknown>;
@@ -1354,6 +1358,7 @@ export default async function plugin(bb: BbPluginApi) {
     parameters: z.object({
       recipient: z.string().min(1).describe("Recipient phone number with country code (e.g. '+1234567890') or full JID"),
       message: z.string().min(1).describe("The text message content to send"),
+      allow_unknown_blast: z.boolean().optional().describe("Override the first-time-recipient hourly cap (max 5 new numbers/hour). Only set when the user explicitly asked to message many new contacts - bulk cold messaging gets WhatsApp accounts banned."),
     }),
     presentation: {
       label: {
@@ -1361,8 +1366,8 @@ export default async function plugin(bb: BbPluginApi) {
         completed: "Sent WhatsApp message",
       },
     },
-    execute: async ({ recipient, message }) => {
-      const res = await bridge.sendMessage(recipient, message);
+    execute: async ({ recipient, message, allow_unknown_blast }) => {
+      const res = await bridge.sendMessage(recipient, message, undefined, undefined, allow_unknown_blast);
       return JSON.stringify(res, null, 2);
     },
   });
@@ -1375,6 +1380,7 @@ export default async function plugin(bb: BbPluginApi) {
       recipient: z.string().min(1).describe("Recipient phone number with country code or full JID"),
       file_path: z.string().min(1).describe("Absolute local path to the file to send"),
       caption: z.string().optional().describe("Optional caption for the file"),
+      allow_unknown_blast: z.boolean().optional().describe("Override the first-time-recipient hourly cap. Only set when the user explicitly asked for bulk messaging to new contacts."),
     }),
     presentation: {
       label: {
@@ -1382,8 +1388,8 @@ export default async function plugin(bb: BbPluginApi) {
         completed: "Sent file via WhatsApp",
       },
     },
-    execute: async ({ recipient, file_path, caption = "" }) => {
-      const res = await bridge.sendMessage(recipient, caption, file_path);
+    execute: async ({ recipient, file_path, caption = "", allow_unknown_blast }) => {
+      const res = await bridge.sendMessage(recipient, caption, file_path, undefined, allow_unknown_blast);
       return JSON.stringify(res, null, 2);
     },
   });

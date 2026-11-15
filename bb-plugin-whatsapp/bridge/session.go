@@ -60,6 +60,8 @@ type Session struct {
 
 	loggedOut atomic.Bool
 	lastErr   atomic.Value // string
+
+	sendGuard *sendGuard
 }
 
 func (s *Session) setErr(msg string) {
@@ -276,6 +278,7 @@ func (sm *SessionManager) initSession(id, name string) (*Session, error) {
 		Client:       client,
 		Container:    container,
 		MessageStore: msgStore,
+		sendGuard:    newSendGuard(storeDir),
 		logger:       clientLogger,
 		dbLog:        sm.dbLog,
 	}

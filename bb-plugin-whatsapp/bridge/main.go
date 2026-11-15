@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -150,6 +151,17 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 }
 
 // Get messages from a chat
+// HasChat reports whether a chat row exists (i.e. we have exchanged messages
+// with this JID or it synced from history).
+func (store *MessageStore) HasChat(jid string) bool {
+	if store == nil {
+		return false
+	}
+	var one int
+	err := store.db.QueryRow("SELECT 1 FROM chats WHERE jid = ? LIMIT 1", jid).Scan(&one)
+	return err == nil
+}
+
 func (store *MessageStore) GetMessages(chatJID string, limit int) ([]Message, error) {
 	rows, err := store.db.Query(
 		"SELECT sender, content, timestamp, is_from_me, media_type, filename FROM messages WHERE chat_jid = ? ORDER BY timestamp DESC LIMIT ?",
@@ -1054,6 +1066,33 @@ const msgColumns = `id, chat_jid, sender, content, timestamp, is_from_me,
 // the port doubles as the single-instance lock. Two bridge processes with the
 // same store dirs fight over the same WhatsApp device keys (StreamReplaced)
 // until WhatsApp force-logs the account out.
+// guardAllowsSend runs the per-session send limits for /api/send and
+// /api/send-media. Returns false (after writing a 429) when the send must
+// not happen. "Known recipient" means an existing chat row or a synced
+// contact; first-time numbers are capped per hour (see sendguard.go).
+func guardAllowsSend(w http.ResponseWriter, r *http.Request, sess *Session, recipient string, allowBlast bool) bool {
+	jidStr := normalizeRecipient(recipient)
+	known := sess.MessageStore.HasChat(jidStr)
+	if !known && strings.HasSuffix(jidStr, "@s.whatsapp.net") && sess.Client != nil && sess.Client.Store != nil && sess.Client.Store.Contacts != nil {
+		if jid, err := types.ParseJID(jidStr); err == nil {
+			if c, err := sess.Client.Store.Contacts.GetContact(r.Context(), jid); err == nil && c.Found {
+				known = true
+			}
+		}
+	}
+	retryAfter, msg := sess.sendGuard.acquire(jidStr, known, allowBlast)
+	if msg == "" {
+		return true
+	}
+	w.Header().Set("Content-Type", "application/json")
+	if retryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(int(retryAfter.Seconds())+1))
+	}
+	w.WriteHeader(http.StatusTooManyRequests)
+	json.NewEncoder(w).Encode(SendMessageResponse{Success: false, Message: msg})
+	return false
+}
+
 func startRESTServer(sm *SessionManager, listener net.Listener) {
 	// Helper to extract requested session or active session
 	getSession := func(r *http.Request) *Session {
@@ -1534,10 +1573,11 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 		}
 
 		var req struct {
-			Session   string `json:"session,omitempty"`
-			Recipient string `json:"recipient"`
-			Message   string `json:"message"`
-			MediaPath string `json:"media_path,omitempty"`
+			Session           string `json:"session,omitempty"`
+			Recipient         string `json:"recipient"`
+			Message           string `json:"message"`
+			MediaPath         string `json:"media_path,omitempty"`
+			AllowUnknownBlast bool   `json:"allow_unknown_blast,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "Invalid request format", http.StatusBadRequest)
@@ -1560,6 +1600,10 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 		}
 		if sess.Client == nil {
 			http.Error(w, "WhatsApp session is not started yet - pair or reconnect first", http.StatusBadRequest)
+			return
+		}
+
+		if !guardAllowsSend(w, r, sess, req.Recipient, req.AllowUnknownBlast) {
 			return
 		}
 
@@ -1595,12 +1639,13 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 		}
 
 		var req struct {
-			Session   string `json:"session,omitempty"`
-			Recipient string `json:"recipient"`
-			Caption   string `json:"caption"`
-			MimeType  string `json:"mime_type"`
-			Filename  string `json:"filename"`
-			DataB64   string `json:"data_b64"`
+			Session           string `json:"session,omitempty"`
+			Recipient         string `json:"recipient"`
+			Caption           string `json:"caption"`
+			MimeType          string `json:"mime_type"`
+			Filename          string `json:"filename"`
+			DataB64           string `json:"data_b64"`
+			AllowUnknownBlast bool   `json:"allow_unknown_blast,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "Invalid request format", http.StatusBadRequest)
@@ -1663,6 +1708,10 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 			return
 		}
 		tmp.Close()
+
+		if !guardAllowsSend(w, r, sess, req.Recipient, req.AllowUnknownBlast) {
+			return
+		}
 
 		success, msgText, msgID, msgTime, targetChatJID := sendWhatsAppMessage(
 			sess.Client,

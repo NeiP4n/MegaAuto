@@ -22,7 +22,7 @@ import (
 var (
 	sendMinSpacing   = 2 * time.Second
 	sendWindowSize   = 10 * time.Minute
-	sendWindowMax    = 20
+	sendWindowMax    = 50
 	sendDailyMax     = 500
 	newRecipientMax  = 5
 	newRecipientSpan = time.Hour

@@ -87,7 +87,7 @@ export const rpcContract = defineRpcContract({
       name: z.string().min(1),
       channel: z.enum(["n8n", "telegram", "webhook"]),
       url: z.string().min(1),
-      apiKey: z.string().optional(),
+      apiKey: z.string().nullable().optional(),
     }),
     output: z.object({
       ok: z.boolean(),
@@ -146,7 +146,7 @@ export const rpcContract = defineRpcContract({
       .object({
         accountId: z.string().optional(),
         n8nBaseUrl: z.string().optional(),
-        apiKey: z.string().optional(),
+        apiKey: z.string().nullable().optional(),
       })
       .optional(),
     output: z.object({
@@ -179,7 +179,7 @@ export const rpcContract = defineRpcContract({
       accountId: z.string(),
       name: z.string().min(1),
       channel: z.enum(["n8n", "telegram", "webhook"]).optional(),
-      workflowId: z.string().optional(),
+      workflowId: z.string().nullable().optional(),
       tags: z.array(z.string()).optional(),
     }),
     output: z.object({
@@ -243,7 +243,7 @@ export const rpcContract = defineRpcContract({
   get_executions: {
     input: z.object({
       accountId: z.string(),
-      workflowId: z.string().optional(),
+      workflowId: z.string().nullable().optional(),
     }),
     output: z.object({
       ok: z.boolean(),
@@ -1508,7 +1508,12 @@ export default function (bb: BbPluginApi) {
     },
 
     create_account: async (input) => {
-      const acc = store.addAccount(input);
+      const acc = store.addAccount({
+        name: input.name,
+        channel: input.channel,
+        url: input.url,
+        apiKey: input.apiKey || undefined,
+      });
       return {
         ok: true,
         account: {
@@ -1742,7 +1747,10 @@ export default function (bb: BbPluginApi) {
     },
 
     create_project: async (input) => {
-      const project = store.createProject(input);
+      const project = store.createProject({
+        ...input,
+        workflowId: input.workflowId || undefined,
+      });
       return {
         ok: true,
         project,

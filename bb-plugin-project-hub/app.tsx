@@ -153,7 +153,9 @@ export function ProjectHubView() {
     if (!accId) return;
     setIsLoadingExecutions(true);
     try {
-      const res = await rpc.call("get_executions", { accountId: accId, workflowId: wfId });
+      const payload: { accountId: string; workflowId?: string } = { accountId: accId };
+      if (wfId) payload.workflowId = wfId;
+      const res = await rpc.call("get_executions", payload);
       if (res?.ok && res.executions) {
         setExecutions(res.executions);
       } else {
@@ -276,12 +278,16 @@ export function ProjectHubView() {
 
   // Add Instance
   const handleAddInstance = async (name: string, url: string, apiKey?: string) => {
-    const res = await rpc.call("create_account", {
+    const payload: { name: string; channel: "n8n"; url: string; apiKey?: string } = {
       name,
       channel: "n8n",
       url,
-      apiKey,
-    });
+    };
+    const cleanKey = apiKey?.trim();
+    if (cleanKey) {
+      payload.apiKey = cleanKey;
+    }
+    const res = await rpc.call("create_account", payload);
     if (res?.ok && res.account) {
       setAccounts((prev) => [...prev, res.account]);
       setSelectedAccountId(res.account.id);

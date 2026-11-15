@@ -63,23 +63,23 @@ export interface N8nWorkflow {
 }
 
 export interface MessageMetadata {
-  workflowName?: string;
-  executionId?: string;
-  status?: ExecutionStatus;
-  durationMs?: number;
-  payload?: Record<string, unknown>;
+  workflowName?: string | null;
+  executionId?: string | null;
+  status?: ExecutionStatus | null;
+  durationMs?: number | null;
+  payload?: Record<string, unknown> | null;
 }
 
 export interface ChatMessage {
   id: string;
   projectId: string;
-  accountId?: string;
+  accountId?: string | null;
   sender: "system" | "agent" | "user" | "webhook";
   senderName: string;
   text: string;
   timestamp: string;
   status: "sent" | "delivered" | "read";
-  metadata?: MessageMetadata;
+  metadata?: MessageMetadata | null;
 }
 
 export interface HubStatus {
@@ -116,4 +116,12 @@ export interface LocalServerStatus {
   pid?: number;
   logs: string[];
   error?: string;
+}
+
+export interface AiChatResult {
+  ok: boolean;
+  reply: string;
+  model: string;
+  latencyMs?: number;
+  error?: string | null;
 }

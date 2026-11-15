@@ -1,13 +1,14 @@
 import React, { useEffect, useState, useCallback, useMemo } from "react";
 import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
-import type { Account, N8nWorkflow, N8nExecution, WebhookDispatchResult, PingInstanceResult } from "./src/types";
+import type { Account, N8nWorkflow, N8nExecution, WebhookDispatchResult, PingInstanceResult, ChatMessage } from "./src/types";
 import { InstanceList } from "./src/components/InstanceList";
 import { WorkflowList } from "./src/components/WorkflowList";
 import { ExecutionLog } from "./src/components/ExecutionLog";
 import { WebhookConsole } from "./src/components/WebhookConsole";
+import { AiChatTab } from "./src/components/AiChatTab";
 import { AddInstanceModal } from "./src/components/AddInstanceModal";
-import { SvgZap, SvgActivity, SvgRefresh, SvgCheckCircle, SvgAlertCircle, SvgPlay, SvgSquare } from "./src/icons";
+import { SvgZap, SvgActivity, SvgRefresh, SvgCheckCircle, SvgAlertCircle, SvgPlay, SvgSquare, SvgSparkles } from "./src/icons";
 
 function isLocalPort5678(url: string): boolean {
   const clean = (url || "").trim();
@@ -39,6 +40,12 @@ export function ProjectHubView() {
 
   // Modal: Add Instance
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+
+  // Tab switcher in Column 3: "workspace" (Executions + Webhook) or "chat" (n8n Gemini Chat)
+  const [columnTab, setColumnTab] = useState<"workspace" | "chat">("chat");
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [isSendingChat, setIsSendingChat] = useState(false);
+  const [isLoadingChatHistory, setIsLoadingChatHistory] = useState(false);
 
   // Active Instance & Workflow
   const activeAccount = useMemo(() => {
@@ -329,6 +336,81 @@ export function ProjectHubView() {
     }
   };
 
+  // AI Chat Handlers
+  const loadChatHistory = useCallback(async () => {
+    setIsLoadingChatHistory(true);
+    try {
+      const res = await rpc.call("get_ai_chat_history", {});
+      if (res?.ok && Array.isArray(res.messages)) {
+        setChatMessages(res.messages);
+      }
+    } catch (err) {
+      console.error("Failed to load AI chat history:", err);
+    } finally {
+      setIsLoadingChatHistory(false);
+    }
+  }, [rpc]);
+
+  useEffect(() => {
+    loadChatHistory();
+  }, [loadChatHistory]);
+
+  const handleSendChatMessage = useCallback(
+    async (text: string) => {
+      setIsSendingChat(true);
+      const tempUserMsg: ChatMessage = {
+        id: `ai-msg-temp-${Date.now()}`,
+        projectId: "proj-n8n-gemini-chat",
+        sender: "user",
+        senderName: "Вы (Оператор)",
+        text,
+        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        status: "sent",
+      };
+      setChatMessages((prev) => [...prev, tempUserMsg]);
+
+      try {
+        const res = await rpc.call("send_ai_chat", {
+          message: text,
+          accountId: activeAccount?.id,
+          model: "gemini-3.8-flash-acp",
+        });
+        if (res?.ok) {
+          const aiMsg: ChatMessage = {
+            id: `ai-msg-bot-${Date.now()}`,
+            projectId: "proj-n8n-gemini-chat",
+            sender: "agent",
+            senderName: "Gemini 3.8 Flash ACP",
+            text: res.reply || "",
+            timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+            status: "delivered",
+            metadata: {
+              durationMs: res.latencyMs ?? undefined,
+            },
+          };
+          setChatMessages((prev) => [...prev, aiMsg]);
+          return { ok: true };
+        } else {
+          return { ok: false, error: res?.error || "Ошибка n8n AI воркфлоу" };
+        }
+      } catch (err: any) {
+        return { ok: false, error: err?.message || "Сетевой сбой при обращении к n8n" };
+      } finally {
+        setIsSendingChat(false);
+      }
+    },
+    [rpc, activeAccount]
+  );
+
+  const handleClearChatHistory = useCallback(async () => {
+    try {
+      await rpc.call("clear_ai_chat_history", {});
+      setChatMessages([]);
+    } catch (err) {
+      console.error("Failed to clear chat history:", err);
+    }
+  }, [rpc]);
+
   // Dispatch Webhook
   const handleDispatchWebhook = async (
     path: string,
@@ -492,9 +574,66 @@ export function ProjectHubView() {
           isServerStarting={isServerBusy}
         />
 
-        {/* Column 3: Detail Workspace (Top: Execution/Server Log, Bottom: Webhook Console) */}
+        {/* Column 3: Detail Workspace (Top Tabs: [ Воркфлоу & Логи ] [ ✦ Чат с ИИ (Gemini ACP) ]) */}
         <section className="flex-1 flex flex-col h-full overflow-hidden bg-background">
-          {activeWorkflow ? (
+          {/* Header Switcher Tabs */}
+          <div className="h-10 border-b border-border bg-card/60 px-4 flex items-center justify-between shrink-0">
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setColumnTab("workspace")}
+                className={`px-3 py-1 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors ${
+                  columnTab === "workspace"
+                    ? "bg-accent text-accent-foreground shadow-sm font-semibold"
+                    : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
+                }`}
+              >
+                <SvgActivity className="w-3.5 h-3.5 text-primary" />
+                <span>Воркфлоу & Логи</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setColumnTab("chat")}
+                className={`px-3 py-1 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors relative ${
+                  columnTab === "chat"
+                    ? "bg-cyan-500/15 text-cyan-400 border border-cyan-500/30 shadow-sm font-semibold"
+                    : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
+                }`}
+              >
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-500"></span>
+                </span>
+                <SvgSparkles className="w-3.5 h-3.5 text-cyan-400" />
+                <span>Чат с ИИ (Gemini ACP)</span>
+                {chatMessages.length > 0 && (
+                  <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-cyan-500/20 text-cyan-300 font-mono">
+                    {chatMessages.length}
+                  </span>
+                )}
+              </button>
+            </div>
+
+            <div className="text-[11px] text-muted-foreground flex items-center gap-2">
+              <span className="text-cyan-400/90 font-mono font-medium">gemini-3.8-flash-acp</span>
+              <span className="text-border">|</span>
+              <span className="text-muted-foreground">/webhook/ai-chat</span>
+            </div>
+          </div>
+
+          {columnTab === "chat" ? (
+            <div className="flex-1 min-h-0 overflow-hidden">
+              <AiChatTab
+                messages={chatMessages}
+                onSendMessage={handleSendChatMessage}
+                onClearHistory={handleClearChatHistory}
+                isLoadingHistory={isLoadingChatHistory}
+                isSending={isSendingChat}
+                n8nConnected={isServerRunning || activeAccount?.status === "online"}
+              />
+            </div>
+          ) : activeWorkflow ? (
             <>
               {/* Upper Section: Execution Log + Server Terminal */}
               <div className="flex-1 flex flex-col min-h-[220px] overflow-hidden">

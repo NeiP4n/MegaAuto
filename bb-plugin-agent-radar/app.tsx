@@ -60,7 +60,7 @@ export default definePluginApp((app) => {
   app.slots.navPanel({
     id: "agent-radar",
     title: "Agent Radar",
-    icon: "Activity",
+    icon: "Terminal",
     path: "agent-radar",
     component: NavPanelView,
   });
@@ -71,7 +71,7 @@ export default definePluginApp((app) => {
     availability: "fixed",
     id: "agent-radar",
     title: "Agent Radar",
-    icon: "Activity",
+    icon: "Terminal",
     layout: "flush",
     component: NavPanelView,
   });

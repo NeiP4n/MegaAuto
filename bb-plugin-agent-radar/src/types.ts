@@ -45,6 +45,4 @@ export interface RadarSettings {
   soundEnabled: boolean;
   volume: number;
   autoExpandOnBusy: boolean;
-  showOverlay: boolean;
-  position: "top-right" | "bottom-right" | "top-center" | "bottom-center";
 }

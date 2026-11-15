@@ -28,17 +28,18 @@ export function ComposerStatusBanner({ status }: ComposerStatusBannerProps) {
 
   const isBusy = !status.canWrite;
 
+  const toolName = status.currentTool ? status.currentTool.slice(0, 24) : "шаг";
   const cardTitle = isBusy
-    ? `ИИ выполняет: ${status.currentTool || "шаг"} (${localSeconds}s) · Сообщение встанет в очередь`
+    ? `ИИ выполняет: ${toolName} (${localSeconds}s) · Сообщение встанет в очередь`
     : "ИИ свободен · Можно писать сообщение";
 
   const cardIcon = isBusy
     ? status.currentTool?.includes("command")
       ? "Terminal"
       : status.currentTool?.includes("edit") || status.currentTool?.includes("write")
-        ? "FileEdit"
-        : "Activity"
-    : "CheckCircle";
+        ? "Edit"
+        : "Terminal"
+    : "CircleCheck";
 
   return (
     <div className="w-full">
@@ -48,7 +49,7 @@ export function ComposerStatusBanner({ status }: ComposerStatusBannerProps) {
         icon={cardIcon as any}
         isActive={isBusy}
       >
-        <div className="p-3 bg-muted/30 border-t border-border/40 space-y-2 text-xs">
+        <div className="p-3 bg-muted/20 border-t border-border/40 space-y-2 text-xs">
           <div className="flex items-center justify-between text-muted-foreground font-mono text-[11px]">
             <span>Модель: <span className="text-foreground font-medium">{status.model}</span></span>
             <span>Диалог: {status.conversationId.slice(0, 8)}...</span>

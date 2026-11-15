@@ -95,10 +95,10 @@ export function RadarNavPanel({ status, isLoading, onRefresh }: RadarNavPanelPro
 
       {/* Hero Status Banner */}
       <div
-        className={`p-6 rounded-2xl border backdrop-blur shadow-lg transition-all ${
+        className={`p-6 rounded-2xl border backdrop-blur shadow-sm transition-all ${
           isBusy
-            ? "bg-amber-950/20 border-amber-500/40 ring-1 ring-amber-500/20"
-            : "bg-emerald-950/20 border-emerald-500/40 ring-1 ring-emerald-500/20"
+            ? "bg-muted/40 border-border ring-1 ring-border"
+            : "bg-card border-border"
         }`}
       >
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
@@ -106,36 +106,33 @@ export function RadarNavPanel({ status, isLoading, onRefresh }: RadarNavPanelPro
             <div className="relative mt-1 shrink-0">
               {isBusy ? (
                 <>
-                  <span className="animate-ping absolute inline-flex h-6 w-6 rounded-full bg-amber-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-6 w-6 bg-amber-500 flex items-center justify-center text-black">
+                  <span className="animate-ping absolute inline-flex h-6 w-6 rounded-full bg-primary opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-6 w-6 bg-primary text-primary-foreground flex items-center justify-center">
                     <SvgClock className="w-3.5 h-3.5" />
                   </span>
                 </>
               ) : (
-                <>
-                  <span className="animate-ping absolute inline-flex h-6 w-6 rounded-full bg-emerald-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-6 w-6 bg-emerald-500 flex items-center justify-center text-black">
-                    <SvgCheck className="w-3.5 h-3.5" />
-                  </span>
-                </>
+                <span className="relative inline-flex rounded-full h-6 w-6 bg-muted text-muted-foreground flex items-center justify-center border border-border">
+                  <SvgCheck className="w-3.5 h-3.5" />
+                </span>
               )}
             </div>
 
             <div className="space-y-1">
               <div className="flex items-center gap-2">
                 <span
-                  className={`inline-flex items-center gap-2 text-lg font-black tracking-wide uppercase ${
-                    isBusy ? "text-amber-400" : "text-emerald-400"
+                  className={`inline-flex items-center gap-2 text-lg font-bold tracking-wide uppercase ${
+                    isBusy ? "text-foreground" : "text-muted-foreground"
                   }`}
                 >
                   {isBusy ? (
                     <>
-                      <SvgAlertTriangle className="w-5 h-5" />
+                      <SvgAlertTriangle className="w-5 h-5 text-primary" />
                       <span>ИИ ЗАНЯТ — ПОДОЖДИТЕ (НЕ ПИШИТЕ)</span>
                     </>
                   ) : (
                     <>
-                      <SvgCheckCircle className="w-5 h-5" />
+                      <SvgCheckCircle className="w-5 h-5 text-muted-foreground" />
                       <span>ИИ СВОБОДЕН — МОЖНО ПИСАТЬ</span>
                     </>
                   )}
@@ -144,10 +141,10 @@ export function RadarNavPanel({ status, isLoading, onRefresh }: RadarNavPanelPro
                   шаг #{status.activeStepIndex ?? 0}
                 </span>
               </div>
-              <p className="text-sm text-foreground/90 font-medium">{status.statusDescription}</p>
+              <p className="text-sm text-foreground font-medium">{status.statusDescription}</p>
               {status.toolSummary && (
-                <p className="text-xs font-mono text-amber-300 bg-black/40 px-2.5 py-1 rounded-md border border-amber-500/20 mt-1 inline-flex items-center gap-1.5">
-                  <SvgZap className="w-3.5 h-3.5" />
+                <p className="text-xs font-mono text-foreground bg-muted px-2.5 py-1 rounded-md border border-border mt-1 inline-flex items-center gap-1.5">
+                  <SvgZap className="w-3.5 h-3.5 text-primary" />
                   <span>{status.currentTool}: {status.toolSummary}</span>
                 </p>
               )}

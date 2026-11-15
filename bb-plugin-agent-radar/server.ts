@@ -62,8 +62,6 @@ const radarSettingsSchema = z.object({
   soundEnabled: z.boolean(),
   volume: z.number(),
   autoExpandOnBusy: z.boolean(),
-  showOverlay: z.boolean(),
-  position: z.enum(["top-right", "bottom-right", "top-center", "bottom-center"]),
 });
 
 function sanitizeRpc<T>(data: T): T {
@@ -118,8 +116,6 @@ class RadarEngine {
     soundEnabled: true,
     volume: 0.35,
     autoExpandOnBusy: true,
-    showOverlay: true,
-    position: "top-right",
   };
 
   constructor() {

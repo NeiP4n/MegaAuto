@@ -31,6 +31,8 @@ type SessionInfo struct {
 	QR        string `json:"qr"`
 	IsActive  bool   `json:"is_active"`
 	Error     string `json:"error"`
+	Pairing   bool   `json:"pairing"`
+	Syncing   bool   `json:"syncing"`
 }
 
 type SessionMeta struct {
@@ -61,6 +63,18 @@ type Session struct {
 
 	loggedOut atomic.Bool
 	lastErr   atomic.Value // string
+
+	// pairing is true from QR generation until Connected (or QR timeout);
+	// syncing is true from the first Connected after a fresh pairing until
+	// the first history sync lands or a 3-minute grace expires. Restarting
+	// the client in either window kills the pair mid-flight - WhatsApp then
+	// reports the device as logged out.
+	pairing atomic.Bool
+	syncing atomic.Bool
+	// connGen cancels stale connect-retry goroutines when the client is
+	// torn down (restart/stop/delete) so an old loop cannot resurrect a
+	// dead client.
+	connGen atomic.Uint64
 
 	sendGuard *sendGuard
 }
@@ -135,6 +149,8 @@ func (s *Session) GetInfo(isActive bool) SessionInfo {
 		Status:    status,
 		Connected: isAuth && s.Client.IsConnected(),
 		QR:        s.GetQR(),
+		Pairing:   s.pairing.Load(),
+		Syncing:   s.syncing.Load(),
 		IsActive:  isActive,
 		Error:     s.Err(),
 	}
@@ -306,16 +322,38 @@ func (sm *SessionManager) startSession(s *Session) {
 		case *events.Message:
 			handleMessage(s.Client, s.MessageStore, v, s.logger)
 		case *events.HistorySync:
+			s.logger.Infof("Session %s received history sync blob", s.ID)
 			handleHistorySync(s.Client, s.MessageStore, v, s.logger)
+			s.syncing.Store(false)
+		case *events.PairSuccess:
+			s.logger.Infof("Session %s pair success (phone %s, platform %s) - initial sync starting, this can take several minutes", s.ID, v.ID.User, v.Platform)
+		case *events.PairError:
+			s.pairing.Store(false)
+			s.logger.Errorf("Session %s pair error: %v", s.ID, v.Error)
+			s.setErr(fmt.Sprintf("Pairing failed: %v. Press retry for a fresh QR code.", v.Error))
+		case *events.Disconnected:
+			s.logger.Infof("Session %s disconnected from WhatsApp", s.ID)
 		case *events.Connected:
-			s.logger.Infof("Session %s connected to WhatsApp", s.ID)
+			wasPairing := s.pairing.Swap(false)
+			s.logger.Infof("Session %s connected to WhatsApp (after_pairing=%v)", s.ID, wasPairing)
 			s.SetQR("")
+			if wasPairing {
+				// Fresh pairing: history sync lands over the next minutes.
+				// Mark syncing so nothing restarts the client mid-sync.
+				s.syncing.Store(true)
+				go func() {
+					time.Sleep(3 * time.Minute)
+					s.syncing.Store(false)
+				}()
+			}
 			go s.MessageStore.RefreshChatNames(s.Client, s.logger)
 			sm.saveMeta()
 		case *events.LoggedOut:
 			s.logger.Warnf("Session %s logged out (on_connect=%v reason=%v), re-pairing required", s.ID, v.OnConnect, v.Reason)
 			s.SetQR("")
 			s.loggedOut.Store(true)
+			s.pairing.Store(false)
+			s.syncing.Store(false)
 			s.setErr("WhatsApp logged this account out. Re-pair it with a fresh QR code.")
 			// Drop the dead device credentials so a session restart goes
 			// straight to pairing instead of reconnecting into another 401.
@@ -342,9 +380,11 @@ func (sm *SessionManager) startSession(s *Session) {
 			// Needs pairing. If Connect fails before any QR arrives the
 			// channel is dead; clear state so the UI can offer a retry
 			// (RestartSession) instead of spinning "Requesting QR" forever.
+			s.pairing.Store(true)
 			qrChan, _ := s.Client.GetQRChannel(ctx)
 			err := s.Client.Connect()
 			if err != nil {
+				s.pairing.Store(false)
 				s.SetQR("")
 				s.logger.Errorf("Session %s connect error: %v", s.ID, err)
 				return
@@ -360,6 +400,7 @@ func (sm *SessionManager) startSession(s *Session) {
 				case "timeout", "err":
 					// QR codes expired unscanned; require an explicit retry so
 					// the UI never displays a dead QR or spins forever.
+					s.pairing.Store(false)
 					s.SetQR("")
 					s.logger.Warnf("Session %s QR channel ended (%s), retry required", s.ID, evt.Event)
 				}
@@ -367,9 +408,16 @@ func (sm *SessionManager) startSession(s *Session) {
 		} else {
 			// Already paired: retry the initial Connect with backoff. A
 			// single failed attempt must not leave the account offline until
-			// the next bridge restart.
+			// the next bridge restart. The loop dies when the client is torn
+			// down (restart/stop/delete bumps connGen), so a stale goroutine
+			// can never resurrect an old client.
+			gen := s.connGen.Load()
 			backoff := 2 * time.Second
 			for attempt := 1; ; attempt++ {
+				if s.connGen.Load() != gen {
+					s.logger.Infof("Session %s connect loop cancelled (client replaced)", s.ID)
+					return
+				}
 				err := s.Client.Connect()
 				if err == nil {
 					break
@@ -502,6 +550,17 @@ func (sm *SessionManager) RestartSession(id string) (SessionInfo, error) {
 		return SessionInfo{}, fmt.Errorf("session not found: %s", id)
 	}
 
+	// Never tear down a client while a pairing or the initial history sync
+	// is in flight: that is exactly what turns "logging in..." on the phone
+	// into "Account logged out".
+	if sess.pairing.Load() {
+		return SessionInfo{}, fmt.Errorf("pairing is in progress - wait for it to finish (the phone can take several minutes to sync) instead of restarting")
+	}
+	if sess.syncing.Load() {
+		return SessionInfo{}, fmt.Errorf("initial history sync is in progress - wait a few minutes instead of restarting")
+	}
+
+	sess.connGen.Add(1)
 	sess.loggedOut.Store(false)
 	sess.setErr("")
 	if sess.Client != nil {
@@ -539,6 +598,7 @@ func (sm *SessionManager) DeleteSession(id string) error {
 	}
 
 	// Disconnect and close
+	sess.connGen.Add(1)
 	if sess.Client != nil {
 		sess.Client.Disconnect()
 	}

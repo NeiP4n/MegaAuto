@@ -1284,6 +1284,8 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 			"phone":       info.Phone,
 			"qr":          info.QR,
 			"error":       info.Error,
+			"pairing":     info.Pairing,
+			"syncing":     info.Syncing,
 			"build":       BuildSHA,
 			"server_time": time.Now().Format(time.RFC3339),
 			"sessions":    sm.ListSessions(),

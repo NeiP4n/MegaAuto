@@ -535,7 +535,7 @@ export function WhatsAppView() {
   // Mark the QR wait as stalled after 15s without a code so the pairing
   // screen can say so and offer Retry instead of spinning forever.
   useEffect(() => {
-    if (status.connected || status.qrDataUrl || status.phone || status.status === "stopped" || status.status === "error") {
+    if (status.connected || status.qrDataUrl || status.phone || status.pairing || status.syncing || status.status === "stopped" || status.status === "error") {
       setQrStalled(false);
       return;
     }
@@ -1055,13 +1055,21 @@ export function WhatsAppView() {
                             ? "Bridge is stopped"
                             : status.status === "error"
                             ? "Bridge error"
+                            : status.pairing || status.syncing
+                            ? "Syncing..."
                             : "Requesting QR code..."}
                         </span>
                       </div>
                     )}
                   </div>
 
-                  {qrStalled && !status.qrDataUrl && (
+                  {(status.pairing || status.syncing) && (
+                    <div className="w-full mb-4 px-3 py-2 rounded-md bg-[rgba(0,168,132,0.1)] border border-[rgba(0,168,132,0.35)] text-[12px] text-[var(--wa-accent)] text-left break-words">
+                      Phone is logging in and syncing your chats. This can take several minutes - please wait and don't press Retry, restarting now would interrupt the pairing.
+                    </div>
+                  )}
+
+                  {qrStalled && !status.qrDataUrl && !status.pairing && !status.syncing && (
                     <div className="w-full mb-4 px-3 py-2 rounded-md bg-[rgba(240,179,48,0.1)] border border-[rgba(240,179,48,0.35)] text-[12px] text-[var(--wa-warning)] text-left break-words">
                       No QR code yet. The bridge may be stuck or an outdated whatsapp-bridge.exe is still running. Try pairing again; if it repeats, rebuild the exe (bridge\go build -o whatsapp-bridge.exe .).
                     </div>
@@ -1097,7 +1105,9 @@ export function WhatsAppView() {
                     </button>
                     <button
                       onClick={handleRetrySession}
-                      className="py-2 px-4 border border-[var(--wa-border)] text-[var(--wa-text-secondary)] hover:bg-[var(--wa-hover)] rounded-full text-[14px] transition-colors"
+                      disabled={Boolean(status.pairing || status.syncing)}
+                      title={status.pairing || status.syncing ? "Wait for the sync to finish - restarting now would interrupt the pairing" : undefined}
+                      className="py-2 px-4 border border-[var(--wa-border)] text-[var(--wa-text-secondary)] hover:bg-[var(--wa-hover)] rounded-full text-[14px] transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                     >
                       Retry pairing
                     </button>

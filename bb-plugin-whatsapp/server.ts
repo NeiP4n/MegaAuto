@@ -33,6 +33,8 @@ export interface WhatsAppStatus {
   qrDataUrl: string | null;
   serverTime: string;
   error: string | null;
+  pairing?: boolean;
+  syncing?: boolean;
   sessions?: WhatsAppSessionInfo[];
 }
 
@@ -800,6 +802,8 @@ export class WhatsAppBridgeController {
             typeof data.error === "string" && data.error
               ? data.error
               : this.lastError,
+          pairing: Boolean(data.pairing),
+          syncing: Boolean(data.syncing),
           sessions: Array.isArray(data.sessions) ? (data.sessions as WhatsAppSessionInfo[]) : undefined,
         };
       }

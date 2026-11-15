@@ -439,7 +439,7 @@ export function ProjectHubView() {
       {/* Top Bar: Hub Header */}
       <header className="h-11 border-b border-border/40 bg-card/60 backdrop-blur-md px-3.5 flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2.5">
-          <div className="w-6 h-6 rounded-md bg-emerald-500/15 border border-emerald-500/25 flex items-center justify-center text-emerald-400">
+          <div className="w-6 h-6 rounded-md bg-emerald-500/15 border border-emerald-500/25 flex items-center justify-center text-emerald-600 dark:text-emerald-400">
             <SvgZap className="w-3.5 h-3.5" />
           </div>
           <span className="text-xs font-bold tracking-tight text-foreground">
@@ -460,7 +460,7 @@ export function ProjectHubView() {
                     ? "bg-amber-400 animate-pulse shadow-[0_0_8px_rgba(251,191,36,0.6)]"
                     : activeAccount.status === "online"
                     ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]"
-                    : "bg-rose-500"
+                    : "bg-destructive"
                 }`}
               />
               <span className="text-muted-foreground">
@@ -469,10 +469,10 @@ export function ProjectHubView() {
               <span
                 className={
                   isServerBusy || activeAccount.status === "syncing"
-                    ? "text-amber-400 font-bold"
+                    ? "text-amber-600 dark:text-amber-400 font-bold"
                     : activeAccount.status === "online"
-                    ? "text-emerald-400 font-bold"
-                    : "text-rose-400"
+                    ? "text-emerald-600 dark:text-emerald-400 font-bold"
+                    : "text-destructive"
                 }
               >
                 {isServerBusy || activeAccount.status === "syncing"
@@ -496,10 +496,10 @@ export function ProjectHubView() {
               disabled={isServerBusy}
               className={`px-2.5 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer ${
                 isServerBusy
-                  ? "bg-amber-500/15 text-amber-400 border border-amber-500/30 animate-pulse"
+                  ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 border border-amber-500/30 animate-pulse"
                   : isServerRunning
-                  ? "bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20"
-                  : "bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/30 shadow-[0_0_12px_rgba(52,211,153,0.15)]"
+                  ? "bg-destructive/10 hover:bg-destructive/20 text-destructive border border-destructive/20"
+                  : "bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 shadow-[0_0_12px_rgba(52,211,153,0.15)]"
               }`}
               title={isServerRunning ? "Остановить локальный n8n" : "Запустить локальный n8n на порту 5678"}
             >
@@ -510,12 +510,12 @@ export function ProjectHubView() {
                 </>
               ) : isServerRunning ? (
                 <>
-                  <SvgSquare className="w-3 h-3 text-rose-400" />
+                  <SvgSquare className="w-3 h-3 text-destructive" />
                   <span>Остановить n8n</span>
                 </>
               ) : (
                 <>
-                  <SvgPlay className="w-3 h-3 text-emerald-400" />
+                  <SvgPlay className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
                   <span>Запустить n8n</span>
                 </>
               )}
@@ -597,18 +597,18 @@ export function ProjectHubView() {
                 onClick={() => setColumnTab("chat")}
                 className={`px-3 py-1 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors relative ${
                   columnTab === "chat"
-                    ? "bg-cyan-500/15 text-cyan-400 border border-cyan-500/30 shadow-sm font-semibold"
+                    ? "bg-primary/15 text-primary border border-primary/30 shadow-sm font-semibold"
                     : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
                 }`}
               >
                 <span className="relative flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-cyan-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-cyan-500"></span>
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-primary"></span>
                 </span>
-                <SvgSparkles className="w-3.5 h-3.5 text-cyan-400" />
+                <SvgSparkles className="w-3.5 h-3.5 text-primary" />
                 <span>Чат с ИИ (Gemini ACP)</span>
                 {chatMessages.length > 0 && (
-                  <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-cyan-500/20 text-cyan-300 font-mono">
+                  <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-primary/20 text-primary font-mono">
                     {chatMessages.length}
                   </span>
                 )}
@@ -616,7 +616,7 @@ export function ProjectHubView() {
             </div>
 
             <div className="text-[11px] text-muted-foreground flex items-center gap-2">
-              <span className="text-cyan-400/90 font-mono font-medium">gemini-3.8-flash-acp</span>
+              <span className="text-primary/90 font-mono font-medium">gemini-3.8-flash-acp</span>
               <span className="text-border">|</span>
               <span className="text-muted-foreground">/webhook/ai-chat</span>
             </div>

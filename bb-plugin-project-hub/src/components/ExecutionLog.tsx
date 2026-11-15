@@ -42,7 +42,7 @@ export function ExecutionLog({ executions, isLoading, serverLogs = [], isServerR
                 : "text-muted-foreground hover:text-foreground hover:bg-secondary/40"
             }`}
           >
-            <SvgTerminal className="w-3.5 h-3.5 text-emerald-400" />
+            <SvgTerminal className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
             <span>Сервер n8n</span>
             {isServerRunning && (
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
@@ -56,7 +56,7 @@ export function ExecutionLog({ executions, isLoading, serverLogs = [], isServerR
         <div className="flex-1 overflow-y-auto p-3 space-y-2">
           {isLoading ? (
             <div className="flex-1 flex items-center justify-center text-xs text-muted-foreground gap-2 py-10">
-              <SvgActivity className="w-4 h-4 animate-spin text-emerald-400" />
+              <SvgActivity className="w-4 h-4 animate-spin text-emerald-600 dark:text-emerald-400" />
               <span>Загрузка истории запусков...</span>
             </div>
           ) : executions.length === 0 ? (
@@ -79,18 +79,18 @@ export function ExecutionLog({ executions, isLoading, serverLogs = [], isServerR
                     isSuccess
                       ? "bg-card/40 border-border/30 hover:border-emerald-500/30"
                       : isError
-                      ? "bg-rose-500/5 border-rose-500/20"
+                      ? "bg-destructive/5 border-destructive/20"
                       : "bg-amber-500/5 border-amber-500/20"
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2 mb-1">
                     <div className="flex items-center gap-1.5 font-mono text-[11px]">
                       {isSuccess ? (
-                        <SvgCheckCircle className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                        <SvgCheckCircle className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
                       ) : isError ? (
-                        <SvgAlertCircle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                        <SvgAlertCircle className="w-3.5 h-3.5 text-destructive shrink-0" />
                       ) : (
-                        <SvgClock className="w-3.5 h-3.5 text-amber-400 animate-spin shrink-0" />
+                        <SvgClock className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 animate-spin shrink-0" />
                       )}
                       <span className="text-foreground font-semibold">#{exec.id}</span>
                       <span className="text-muted-foreground">({exec.mode || "trigger"})</span>
@@ -109,7 +109,7 @@ export function ExecutionLog({ executions, isLoading, serverLogs = [], isServerR
                   </div>
 
                   {isError && exec.errorMessage && (
-                    <div className="mt-1.5 p-2 rounded bg-rose-500/10 border border-rose-500/20 text-[11px] text-rose-400 font-mono break-words leading-relaxed">
+                    <div className="mt-1.5 p-2 rounded bg-destructive/10 border border-destructive/20 text-[11px] text-destructive font-mono break-words leading-relaxed">
                       {exec.errorNodeName && (
                         <span className="font-bold underline block mb-0.5">
                           Узел: {exec.errorNodeName}
@@ -127,7 +127,7 @@ export function ExecutionLog({ executions, isLoading, serverLogs = [], isServerR
 
       {/* Tab 2: Live Server Logs */}
       {activeTab === "server" && (
-        <div className="flex-1 overflow-y-auto p-3 font-mono text-xs bg-black/40 space-y-1">
+        <div className="flex-1 overflow-y-auto p-3 font-mono text-xs bg-muted/50 space-y-1">
           {serverLogs.length === 0 ? (
             <div className="text-muted-foreground text-center py-10 text-[11px]">
               Логи сервера n8n пока пусты. Нажмите «Запустить n8n» для старта.
@@ -135,7 +135,7 @@ export function ExecutionLog({ executions, isLoading, serverLogs = [], isServerR
           ) : (
             serverLogs.map((log, idx) => (
               <div key={idx} className="text-muted-foreground leading-relaxed break-all hover:text-foreground">
-                <span className="text-emerald-500/70 select-none mr-2">›</span>
+                <span className="text-emerald-600/70 dark:text-emerald-500/70 select-none mr-2">›</span>
                 {log}
               </div>
             ))

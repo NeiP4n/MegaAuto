@@ -398,23 +398,23 @@ export function BrowserView() {
   };
 
   const bookmarks = [
-    { title: "Google", url: "https://www.google.com", icon: <SvgSearch className="w-3 h-3 text-neutral-400" /> },
+    { title: "Google", url: "https://www.google.com", icon: <SvgSearch className="w-3 h-3 text-muted-foreground" /> },
     { title: "Hacker News", url: "https://news.ycombinator.com", icon: <SvgHackerNews className="w-3 h-3" /> },
-    { title: "GitHub", url: "https://github.com", icon: <SvgGithub className="w-3 h-3 text-neutral-300" /> },
-    { title: "Patchright Repo", url: "https://github.com/Kaliiiiiiiiii-tools/patchright", icon: <SvgShield className="w-3 h-3 text-emerald-400" /> },
-    { title: "Wikipedia", url: "https://en.wikipedia.org", icon: <SvgBook className="w-3 h-3 text-neutral-400" /> },
+    { title: "GitHub", url: "https://github.com", icon: <SvgGithub className="w-3 h-3 text-foreground" /> },
+    { title: "Patchright Repo", url: "https://github.com/Kaliiiiiiiiii-tools/patchright", icon: <SvgShield className="w-3 h-3 text-emerald-600 dark:text-emerald-400" /> },
+    { title: "Wikipedia", url: "https://en.wikipedia.org", icon: <SvgBook className="w-3 h-3 text-muted-foreground" /> },
   ];
 
   return (
     <div
       tabIndex={0}
       onKeyDown={handleViewportKeyDown}
-      className="flex flex-col h-full w-full bg-[#1e1f22] text-[#e0e2e5] font-sans text-xs select-none outline-none"
+      className="flex flex-col h-full w-full bg-background text-foreground font-sans text-xs select-none outline-none"
     >
       {/* ============================================================ */}
       {/* 1. TOP TAB STRIP (Multi-Tab Browser Chrome)                  */}
       {/* ============================================================ */}
-      <div className="flex items-center justify-between px-2 pt-1.5 pb-0 bg-[#1e1f22] border-b border-[#2b2d30] select-none">
+      <div className="flex items-center justify-between px-2 pt-1.5 pb-0 bg-background border-b border-border select-none">
         {/* Tab strip: Renders ALL active tabs */}
         <div className="flex items-end gap-1 flex-1 overflow-x-auto scrollbar-none pr-2">
           {status.tabs.map((tab) => {
@@ -425,15 +425,15 @@ export function BrowserView() {
                 onClick={() => handleSwitchTab(tab.id)}
                 className={`group relative flex items-center gap-2 px-3 py-1.5 rounded-t-lg max-w-[220px] min-w-[120px] shadow-sm border-t border-x cursor-pointer transition-colors ${
                   isActive
-                    ? "bg-[#2b2d30] text-white border-[#3b3d42]/70 font-medium"
-                    : "bg-[#18191c] hover:bg-[#232428] text-neutral-400 border-transparent hover:text-neutral-200"
+                    ? "bg-card text-foreground border-border font-medium"
+                    : "bg-card hover:bg-accent text-muted-foreground border-transparent hover:text-foreground"
                 }`}
               >
                 {/* Favicon or Spinner */}
                 {tab.isLoading ? (
-                  <span className="w-3 h-3 border-2 border-blue-400 border-t-transparent rounded-full animate-spin shrink-0" />
+                  <span className="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin shrink-0" />
                 ) : (
-                  <SvgGlobe className="w-3 h-3 shrink-0 text-neutral-400" />
+                  <SvgGlobe className="w-3 h-3 shrink-0 text-muted-foreground" />
                 )}
 
                 {/* Title */}
@@ -445,7 +445,7 @@ export function BrowserView() {
                 <button
                   onClick={(e) => handleCloseTab(e, tab.id)}
                   title="Close tab"
-                  className={`p-0.5 rounded-full hover:bg-neutral-600/60 text-neutral-400 hover:text-white transition-opacity ${
+                  className={`p-0.5 rounded-full hover:bg-accent text-muted-foreground hover:text-foreground transition-opacity ${
                     isActive ? "opacity-70 group-hover:opacity-100" : "opacity-0 group-hover:opacity-100"
                   }`}
                 >
@@ -459,7 +459,7 @@ export function BrowserView() {
           <button
             onClick={() => handleNewTab()}
             title="Open new tab"
-            className="p-1 px-2.5 mb-0.5 rounded-md text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors text-sm font-bold flex items-center justify-center"
+            className="p-1 px-2.5 mb-0.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors text-sm font-bold flex items-center justify-center"
           >
             <SvgPlus className="w-3 h-3" />
           </button>
@@ -476,8 +476,8 @@ export function BrowserView() {
             title={status.stealth ? "Stealth Mode active (Anti-detect enabled)" : "Click to enable Stealth Mode"}
             className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-[11px] font-medium transition-colors ${
               status.stealth
-                ? "bg-purple-950/80 border-purple-600 text-purple-300 shadow-sm"
-                : "bg-neutral-800/80 border-neutral-700 text-neutral-400 hover:text-neutral-200"
+                ? "bg-purple-500/10 border-purple-500/40 text-purple-600 dark:text-purple-300 shadow-sm"
+                : "bg-muted/80 border-border text-muted-foreground hover:text-foreground"
             }`}
           >
             <SvgGlasses className="w-3.5 h-3.5" />
@@ -485,9 +485,9 @@ export function BrowserView() {
           </button>
 
           {/* Browser Engine Dropdown Selector */}
-          <div className="flex items-center gap-1.5 px-2.5 py-1 bg-neutral-800/90 rounded-md border border-neutral-700/80 text-[11px] font-sans shadow-sm">
+          <div className="flex items-center gap-1.5 px-2.5 py-1 bg-muted/90 rounded-md border border-border text-[11px] font-sans shadow-sm">
             <span className={`w-2 h-2 rounded-full shrink-0 ${status.running ? "bg-emerald-500 animate-pulse" : "bg-amber-500"}`} />
-            <span className="text-neutral-400 text-[11px] font-medium shrink-0">Браузер:</span>
+            <span className="text-muted-foreground text-[11px] font-medium shrink-0">Браузер:</span>
             <select
               value={status.engine || "patchright"}
               onChange={async (e) => {
@@ -503,12 +503,12 @@ export function BrowserView() {
                   setIsLoading(false);
                 }
               }}
-              className="bg-transparent text-neutral-100 text-xs font-medium focus:outline-none cursor-pointer py-0.5 pr-1 hover:text-white"
+              className="bg-transparent text-foreground text-xs font-medium focus:outline-none cursor-pointer py-0.5 pr-1 hover:text-foreground"
             >
-              <option value="patchright" className="bg-[#2b2d30] text-emerald-300 font-semibold">
+              <option value="patchright" className="bg-card text-emerald-600 dark:text-emerald-300 font-semibold">
                 Patchright + Chrome (Stealth / Anti-Detect)
               </option>
-              <option value="chrome" className="bg-[#2b2d30] text-blue-300 font-semibold">
+              <option value="chrome" className="bg-card text-primary font-semibold">
                 Google Chrome (Standard Chromium)
               </option>
             </select>
@@ -519,7 +519,7 @@ export function BrowserView() {
       {/* ============================================================ */}
       {/* 2. CHROME NAVIGATION & SMART OMNIBOX TOOLBAR                 */}
       {/* ============================================================ */}
-      <div className="flex items-center gap-2 px-3 py-1.5 bg-[#2b2d30] border-b border-[#3b3d42]/40 shadow-sm">
+      <div className="flex items-center gap-2 px-3 py-1.5 bg-card border-b border-border/50 shadow-sm">
         {/* Navigation buttons: Back, Forward, Reload */}
         <div className="flex items-center gap-1 shrink-0">
           <button
@@ -528,8 +528,8 @@ export function BrowserView() {
             title="Back"
             className={`w-7 h-7 flex items-center justify-center rounded-full transition-colors ${
               status.canGoBack && !isLoading
-                ? "hover:bg-neutral-700 text-neutral-200"
-                : "opacity-40 text-neutral-500 cursor-default"
+                ? "hover:bg-accent text-foreground"
+                : "opacity-40 text-muted-foreground cursor-default"
             }`}
           >
             <SvgArrowLeft className="w-3.5 h-3.5" />
@@ -540,8 +540,8 @@ export function BrowserView() {
             title="Forward"
             className={`w-7 h-7 flex items-center justify-center rounded-full transition-colors ${
               status.canGoForward && !isLoading
-                ? "hover:bg-neutral-700 text-neutral-200"
-                : "opacity-40 text-neutral-500 cursor-default"
+                ? "hover:bg-accent text-foreground"
+                : "opacity-40 text-muted-foreground cursor-default"
             }`}
           >
             <SvgArrowRight className="w-3.5 h-3.5" />
@@ -549,8 +549,8 @@ export function BrowserView() {
           <button
             onClick={handleReload}
             title="Reload"
-            className={`w-7 h-7 flex items-center justify-center rounded-full hover:bg-neutral-700 text-neutral-200 transition-colors ${
-              isLoading ? "animate-spin text-blue-400" : ""
+            className={`w-7 h-7 flex items-center justify-center rounded-full hover:bg-accent text-foreground transition-colors ${
+              isLoading ? "animate-spin text-primary" : ""
             }`}
           >
             <SvgRefresh className="w-3.5 h-3.5" />
@@ -558,8 +558,8 @@ export function BrowserView() {
         </div>
 
         {/* Smart Omnibox (Search Google or Type URL) */}
-        <div className="flex-1 flex items-center gap-2 px-3 py-1 bg-[#1e1f22] hover:bg-[#18181b] focus-within:bg-[#18181b] border border-[#3b3d42] focus-within:border-blue-500 focus-within:ring-1 focus-within:ring-blue-500/50 rounded-full transition-all">
-          <SvgLock className="w-3 h-3 text-emerald-400 shrink-0" />
+        <div className="flex-1 flex items-center gap-2 px-3 py-1 bg-background hover:bg-muted focus-within:bg-muted border border-border focus-within:border-primary focus-within:ring-1 focus-within:ring-primary/50 rounded-full transition-all">
+          <SvgLock className="w-3 h-3 text-emerald-600 dark:text-emerald-400 shrink-0" />
 
           <input
             ref={omniboxRef}
@@ -574,19 +574,19 @@ export function BrowserView() {
             }}
             onFocus={(e) => e.target.select()}
             placeholder="Search with Google or enter web address..."
-            className="w-full bg-transparent border-none outline-none text-xs text-neutral-100 placeholder:text-neutral-500 font-sans"
+            className="w-full bg-transparent border-none outline-none text-xs text-foreground placeholder:text-muted-foreground font-sans"
           />
 
           {urlInput && (
             <button
               onClick={() => setUrlInput("")}
-              className="text-neutral-500 hover:text-neutral-300 text-xs px-1"
+              className="text-muted-foreground hover:text-foreground text-xs px-1"
               title="Clear"
             >
               <SvgClose className="w-2.5 h-2.5" />
             </button>
           )}
-          <span className="text-neutral-500 hover:text-amber-400 cursor-pointer text-xs" title="Bookmark">
+          <span className="text-muted-foreground hover:text-amber-600 hover:dark:text-amber-400 cursor-pointer text-xs" title="Bookmark">
             <SvgStar className="w-3 h-3" />
           </span>
         </div>
@@ -598,8 +598,8 @@ export function BrowserView() {
             title="Toggle input bar"
             className={`px-2 py-1 rounded text-xs border transition-colors flex items-center gap-1.5 ${
               floatingTypeOpen
-                ? "bg-blue-600 border-blue-500 text-white"
-                : "bg-neutral-800 hover:bg-neutral-700 border-neutral-700 text-neutral-300"
+                ? "bg-primary border-primary text-primary-foreground"
+                : "bg-muted hover:bg-accent border-border text-foreground"
             }`}
           >
             <SvgKeyboard className="w-3.5 h-3.5" />
@@ -611,8 +611,8 @@ export function BrowserView() {
             title="Inspect / DevTools (Console, Elements, Snapshot)"
             className={`px-2 py-1 rounded text-xs border transition-colors flex items-center gap-1.5 ${
               devToolsOpen
-                ? "bg-blue-600 border-blue-500 text-white"
-                : "bg-neutral-800 hover:bg-neutral-700 border-neutral-700 text-neutral-300"
+                ? "bg-primary border-primary text-primary-foreground"
+                : "bg-muted hover:bg-accent border-border text-foreground"
             }`}
           >
             <SvgWrench className="w-3.5 h-3.5" />
@@ -622,8 +622,8 @@ export function BrowserView() {
           <button
             onClick={() => setShowBookmarks(!showBookmarks)}
             title="Toggle bookmarks bar"
-            className={`w-7 h-7 flex items-center justify-center rounded text-neutral-400 hover:text-neutral-200 hover:bg-neutral-700 transition-colors ${
-              showBookmarks ? "text-blue-400" : ""
+            className={`w-7 h-7 flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors ${
+              showBookmarks ? "text-primary" : ""
             }`}
           >
             <SvgStar className="w-3.5 h-3.5" />
@@ -635,7 +635,7 @@ export function BrowserView() {
       {/* 3. BOOKMARKS BAR                                             */}
       {/* ============================================================ */}
       {showBookmarks && (
-        <div className="flex items-center gap-2 px-3 py-1 bg-[#27282b] border-b border-[#3b3d42]/30 text-[11px] text-neutral-300 overflow-x-auto scrollbar-none shrink-0">
+        <div className="flex items-center gap-2 px-3 py-1 bg-card border-b border-border/50 text-[11px] text-foreground overflow-x-auto scrollbar-none shrink-0">
           {bookmarks.map((bm) => (
             <button
               key={bm.url}
@@ -643,7 +643,7 @@ export function BrowserView() {
                 setUrlInput(bm.url);
                 handleNavigate(bm.url);
               }}
-              className="flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-neutral-700/70 text-neutral-300 hover:text-white transition-colors shrink-0"
+              className="flex items-center gap-1.5 px-2 py-0.5 rounded hover:bg-accent text-foreground hover:text-foreground transition-colors shrink-0"
             >
               <span>{bm.icon}</span>
               <span>{bm.title}</span>
@@ -654,8 +654,8 @@ export function BrowserView() {
 
       {/* Floating Type Capsule (if open) */}
       {floatingTypeOpen && (
-        <div className="bg-[#202124] border-b border-blue-500/50 px-3 py-1.5 flex items-center gap-2 shadow-lg shrink-0">
-          <span className="text-neutral-400 text-xs shrink-0">Send input to page:</span>
+        <div className="bg-card border-b border-primary/50 px-3 py-1.5 flex items-center gap-2 shadow-lg shrink-0">
+          <span className="text-muted-foreground text-xs shrink-0">Send input to page:</span>
           <input
             type="text"
             value={floatingText}
@@ -665,38 +665,38 @@ export function BrowserView() {
             }}
             placeholder="Type text and press Enter..."
             autoFocus
-            className="flex-1 bg-[#121316] border border-neutral-700 rounded px-2.5 py-1 text-xs text-white outline-none font-sans"
+            className="flex-1 bg-muted border border-border rounded px-2.5 py-1 text-xs text-foreground outline-none font-sans"
           />
           <button
             onClick={handleSendFloatingText}
-            className="px-3 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-medium"
+            className="px-3 py-1 bg-primary hover:bg-primary/90 text-primary-foreground rounded text-xs font-medium"
           >
             Send
           </button>
-          <div className="flex items-center gap-1 text-xs pl-2 border-l border-neutral-700">
+          <div className="flex items-center gap-1 text-xs pl-2 border-l border-border">
             <button
               onClick={() => rpc.call("send_key", { key: "Enter", tabId: status.activeTabId }).then(refreshStatus)}
-              className="px-2 py-0.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 rounded border border-neutral-700 flex items-center gap-1"
+              className="px-2 py-0.5 bg-muted hover:bg-accent text-foreground rounded border border-border flex items-center gap-1"
             >
               <SvgEnter className="w-2.5 h-2.5" />
               <span>Enter</span>
             </button>
             <button
               onClick={() => rpc.call("send_key", { key: "Tab", tabId: status.activeTabId }).then(refreshStatus)}
-              className="px-2 py-0.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 rounded border border-neutral-700 flex items-center gap-1"
+              className="px-2 py-0.5 bg-muted hover:bg-accent text-foreground rounded border border-border flex items-center gap-1"
             >
               <SvgTab className="w-2.5 h-2.5" />
               <span>Tab</span>
             </button>
             <button
               onClick={() => rpc.call("send_key", { key: "Escape", tabId: status.activeTabId }).then(refreshStatus)}
-              className="px-2 py-0.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-300 rounded border border-neutral-700"
+              className="px-2 py-0.5 bg-muted hover:bg-accent text-foreground rounded border border-border"
             >
               Esc
             </button>
             <button
               onClick={() => setFloatingTypeOpen(false)}
-              className="text-neutral-400 hover:text-white px-1 ml-1"
+              className="text-muted-foreground hover:text-foreground px-1 ml-1"
             >
               <SvgClose className="w-2.5 h-2.5" />
             </button>
@@ -706,12 +706,12 @@ export function BrowserView() {
 
       {/* Error alert banner */}
       {status.error && (
-        <div className="bg-red-950 border-b border-red-800 text-red-200 px-3 py-1 text-xs flex items-center justify-between shrink-0">
+        <div className="bg-destructive/10 border-b border-destructive/30 text-destructive px-3 py-1 text-xs flex items-center justify-between shrink-0">
           <span className="flex items-center gap-1.5">
             <SvgAlertTriangle className="w-3.5 h-3.5 shrink-0" />
             <span>{status.error}</span>
           </span>
-          <button onClick={() => setStatus((p) => ({ ...p, error: null }))} className="text-red-400 hover:text-white">
+          <button onClick={() => setStatus((p) => ({ ...p, error: null }))} className="text-destructive hover:text-foreground">
             <SvgClose className="w-3 h-3" />
           </button>
         </div>
@@ -740,10 +740,10 @@ export function BrowserView() {
             }}
           />
         ) : (
-          <div className="flex-1 w-full flex flex-col items-center justify-center bg-[#1e1f22] text-neutral-400 p-8">
-            <SvgGlobe className="w-10 h-10 mb-3 text-neutral-600" />
-            <p className="text-base font-semibold text-neutral-200">New Tab</p>
-            <p className="text-xs text-neutral-500 mt-1 max-w-sm text-center">
+          <div className="flex-1 w-full flex flex-col items-center justify-center bg-background text-muted-foreground p-8">
+            <SvgGlobe className="w-10 h-10 mb-3 text-muted-foreground" />
+            <p className="text-base font-semibold text-foreground">New Tab</p>
+            <p className="text-xs text-muted-foreground mt-1 max-w-sm text-center">
               Type a search query or URL in the address bar above.
             </p>
             <div className="flex gap-2 mt-4">
@@ -752,7 +752,7 @@ export function BrowserView() {
                   setUrlInput("https://www.google.com");
                   handleNavigate("https://www.google.com");
                 }}
-                className="px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-medium"
+                className="px-3 py-1.5 bg-primary hover:bg-primary/90 text-primary-foreground rounded text-xs font-medium"
               >
                 Open Google
               </button>
@@ -761,7 +761,7 @@ export function BrowserView() {
                   setUrlInput("https://news.ycombinator.com");
                   handleNavigate("https://news.ycombinator.com");
                 }}
-                className="px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded text-xs"
+                className="px-3 py-1.5 bg-muted hover:bg-accent text-foreground rounded text-xs"
               >
                 Hacker News
               </button>
@@ -771,8 +771,8 @@ export function BrowserView() {
 
         {/* Loading overlay indicator */}
         {isLoading && (
-          <div className="absolute top-2 right-4 bg-neutral-900/90 text-neutral-200 border border-neutral-700 px-3 py-1 rounded-full shadow-lg flex items-center gap-2 backdrop-blur-sm pointer-events-none">
-            <span className="w-2.5 h-2.5 border-2 border-blue-400 border-t-transparent rounded-full animate-spin" />
+          <div className="absolute top-2 right-4 bg-card/90 text-foreground border border-border px-3 py-1 rounded-full shadow-lg flex items-center gap-2 backdrop-blur-sm pointer-events-none">
+            <span className="w-2.5 h-2.5 border-2 border-primary border-t-transparent rounded-full animate-spin" />
             <span className="text-[11px] font-medium">Loading...</span>
           </div>
         )}
@@ -782,18 +782,18 @@ export function BrowserView() {
       {/* 5. INTEGRATED CHROME DEVTOOLS DRAWER                         */}
       {/* ============================================================ */}
       {devToolsOpen && (
-        <div className="h-64 border-t border-[#3b3d42] bg-[#202124] flex flex-col shadow-2xl shrink-0">
-          <div className="flex items-center justify-between px-2 bg-[#2b2d30] border-b border-[#3b3d42]/60 text-xs">
+        <div className="h-64 border-t border-border bg-card flex flex-col shadow-2xl shrink-0">
+          <div className="flex items-center justify-between px-2 bg-card border-b border-border/50 text-xs">
             <div className="flex items-center gap-1">
-              <span className="font-semibold text-neutral-400 mr-2 text-[11px] uppercase tracking-wider">
+              <span className="font-semibold text-muted-foreground mr-2 text-[11px] uppercase tracking-wider">
                 DevTools
               </span>
               <button
                 onClick={() => setDevToolsTab("console")}
                 className={`px-3 py-1 font-medium transition-colors border-b-2 ${
                   devToolsTab === "console"
-                    ? "border-blue-500 text-white"
-                    : "border-transparent text-neutral-400 hover:text-neutral-200"
+                    ? "border-primary text-foreground"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
                 }`}
               >
                 Console
@@ -802,8 +802,8 @@ export function BrowserView() {
                 onClick={() => fetchDevToolsContent("snapshot")}
                 className={`px-3 py-1 font-medium transition-colors border-b-2 ${
                   devToolsTab === "snapshot"
-                    ? "border-blue-500 text-white"
-                    : "border-transparent text-neutral-400 hover:text-neutral-200"
+                    ? "border-primary text-foreground"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
                 }`}
               >
                 Elements Snapshot (9999%)
@@ -812,8 +812,8 @@ export function BrowserView() {
                 onClick={() => fetchDevToolsContent("text")}
                 className={`px-3 py-1 font-medium transition-colors border-b-2 ${
                   devToolsTab === "text"
-                    ? "border-blue-500 text-white"
-                    : "border-transparent text-neutral-400 hover:text-neutral-200"
+                    ? "border-primary text-foreground"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
                 }`}
               >
                 Page Text
@@ -822,8 +822,8 @@ export function BrowserView() {
                 onClick={() => fetchDevToolsContent("html")}
                 className={`px-3 py-1 font-medium transition-colors border-b-2 ${
                   devToolsTab === "elements"
-                    ? "border-blue-500 text-white"
-                    : "border-transparent text-neutral-400 hover:text-neutral-200"
+                    ? "border-primary text-foreground"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
                 }`}
               >
                 Elements (HTML)
@@ -832,8 +832,8 @@ export function BrowserView() {
                 onClick={() => setDevToolsTab("settings")}
                 className={`px-3 py-1 font-medium transition-colors border-b-2 ${
                   devToolsTab === "settings"
-                    ? "border-blue-500 text-white"
-                    : "border-transparent text-neutral-400 hover:text-neutral-200"
+                    ? "border-primary text-foreground"
+                    : "border-transparent text-muted-foreground hover:text-foreground"
                 }`}
               >
                 Engine Info
@@ -841,18 +841,18 @@ export function BrowserView() {
             </div>
             <button
               onClick={() => setDevToolsOpen(false)}
-              className="text-neutral-400 hover:text-white px-2 py-0.5 rounded hover:bg-neutral-700"
+              className="text-muted-foreground hover:text-foreground px-2 py-0.5 rounded hover:bg-accent"
               title="Close DevTools"
             >
               <SvgClose className="w-3.5 h-3.5" />
             </button>
           </div>
 
-          <div className="flex-1 p-2 overflow-auto font-mono text-xs text-neutral-200">
+          <div className="flex-1 p-2 overflow-auto font-mono text-xs text-foreground">
             {devToolsTab === "console" && (
               <div className="h-full flex flex-col gap-2">
                 <div className="flex items-center gap-2">
-                  <span className="text-blue-400 font-bold">&gt;</span>
+                  <span className="text-primary font-bold">&gt;</span>
                   <input
                     type="text"
                     value={evalInput}
@@ -861,16 +861,16 @@ export function BrowserView() {
                       if (e.key === "Enter") handleEvaluate();
                     }}
                     placeholder="Evaluate JavaScript expression (e.g. document.title, location.href)..."
-                    className="flex-1 bg-[#121316] border border-neutral-700 rounded px-2.5 py-1 text-white outline-none"
+                    className="flex-1 bg-muted border border-border rounded px-2.5 py-1 text-foreground outline-none"
                   />
                   <button
                     onClick={handleEvaluate}
-                    className="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-sans"
+                    className="px-2.5 py-1 bg-primary hover:bg-primary/90 text-primary-foreground rounded text-xs font-sans"
                   >
                     Run
                   </button>
                 </div>
-                <pre className="flex-1 bg-[#121316] p-2 rounded border border-neutral-800 overflow-auto text-emerald-400 whitespace-pre-wrap">
+                <pre className="flex-1 bg-muted p-2 rounded border border-border overflow-auto text-emerald-600 dark:text-emerald-400 whitespace-pre-wrap">
                   {evalResult || "<undefined> (type expression above and press Enter)"}
                 </pre>
               </div>
@@ -878,11 +878,11 @@ export function BrowserView() {
 
             {(devToolsTab === "text" || devToolsTab === "elements" || devToolsTab === "snapshot") && (
               <div className="h-full flex flex-col gap-1.5">
-                <div className="flex justify-between items-center text-neutral-400 font-sans text-[11px]">
+                <div className="flex justify-between items-center text-muted-foreground font-sans text-[11px]">
                   <span>{devToolsTab === "snapshot" ? "AI Interactive Elements Tree" : `Extracted ${devToolsTab}`}:</span>
                   <button
                     onClick={() => navigator.clipboard.writeText(textContent)}
-                    className="px-2 py-0.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded border border-neutral-700 flex items-center gap-1.5"
+                    className="px-2 py-0.5 bg-muted hover:bg-accent text-foreground rounded border border-border flex items-center gap-1.5"
                   >
                     <SvgCopy className="w-3 h-3" />
                     <span>Copy to clipboard</span>
@@ -891,24 +891,24 @@ export function BrowserView() {
                 <textarea
                   readOnly
                   value={textContent}
-                  className="flex-1 bg-[#121316] text-neutral-200 p-2 rounded border border-neutral-800 resize-none outline-none leading-relaxed"
+                  className="flex-1 bg-muted text-foreground p-2 rounded border border-border resize-none outline-none leading-relaxed"
                 />
               </div>
             )}
 
             {devToolsTab === "settings" && (
               <div className="p-2 space-y-2 font-sans text-xs">
-                <div className="text-sm font-semibold text-white">Patchright Engine Status</div>
-                <div className="bg-[#121316] p-3 rounded border border-neutral-800 space-y-1 font-mono text-[11px]">
-                  <div>Engine: <span className="text-emerald-400">Patchright + Google Chrome</span> (v{status.version})</div>
-                  <div>CDP Port: <span className="text-blue-400">{status.port}</span></div>
-                  <div>WebSocket: <span className="text-neutral-300">ws://127.0.0.1:{status.port}/devtools/browser</span></div>
-                  <div>Active Tabs: <span className="text-emerald-400">{status.tabs.length}</span></div>
-                  <div>Status: <span className={status.running ? "text-emerald-400" : "text-amber-400"}>{status.running ? "Active & Connected" : "Connecting..."}</span></div>
+                <div className="text-sm font-semibold text-foreground">Patchright Engine Status</div>
+                <div className="bg-muted p-3 rounded border border-border space-y-1 font-mono text-[11px]">
+                  <div>Engine: <span className="text-emerald-600 dark:text-emerald-400">Patchright + Google Chrome</span> (v{status.version})</div>
+                  <div>CDP Port: <span className="text-primary">{status.port}</span></div>
+                  <div>WebSocket: <span className="text-foreground">ws://127.0.0.1:{status.port}/devtools/browser</span></div>
+                  <div>Active Tabs: <span className="text-emerald-600 dark:text-emerald-400">{status.tabs.length}</span></div>
+                  <div>Status: <span className={status.running ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}>{status.running ? "Active & Connected" : "Connecting..."}</span></div>
                 </div>
                 <button
                   onClick={() => rpc.call("restart_engine").then(refreshStatus)}
-                  className="px-3 py-1.5 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded border border-neutral-700 text-xs mt-2"
+                  className="px-3 py-1.5 bg-muted hover:bg-accent text-foreground rounded border border-border text-xs mt-2"
                 >
                   Restart Browser Engine
                 </button>
@@ -921,11 +921,11 @@ export function BrowserView() {
       {/* ============================================================ */}
       {/* 6. MINIMAL CHROME STATUS BAR                                 */}
       {/* ============================================================ */}
-      <div className="px-3 py-0.5 bg-[#1e1f22] border-t border-[#2b2d30] text-[11px] text-neutral-500 flex items-center justify-between select-none shrink-0">
+      <div className="px-3 py-0.5 bg-background border-t border-border text-[11px] text-muted-foreground flex items-center justify-between select-none shrink-0">
         <span className="truncate max-w-[60%]">{status.currentUrl}</span>
-        <div className="flex items-center gap-3 text-neutral-400">
+        <div className="flex items-center gap-3 text-muted-foreground">
           <span>{status.currentTitle}</span>
-          <span className="text-emerald-500 font-mono inline-flex items-center gap-1.5">
+          <span className="text-emerald-600 dark:text-emerald-500 font-mono inline-flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
             Tab {status.activeTabId}
           </span>

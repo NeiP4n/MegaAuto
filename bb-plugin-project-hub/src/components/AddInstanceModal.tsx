@@ -37,7 +37,7 @@ export function AddInstanceModal({ isOpen, onClose, onAdd }: AddInstanceModalPro
       <div className="w-full max-w-md bg-card border border-border/80 rounded-xl shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
         <div className="px-4 py-3 border-b border-border/40 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <SvgServer className="w-4 h-4 text-emerald-400" />
+            <SvgServer className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
             <h3 className="text-xs font-semibold text-foreground">
               Подключение инстанса n8n
             </h3>
@@ -52,7 +52,7 @@ export function AddInstanceModal({ isOpen, onClose, onAdd }: AddInstanceModalPro
 
         <form onSubmit={handleSubmit} className="p-4 space-y-3.5">
           {error && (
-            <div className="p-2.5 rounded bg-rose-500/10 border border-rose-500/20 text-rose-400 text-xs">
+            <div className="p-2.5 rounded bg-destructive/10 border border-destructive/20 text-destructive text-xs">
               {error}
             </div>
           )}

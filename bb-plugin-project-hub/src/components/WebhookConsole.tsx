@@ -72,7 +72,7 @@ export function WebhookConsole({
       {/* Header bar */}
       <div className="px-3.5 py-2 border-b border-border/30 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <SvgCode className="w-3.5 h-3.5 text-emerald-400" />
+          <SvgCode className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
           <span className="text-[11px] font-semibold text-foreground uppercase tracking-wider">
             Вебхук-триггер & Консоль
           </span>
@@ -83,7 +83,7 @@ export function WebhookConsole({
             className="flex items-center gap-1 text-[10px] font-mono text-muted-foreground hover:text-foreground bg-secondary/60 hover:bg-secondary px-2 py-1 rounded transition-colors"
             title="Скопировать полный URL вебхука"
           >
-            {copied ? <SvgCheck className="w-3 h-3 text-emerald-400" /> : <SvgCopy className="w-3 h-3" />}
+            {copied ? <SvgCheck className="w-3 h-3 text-emerald-600 dark:text-emerald-400" /> : <SvgCopy className="w-3 h-3" />}
             <span>{copied ? "Скопировано" : "URL вебхука"}</span>
           </button>
         </div>
@@ -128,7 +128,7 @@ export function WebhookConsole({
           <button
             onClick={handleSend}
             disabled={isSending}
-            className="flex items-center gap-2 px-3.5 py-1.5 rounded-md bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 font-medium text-xs transition-all disabled:opacity-50"
+            className="flex items-center gap-2 px-3.5 py-1.5 rounded-md bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 font-medium text-xs transition-all disabled:opacity-50"
           >
             {isSending ? (
               <SvgActivity className="w-3.5 h-3.5 animate-spin" />
@@ -142,10 +142,10 @@ export function WebhookConsole({
             <div className="text-[11px] font-mono flex items-center gap-1.5">
               <span
                 className={`w-2 h-2 rounded-full ${
-                  lastResult.ok ? "bg-emerald-400" : "bg-rose-500"
+                  lastResult.ok ? "bg-emerald-400" : "bg-destructive"
                 }`}
               />
-              <span className={lastResult.ok ? "text-emerald-400" : "text-rose-400"}>
+              <span className={lastResult.ok ? "text-emerald-600 dark:text-emerald-400" : "text-destructive"}>
                 {lastResult.statusCode ? `HTTP ${lastResult.statusCode}` : lastResult.ok ? "OK" : "Error"}
               </span>
               {lastResult.durationMs !== undefined && (
@@ -162,7 +162,7 @@ export function WebhookConsole({
               Ответ вебхука:
             </div>
             {lastResult.error ? (
-              <div className="text-rose-400 break-words">{lastResult.error}</div>
+              <div className="text-destructive break-words">{lastResult.error}</div>
             ) : (
               <pre className="text-foreground/90 overflow-x-auto whitespace-pre-wrap max-h-36">
                 {JSON.stringify(lastResult.response, null, 2)}

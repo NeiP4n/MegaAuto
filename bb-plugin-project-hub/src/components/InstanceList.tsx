@@ -32,7 +32,7 @@ export function InstanceList({
       {/* Header */}
       <div className="h-11 px-3.5 border-b border-border/40 flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <SvgServer className="w-4 h-4 text-emerald-400" />
+          <SvgServer className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
           <span className="text-xs font-semibold tracking-wider uppercase text-muted-foreground">
             Инстансы n8n
           </span>
@@ -42,7 +42,7 @@ export function InstanceList({
         </div>
         <button
           onClick={onAddAccount}
-          className="p-1 rounded-md bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 transition-all text-xs flex items-center gap-1 font-medium"
+          className="p-1 rounded-md bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 transition-all text-xs flex items-center gap-1 font-medium"
           title="Добавить n8n инстанс"
         >
           <SvgPlus className="w-3.5 h-3.5" />
@@ -57,7 +57,7 @@ export function InstanceList({
             Нет подключенных инстансов.
             <button
               onClick={onAddAccount}
-              className="mt-2 text-emerald-400 hover:underline block mx-auto font-medium"
+              className="mt-2 text-emerald-600 dark:text-emerald-400 hover:underline block mx-auto font-medium"
             >
               + Подключить n8n
             </button>
@@ -85,7 +85,7 @@ export function InstanceList({
                         className={`w-2 h-2 rounded-full shrink-0 ${
                           isOnline
                             ? "bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.6)]"
-                            : "bg-rose-500/80"
+                            : "bg-destructive/80"
                         }`}
                       />
                       <span className="text-xs font-semibold text-foreground truncate">
@@ -108,10 +108,10 @@ export function InstanceList({
                         disabled={isServerBusy}
                         className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition-all ${
                           isServerBusy
-                            ? "bg-amber-500/10 text-amber-400 border border-amber-500/20 animate-pulse"
+                            ? "bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 animate-pulse"
                             : isOnline
-                            ? "bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20"
-                            : "bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20"
+                            ? "bg-destructive/10 hover:bg-destructive/20 text-destructive border border-destructive/20"
+                            : "bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20"
                         }`}
                         title={isOnline ? "Остановить n8n" : "Запустить n8n"}
                       >
@@ -127,7 +127,7 @@ export function InstanceList({
                       className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
                       title="Проверить пинг (/healthz)"
                     >
-                      <SvgActivity className={`w-3.5 h-3.5 ${isPinging ? "animate-spin text-emerald-400" : ""}`} />
+                      <SvgActivity className={`w-3.5 h-3.5 ${isPinging ? "animate-spin text-emerald-600 dark:text-emerald-400" : ""}`} />
                     </button>
                     {accounts.length > 1 && (
                       <button
@@ -135,7 +135,7 @@ export function InstanceList({
                           e.stopPropagation();
                           onDeleteAccount(acc.id);
                         }}
-                        className="p-1 rounded text-muted-foreground hover:text-rose-400 hover:bg-rose-500/10 transition-colors"
+                        className="p-1 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
                         title="Удалить инстанс"
                       >
                         <SvgTrash className="w-3.5 h-3.5" />

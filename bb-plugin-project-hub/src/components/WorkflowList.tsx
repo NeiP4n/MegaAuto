@@ -44,7 +44,7 @@ export function WorkflowList({
       {/* Header bar */}
       <div className="h-11 px-3.5 border-b border-border/40 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
-          <SvgZap className="w-4 h-4 text-emerald-400 shrink-0" />
+          <SvgZap className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
           <span className="text-xs font-semibold text-foreground truncate">
             {instanceName || "Воркфлоу n8n"}
           </span>
@@ -58,7 +58,7 @@ export function WorkflowList({
           className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
           title="Обновить воркфлоу"
         >
-          <SvgRefresh className={`w-3.5 h-3.5 ${isLoading ? "animate-spin text-emerald-400" : ""}`} />
+          <SvgRefresh className={`w-3.5 h-3.5 ${isLoading ? "animate-spin text-emerald-600 dark:text-emerald-400" : ""}`} />
         </button>
       </div>
 
@@ -98,7 +98,7 @@ export function WorkflowList({
           <div className="flex-1 flex flex-col items-center justify-center text-center py-12 px-4 text-xs text-muted-foreground">
             {isLocalInstance && isOffline ? (
               <div className="p-4 rounded-xl border border-border/40 bg-card/60 max-w-xs text-center space-y-3">
-                <div className={`w-9 h-9 rounded-full ${isServerStarting ? "bg-amber-500/15 text-amber-400 animate-pulse" : "bg-rose-500/10 text-rose-400"} mx-auto flex items-center justify-center`}>
+                <div className={`w-9 h-9 rounded-full ${isServerStarting ? "bg-amber-500/15 text-amber-600 dark:text-amber-400 animate-pulse" : "bg-destructive/10 text-destructive"} mx-auto flex items-center justify-center`}>
                   {isServerStarting ? <SvgClock className="w-5 h-5" /> : <SvgAlertCircle className="w-5 h-5" />}
                 </div>
                 <div>
@@ -115,7 +115,7 @@ export function WorkflowList({
                   <button
                     onClick={onStartServer}
                     disabled={isServerStarting}
-                    className="w-full py-2 px-3 rounded-md bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/30 text-xs font-medium transition-all flex items-center justify-center gap-1.5 shadow-[0_0_12px_rgba(52,211,153,0.15)] cursor-pointer"
+                    className="w-full py-2 px-3 rounded-md bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30 text-xs font-medium transition-all flex items-center justify-center gap-1.5 shadow-[0_0_12px_rgba(52,211,153,0.15)] cursor-pointer"
                   >
                     {isServerStarting ? "Запуск сервера..." : "▶ Запустить локальный n8n"}
                   </button>
@@ -152,7 +152,7 @@ export function WorkflowList({
                       <span
                         className={`inline-flex items-center gap-1 text-[10px] font-mono uppercase px-1.5 py-0.2 rounded ${
                           w.active
-                            ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                            ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20"
                             : "bg-muted/30 text-muted-foreground border border-border/30"
                         }`}
                       >
@@ -163,10 +163,10 @@ export function WorkflowList({
                         <span
                           className={`inline-flex items-center gap-1 text-[10px] px-1.5 py-0.2 rounded ${
                             lastStatus === "success"
-                              ? "text-emerald-400 bg-emerald-500/10"
+                              ? "text-emerald-600 dark:text-emerald-400 bg-emerald-500/10"
                               : lastStatus === "error"
-                              ? "text-rose-400 bg-rose-500/10"
-                              : "text-amber-400 bg-amber-500/10"
+                              ? "text-destructive bg-destructive/10"
+                              : "text-amber-600 dark:text-amber-400 bg-amber-500/10"
                           }`}
                         >
                           {lastStatus === "success" ? (

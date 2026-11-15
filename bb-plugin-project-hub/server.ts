@@ -2074,7 +2074,7 @@ export default function (bb: BbPluginApi) {
         latencyMs = Date.now() - start;
         errText = err?.message || "Ошибка связи с n8n AI Webhook";
         // Intelligent fallback: Gemini Flash ACP engine response
-        reply = `### ✦ Ответ Gemini 3.8 Flash (ACP Fallback)\n\nЯ обработал ваш запрос: **"${message}"**.\n\n*(Статус связи с n8n: ${errText})*\n\nВоркфлоу **"AI Chat Agent (Gemini 3.8 Flash ACP)"** доступен в n8n на порту 5678. Готов помочь спроектировать автоматизацию!`;
+        reply = `### Ответ Gemini 3.8 Flash (ACP Fallback)\n\nЯ обработал ваш запрос: **"${message}"**.\n\n*(Статус связи с n8n: ${errText})*\n\nВоркфлоу **"AI Chat Agent (Gemini 3.8 Flash ACP)"** доступен в n8n на порту 5678. Готов помочь спроектировать автоматизацию!`;
       }
 
       // Save assistant message to persistent history

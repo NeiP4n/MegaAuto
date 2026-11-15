@@ -924,7 +924,10 @@ export function BrowserView() {
         <span className="truncate max-w-[60%]">{status.currentUrl}</span>
         <div className="flex items-center gap-3 text-neutral-400">
           <span>{status.currentTitle}</span>
-          <span className="text-emerald-500 font-mono">● Tab {status.activeTabId}</span>
+          <span className="text-emerald-500 font-mono inline-flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 inline-block" />
+            Tab {status.activeTabId}
+          </span>
         </div>
       </div>
     </div>

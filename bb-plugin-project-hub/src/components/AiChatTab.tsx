@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import type { ChatMessage } from "../types";
-import { SvgBot, SvgUser, SvgSend, SvgTrash, SvgSparkles, SvgActivity } from "../icons";
+import { SvgBot, SvgUser, SvgSend, SvgTrash, SvgSparkles, SvgActivity, SvgZap } from "../icons";
 
 interface AiChatTabProps {
   messages: ChatMessage[];
@@ -12,10 +12,10 @@ interface AiChatTabProps {
 }
 
 const QUICK_PROMPTS = [
-  "💡 Как создать Telegram-бота в n8n?",
-  "⚡ Напиши JS-код для Code ноды (парсинг JSON)",
-  "📊 Проверь статус локального n8n и базу SQLite",
-  "✦ Что умеет Gemini 3.8 Flash ACP в связке с n8n?",
+  "Как создать Telegram-бота в n8n?",
+  "Напиши JS-код для Code ноды (парсинг JSON)",
+  "Проверь статус локального n8n и базу SQLite",
+  "Что умеет Gemini 3.8 Flash ACP в связке с n8n?",
 ];
 
 export function AiChatTab({
@@ -55,7 +55,7 @@ export function AiChatTab({
       if (line.startsWith("### ")) {
         return (
           <div key={idx} className="font-bold text-foreground text-xs mt-2 mb-1 flex items-center gap-1.5">
-            <span className="text-cyan-400">✦</span>
+            <SvgSparkles className="w-3 h-3 text-cyan-400" />
             <span>{line.replace("### ", "")}</span>
           </div>
         );
@@ -190,7 +190,10 @@ export function AiChatTab({
                   {/* Metadata pills for AI */}
                   {!isUser && msg.metadata?.durationMs && (
                     <div className="mt-2 pt-1.5 border-t border-border/30 flex items-center gap-2 text-[10px] font-mono text-muted-foreground">
-                      <span className="text-cyan-400">⚡ {msg.metadata.durationMs}ms</span>
+                      <span className="text-cyan-400 inline-flex items-center gap-1">
+                        <SvgZap className="w-3 h-3" />
+                        {msg.metadata.durationMs}ms
+                      </span>
                       <span>•</span>
                       <span>engine: n8n VM</span>
                     </div>
@@ -215,7 +218,7 @@ export function AiChatTab({
             </div>
             <div className="bg-card/70 border border-cyan-500/30 rounded-xl px-3.5 py-2.5 flex items-center gap-2 text-xs text-cyan-300">
               <SvgActivity className="w-3.5 h-3.5 animate-spin text-cyan-400" />
-              <span>✦ Gemini 3.8 Flash обрабатывает запрос в n8n...</span>
+              <span>Gemini 3.8 Flash обрабатывает запрос в n8n...</span>
             </div>
           </div>
         )}

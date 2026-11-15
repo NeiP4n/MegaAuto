@@ -13,6 +13,9 @@ import {
   SvgSparkles,
   SvgBot,
   SvgRefresh,
+  SvgCheck,
+  SvgZap,
+  SvgMessageCircle,
 } from "../icons";
 import { playReadyChime } from "./SoundEffect";
 
@@ -104,15 +107,15 @@ export function RadarNavPanel({ status, isLoading, onRefresh }: RadarNavPanelPro
               {isBusy ? (
                 <>
                   <span className="animate-ping absolute inline-flex h-6 w-6 rounded-full bg-amber-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-6 w-6 bg-amber-500 flex items-center justify-center text-black font-bold text-xs">
-                    ⏳
+                  <span className="relative inline-flex rounded-full h-6 w-6 bg-amber-500 flex items-center justify-center text-black">
+                    <SvgClock className="w-3.5 h-3.5" />
                   </span>
                 </>
               ) : (
                 <>
                   <span className="animate-ping absolute inline-flex h-6 w-6 rounded-full bg-emerald-400 opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-6 w-6 bg-emerald-500 flex items-center justify-center text-black font-bold text-xs">
-                    ✓
+                  <span className="relative inline-flex rounded-full h-6 w-6 bg-emerald-500 flex items-center justify-center text-black">
+                    <SvgCheck className="w-3.5 h-3.5" />
                   </span>
                 </>
               )}
@@ -121,11 +124,21 @@ export function RadarNavPanel({ status, isLoading, onRefresh }: RadarNavPanelPro
             <div className="space-y-1">
               <div className="flex items-center gap-2">
                 <span
-                  className={`text-lg font-black tracking-wide uppercase ${
+                  className={`inline-flex items-center gap-2 text-lg font-black tracking-wide uppercase ${
                     isBusy ? "text-amber-400" : "text-emerald-400"
                   }`}
                 >
-                  {isBusy ? "⛔ ИИ ЗАНЯТ — ПОДОЖДИТЕ (НЕ ПИШИТЕ)" : "🟢 ИИ СВОБОДЕН — МОЖНО ПИСАТЬ"}
+                  {isBusy ? (
+                    <>
+                      <SvgAlertTriangle className="w-5 h-5" />
+                      <span>ИИ ЗАНЯТ — ПОДОЖДИТЕ (НЕ ПИШИТЕ)</span>
+                    </>
+                  ) : (
+                    <>
+                      <SvgCheckCircle className="w-5 h-5" />
+                      <span>ИИ СВОБОДЕН — МОЖНО ПИСАТЬ</span>
+                    </>
+                  )}
                 </span>
                 <span className="text-xs px-2 py-0.5 rounded-md bg-background/60 font-mono text-muted-foreground border border-border">
                   шаг #{status.activeStepIndex ?? 0}
@@ -133,8 +146,9 @@ export function RadarNavPanel({ status, isLoading, onRefresh }: RadarNavPanelPro
               </div>
               <p className="text-sm text-foreground/90 font-medium">{status.statusDescription}</p>
               {status.toolSummary && (
-                <p className="text-xs font-mono text-amber-300 bg-black/40 px-2.5 py-1 rounded-md border border-amber-500/20 mt-1 inline-block">
-                  ⚡ {status.currentTool}: {status.toolSummary}
+                <p className="text-xs font-mono text-amber-300 bg-black/40 px-2.5 py-1 rounded-md border border-amber-500/20 mt-1 inline-flex items-center gap-1.5">
+                  <SvgZap className="w-3.5 h-3.5" />
+                  <span>{status.currentTool}: {status.toolSummary}</span>
                 </p>
               )}
             </div>
@@ -225,8 +239,9 @@ export function RadarNavPanel({ status, isLoading, onRefresh }: RadarNavPanelPro
                   </pre>
                 )}
                 {step.thinkingPreview && (
-                  <p className="text-[11px] text-muted-foreground/80 italic pl-6 truncate">
-                    💭 {step.thinkingPreview}
+                  <p className="text-[11px] text-muted-foreground/80 italic pl-6 truncate flex items-center gap-1.5">
+                    <SvgMessageCircle className="w-3 h-3 shrink-0" />
+                    <span className="truncate">{step.thinkingPreview}</span>
                   </p>
                 )}
               </div>

@@ -27,6 +27,18 @@ import {
   SvgUser,
 } from "./components/icons";
 
+interface AgentActivityEntry {
+  ts: string;
+  tool: string;
+  kind: "send" | "read" | "system";
+  ok: boolean;
+  summary: string;
+  chat_jid?: string;
+  message_id?: string;
+  recipient?: string;
+  duration_ms?: number;
+}
+
 interface RegisteredToolInfo {
   name: string;
   desc: string;
@@ -180,6 +192,7 @@ export function WhatsAppView() {
   // Error banner feedback
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [qrStalled, setQrStalled] = useState(false);
+  const [agentActivity, setAgentActivity] = useState<AgentActivityEntry[]>([]);
 
   // Account creation in progress (blocks double-click session collisions)
   const [creatingSession, setCreatingSession] = useState(false);
@@ -411,6 +424,18 @@ export function WhatsAppView() {
     }
   };
 
+  // Live feed of what agent tools do through this bridge.
+  const fetchActivity = useCallback(async () => {
+    try {
+      const res = await rpc.call("get_agent_activity", {});
+      if (res && Array.isArray(res.entries)) {
+        setAgentActivity(res.entries as AgentActivityEntry[]);
+      }
+    } catch {
+      // older server without the feed - stay quiet
+    }
+  }, [rpc]);
+
   // Mark the QR wait as stalled after 15s without a code so the pairing
   // screen can say so and offer Retry instead of spinning forever.
   useEffect(() => {
@@ -428,6 +453,7 @@ export function WhatsAppView() {
     let mounted = true;
 
     async function load() {
+      fetchActivity();
       await fetchSessions();
       const s = await fetchStatus(activeSessionId);
       if (mounted && s?.connected) {
@@ -445,6 +471,7 @@ export function WhatsAppView() {
     load();
 
     pollTimerRef.current = setInterval(async () => {
+      fetchActivity();
       const s = await fetchStatus(activeSessionId);
       if (s?.connected) {
         const cList = await fetchChats("", activeSessionId);
@@ -462,7 +489,7 @@ export function WhatsAppView() {
       mounted = false;
       if (pollTimerRef.current) clearInterval(pollTimerRef.current);
     };
-  }, [fetchStatus, fetchSessions, fetchChats, fetchMessages, activeSessionId]);
+  }, [fetchStatus, fetchSessions, fetchChats, fetchMessages, fetchActivity, activeSessionId]);
 
   // When selected chat changes, load its messages and poll them
   useEffect(() => {
@@ -695,6 +722,9 @@ export function WhatsAppView() {
   });
 
   const isTab = (t: string) => activeTab === t;
+  const agentMsgIds = new Set(
+    agentActivity.filter((a) => a.kind === "send" && a.message_id).map((a) => a.message_id as string)
+  );
 
   const connectionLabel = status.connected
     ? "Connected"
@@ -1087,6 +1117,59 @@ export function WhatsAppView() {
                   ))}
                 </div>
               </div>
+
+              {/* Live agent activity: what the AI does through this bridge */}
+              <div className="bg-[var(--wa-panel)] border border-[var(--wa-border)] rounded-lg p-5">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-[13px] font-medium text-[var(--wa-text)] uppercase tracking-wide">
+                    Agent activity
+                  </h3>
+                  <span className="text-[12px] text-[var(--wa-text-secondary)]">
+                    {agentActivity.length} events
+                  </span>
+                </div>
+                {agentActivity.length === 0 ? (
+                  <p className="text-[13px] text-[var(--wa-text-secondary)]">
+                    Nothing yet. Every tool an agent calls through this bridge shows up here in real time.
+                  </p>
+                ) : (
+                  <div className="divide-y divide-[var(--wa-border)] text-[13px] max-h-72 overflow-y-auto">
+                    {agentActivity.map((a, i) => (
+                      <div key={a.ts + i} className="py-2 flex items-start gap-2.5">
+                        <span
+                          className={`w-1.5 h-1.5 rounded-full shrink-0 mt-1.5 ${
+                            a.ok ? "bg-[var(--wa-accent-strong)]" : "bg-[var(--wa-danger)]"
+                          }`}
+                        />
+                        <div className="flex flex-col min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-mono text-[var(--wa-accent-strong)]">{a.tool}</span>
+                            {a.kind === "send" && (
+                              <span className="text-[10px] px-1.5 rounded bg-[rgba(240,179,48,0.12)] text-[var(--wa-warning)]">
+                                sent
+                              </span>
+                            )}
+                            <span className="text-[11px] text-[var(--wa-text-secondary)]">
+                              {formatTime(a.ts)}
+                              {a.duration_ms != null ? ` - ${a.duration_ms}ms` : ""}
+                            </span>
+                          </div>
+                          {a.recipient && (
+                            <span className="text-[12px] text-[var(--wa-text)] truncate">
+                              to: {a.recipient}
+                            </span>
+                          )}
+                          {a.summary && (
+                            <span className="text-[12px] text-[var(--wa-text-secondary)] break-words">
+                              {a.summary}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         ) : (
@@ -1302,8 +1385,13 @@ export function WhatsAppView() {
                                 </div>
                               )}
 
-                              {/* Time + ticks */}
+                              {/* Time + ticks (+ agent badge for tool-sent messages) */}
                               <span className="float-right flex items-center gap-1 text-[11px] mt-1 ml-2 mr-1 text-[var(--wa-text-secondary)]">
+                                {isMe && agentMsgIds.has(msg.id) && (
+                                  <span className="text-[10px] px-1 rounded bg-[rgba(83,189,235,0.12)] text-[var(--wa-tick-read)]">
+                                    agent
+                                  </span>
+                                )}
                                 {formatTime(msg.timestamp)}
                                 {isMe && <SvgCheckCheck className="w-3.5 h-3.5 text-[var(--wa-tick-read)]" />}
                               </span>

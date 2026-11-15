@@ -146,6 +146,24 @@ export const rpcContract = defineRpcContract({
       message: z.string().optional(),
     }),
   },
+  get_agent_activity: {
+    input: z.object({}).nullish(),
+    output: z.object({
+      entries: z.array(
+        z.object({
+          ts: z.string(),
+          tool: z.string(),
+          kind: z.string(),
+          ok: z.boolean(),
+          summary: z.string(),
+          chat_jid: z.string().optional(),
+          message_id: z.string().optional(),
+          recipient: z.string().optional(),
+          duration_ms: z.number().optional(),
+        })
+      ),
+    }),
+  },
   start_bridge: {
     input: z.null(),
     output: z.object({ success: z.boolean(), message: z.string() }),
@@ -983,6 +1001,9 @@ export default async function plugin(bb: BbPluginApi) {
     async restart_session(input) {
       return await bridge.restartSession(input.session_id);
     },
+    async get_agent_activity() {
+      return { entries: agentActivity };
+    },
     async start_bridge() {
       const ok = await bridge.start();
       return { success: ok, message: ok ? "Bridge started" : "Failed to start bridge" };
@@ -1022,10 +1043,101 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+  // --- Agent activity feed ---
+  // Every agent tool call is recorded here so the UI can show the user what
+  // the AI is doing through this bridge (reads, sends, diagnostics).
+  interface AgentActivityEntry {
+    ts: string;
+    tool: string;
+    kind: "send" | "read" | "system";
+    ok: boolean;
+    summary: string;
+    chat_jid?: string;
+    message_id?: string;
+    recipient?: string;
+    duration_ms?: number;
+  }
+  const agentActivity: AgentActivityEntry[] = [];
+
+  function summarizeArgs(args: unknown): string {
+    if (!args || typeof args !== "object") return "";
+    return Object.entries(args as Record<string, unknown>)
+      .map(([k, v]) => {
+        const s = typeof v === "string" ? v : JSON.stringify(v);
+        return `${k}=${s.length > 80 ? s.slice(0, 77) + "..." : s}`;
+      })
+      .join(", ");
+  }
+
+  const rawRegisterTool = bb.agents.registerTool.bind(bb.agents);
+  function registerToolLogged<S extends z.ZodTypeAny>(def: {
+    name: string;
+    description: string;
+    parameters: S;
+    presentation?: unknown;
+    execute: (args: z.infer<S>, ctx: unknown) => unknown;
+  }) {
+    const kind: AgentActivityEntry["kind"] = def.name.includes("send")
+      ? "send"
+      : def.name === "whatsapp_status"
+      ? "system"
+      : "read";
+    const origExecute = def.execute;
+    return (rawRegisterTool as (d: any) => void)({
+      ...def,
+      execute: async (args: any, ctx: any) => {
+        const started = Date.now();
+        const recipient =
+          args && typeof args.recipient === "string" ? args.recipient : undefined;
+        try {
+          const result = await origExecute(args, ctx);
+          let ok = true;
+          let chat_jid: string | undefined;
+          let message_id: string | undefined;
+          try {
+            const parsed = JSON.parse(String(result));
+            if (parsed && typeof parsed === "object") {
+              if ("success" in parsed) ok = Boolean(parsed.success);
+              if (typeof parsed.chat_jid === "string") chat_jid = parsed.chat_jid;
+              if (typeof parsed.id === "string") message_id = parsed.id;
+            }
+          } catch {
+            // Non-JSON result - treat as success.
+          }
+          agentActivity.unshift({
+            ts: new Date().toISOString(),
+            tool: def.name,
+            kind,
+            ok,
+            summary: summarizeArgs(args),
+            chat_jid,
+            message_id,
+            recipient,
+            duration_ms: Date.now() - started,
+          });
+          if (agentActivity.length > 200) agentActivity.length = 200;
+          return result;
+        } catch (e: any) {
+          agentActivity.unshift({
+            ts: new Date().toISOString(),
+            tool: def.name,
+            kind,
+            ok: false,
+            summary: `${summarizeArgs(args)} -> error: ${e?.message ?? String(e)}`,
+            recipient,
+            duration_ms: Date.now() - started,
+          });
+          if (agentActivity.length > 200) agentActivity.length = 200;
+          throw e;
+        }
+      },
+    });
+  }
+
   // --- Agent Tools ---
 
   // 1. whatsapp_status
-  bb.agents.registerTool({
+  registerToolLogged({
     name: "whatsapp_status",
     description: "Check WhatsApp multidevice bridge status, connection state, phone number, and QR code pairing status.",
     parameters: z.object({}),
@@ -1042,7 +1154,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   // 2. whatsapp_list_chats
-  bb.agents.registerTool({
+  registerToolLogged({
     name: "whatsapp_list_chats",
     description: "List recent WhatsApp chats with last message preview, timestamp, and contact names.",
     parameters: z.object({
@@ -1062,7 +1174,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   // 3. whatsapp_list_messages
-  bb.agents.registerTool({
+  registerToolLogged({
     name: "whatsapp_list_messages",
     description: "Retrieve WhatsApp messages from a chat or search by content.",
     parameters: z.object({
@@ -1082,7 +1194,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   // 4. whatsapp_search_contacts
-  bb.agents.registerTool({
+  registerToolLogged({
     name: "whatsapp_search_contacts",
     description: "Search WhatsApp contacts by name or phone number.",
     parameters: z.object({
@@ -1101,7 +1213,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   // 5. whatsapp_send_message
-  bb.agents.registerTool({
+  registerToolLogged({
     name: "whatsapp_send_message",
     description: "Send a WhatsApp text message to a specified phone number (e.g. '+1234567890') or chat JID.",
     parameters: z.object({
@@ -1121,7 +1233,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   // 6. whatsapp_send_file
-  bb.agents.registerTool({
+  registerToolLogged({
     name: "whatsapp_send_file",
     description: "Send a file (image, video, document, audio) to a WhatsApp recipient.",
     parameters: z.object({
@@ -1142,7 +1254,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   // 7. whatsapp_download_media
-  bb.agents.registerTool({
+  registerToolLogged({
     name: "whatsapp_download_media",
     description: "Download media attached to a WhatsApp message to local disk and return its path.",
     parameters: z.object({
@@ -1162,7 +1274,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   // 8. whatsapp_get_chat
-  bb.agents.registerTool({
+  registerToolLogged({
     name: "whatsapp_get_chat",
     description: "Retrieve specific chat metadata (name, last message, timestamp) by its WhatsApp JID.",
     parameters: z.object({
@@ -1182,7 +1294,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   // 9. whatsapp_get_direct_chat
-  bb.agents.registerTool({
+  registerToolLogged({
     name: "whatsapp_get_direct_chat",
     description: "Find or resolve the direct (1-on-1) WhatsApp chat JID for a given phone number.",
     parameters: z.object({
@@ -1202,7 +1314,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   // 10. whatsapp_get_contact_chats
-  bb.agents.registerTool({
+  registerToolLogged({
     name: "whatsapp_get_contact_chats",
     description: "List all WhatsApp chats (direct and group) involving a specific contact identified by JID or phone number.",
     parameters: z.object({
@@ -1221,7 +1333,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   // 11. whatsapp_get_last_interaction
-  bb.agents.registerTool({
+  registerToolLogged({
     name: "whatsapp_get_last_interaction",
     description: "Get the most recent WhatsApp message exchanged with a specific contact or in a given chat JID.",
     parameters: z.object({
@@ -1241,7 +1353,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   // 12. whatsapp_get_message_context
-  bb.agents.registerTool({
+  registerToolLogged({
     name: "whatsapp_get_message_context",
     description: "Retrieve messages immediately before and after a specific message ID to understand context.",
     parameters: z.object({

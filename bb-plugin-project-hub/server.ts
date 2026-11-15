@@ -2101,7 +2101,7 @@ export default function (bb: BbPluginApi) {
             sessionId: effectiveSessionId,
             model,
           }),
-          signal: AbortSignal.timeout(15000),
+          signal: AbortSignal.timeout(45000),
           redirect: "manual",
         });
 
@@ -2112,37 +2112,42 @@ export default function (bb: BbPluginApi) {
         } else {
           throw new Error(`HTTP ${res.status}: ${res.statusText}`);
         }
+
+        // Save assistant message to persistent history on success
+        const aiMsg: ChatMessage = {
+          id: `ai-msg-gemini-${Date.now()}`,
+          projectId: "proj-n8n-gemini-chat",
+          sender: "agent",
+          senderName: "Gemini 3.8 Flash",
+          text: reply,
+          timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          status: "delivered",
+          metadata: {
+            workflowName: "AI Chat Agent (Gemini 3.8 Flash ACP)",
+            durationMs: latencyMs,
+            status: "success",
+          },
+        };
+        store.addMessage(aiMsg);
+
+        return {
+          ok: true,
+          reply,
+          model,
+          latencyMs,
+          error: null,
+        };
       } catch (err: any) {
         latencyMs = Date.now() - start;
         errText = err?.message || "Ошибка связи с n8n AI Webhook";
-        // Intelligent fallback: Gemini Flash ACP engine response
-        reply = `### Ответ Gemini 3.8 Flash (ACP Fallback)\n\nЯ обработал ваш запрос: **"${message}"**.\n\n*(Статус связи с n8n: ${errText})*\n\nВоркфлоу **"AI Chat Agent (Gemini 3.8 Flash ACP)"** доступен в n8n на порту 5678. Готов помочь спроектировать автоматизацию!`;
+        return {
+          ok: false,
+          reply: "",
+          model,
+          latencyMs,
+          error: errText,
+        };
       }
-
-      // Save assistant message to persistent history
-      const aiMsg: ChatMessage = {
-        id: `ai-msg-gemini-${Date.now()}`,
-        projectId: "proj-n8n-gemini-chat",
-        sender: "agent",
-        senderName: "Gemini 3.8 Flash",
-        text: reply,
-        timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        status: "delivered",
-        metadata: {
-          workflowName: "AI Chat Agent (Gemini 3.8 Flash ACP)",
-          durationMs: latencyMs,
-          status: "success",
-        },
-      };
-      store.addMessage(aiMsg);
-
-      return {
-        ok: true,
-        reply,
-        model,
-        latencyMs,
-        error: errText,
-      };
     },
 
     get_ai_chat_history: async () => {
@@ -2296,7 +2301,7 @@ export default function (bb: BbPluginApi) {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
             redirect: "manual",
-            signal: AbortSignal.timeout(15000),
+            signal: AbortSignal.timeout(45000),
           });
           if (res.status >= 300 && res.status < 400) {
             return { exitCode: 1, stderr: "HTTP перенаправления запрещены для вебхуков" };

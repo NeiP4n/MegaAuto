@@ -3,16 +3,34 @@ import { z } from "zod";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import type { AgentRadarStatus, AgentStep, RadarSettings } from "./src/types";
 
 function maskSecrets(text: string): string {
   if (!text) return "";
   return text
-    .replace(/(?:api[_-]?key|token|secret|password|bearer|auth|authorization)["':\s=]+([a-zA-Z0-9_\-\.]{8,})/gi, (m, g) =>
+    .replace(/(?:api[_-]?key|token|secret|password|bearer|auth|authorization)["':\s=]+([a-zA-Z0-9_\-\.+=/]{8,})/gi, (m, g) =>
       m.replace(g, "••••••••")
     )
     .replace(/ghp_[a-zA-Z0-9]{20,}/g, "ghp_••••••••")
     .replace(/sk-[a-zA-Z0-9]{20,}/g, "sk-••••••••");
+}
+
+function readTail(filePath: string, maxBytes = 262144): string {
+  const stat = fs.statSync(filePath);
+  if (stat.size <= maxBytes) {
+    return fs.readFileSync(filePath, "utf-8");
+  }
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const buf = Buffer.alloc(maxBytes);
+    fs.readSync(fd, buf, 0, maxBytes, stat.size - maxBytes);
+    const str = buf.toString("utf-8");
+    const firstNewline = str.indexOf("\n");
+    return firstNewline >= 0 ? str.slice(firstNewline + 1) : str;
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 // ============================================================================
@@ -74,6 +92,7 @@ export const rpcContract = defineRpcContract({
     input: z
       .object({
         conversationId: z.string().optional(),
+        threadId: z.string().optional(),
       })
       .nullable()
       .optional(),
@@ -137,6 +156,30 @@ class RadarEngine {
   }
 
   /**
+   * Resolve a BB threadId (e.g. thr_9a24w3hexx) to its corresponding ACP conversationId.
+   */
+  findConversationIdByThreadId(threadId: string): string {
+    if (!threadId || !/^[\w-]+$/.test(threadId)) return "";
+    try {
+      const userProfile = process.env.USERPROFILE || process.env.HOME || os.homedir();
+      const dbPath = path.join(userProfile, ".bb", "bb.db");
+      if (!fs.existsSync(dbPath)) return "";
+      const db = new DatabaseSync(dbPath, { readOnly: true });
+      try {
+        const stmt = db.prepare(
+          "SELECT provider_thread_id FROM events WHERE thread_id = ? AND provider_thread_id IS NOT NULL ORDER BY id DESC LIMIT 1"
+        );
+        const row = stmt.get(threadId) as { provider_thread_id?: string } | undefined;
+        return row?.provider_thread_id || "";
+      } finally {
+        db.close();
+      }
+    } catch {
+      return "";
+    }
+  }
+
+  /**
    * Automatically locate the most recently active conversation directory.
    */
   findActiveConversationId(): string {
@@ -167,7 +210,7 @@ class RadarEngine {
     }
   }
 
-  parseTranscript(conversationId?: string): {
+  parseTranscript(conversationId?: string, threadId?: string): {
     convId: string;
     rawLines: any[];
     mtime: number;
@@ -177,7 +220,13 @@ class RadarEngine {
     if (conversationId && !/^[\w-]+$/.test(conversationId)) {
       return { convId: "", rawLines: [], mtime: 0 };
     }
-    const activeId = conversationId || this.findActiveConversationId();
+    let activeId = conversationId;
+    if (!activeId && threadId) {
+      activeId = this.findConversationIdByThreadId(threadId);
+    }
+    if (!activeId) {
+      activeId = this.findActiveConversationId();
+    }
     if (!activeId) {
       return { convId: "", rawLines: [], mtime: 0 };
     }
@@ -193,7 +242,7 @@ class RadarEngine {
       if (cache && cache.file === transcriptFile && cache.mtimeMs === stat.mtimeMs && cache.size === stat.size) {
         return { convId: activeId, rawLines: cache.rawLines, mtime: stat.mtimeMs };
       }
-      const content = fs.readFileSync(transcriptFile, "utf-8");
+      const content = readTail(transcriptFile, 262144);
       const lines = content
         .split("\n")
         .map((l) => l.trim())
@@ -217,8 +266,8 @@ class RadarEngine {
     }
   }
 
-  getStatus(conversationId?: string): z.infer<typeof agentRadarStatusSchema> {
-    const { convId, rawLines, mtime } = this.parseTranscript(conversationId);
+  getStatus(conversationId?: string, threadId?: string): z.infer<typeof agentRadarStatusSchema> {
+    const { convId, rawLines, mtime } = this.parseTranscript(conversationId, threadId);
 
     if (rawLines.length === 0) {
       return {
@@ -264,12 +313,12 @@ class RadarEngine {
 
       let thinkingPreview: string | undefined = undefined;
       if (line.thinking && typeof line.thinking === "string") {
-        thinkingPreview = line.thinking.slice(0, 160).trim();
+        thinkingPreview = maskSecrets(line.thinking.slice(0, 160).trim());
       }
 
       let contentPreview: string | undefined = undefined;
       if (line.content && typeof line.content === "string") {
-        contentPreview = line.content.slice(0, 140).trim();
+        contentPreview = maskSecrets(line.content.slice(0, 140).trim());
       }
 
       steps.push({
@@ -310,7 +359,7 @@ class RadarEngine {
 
     const hasTools = Array.isArray(last.tool_calls) && last.tool_calls.length > 0;
 
-    if (last.type === "PLANNER_RESPONSE" && hasTools) {
+    if (last.type === "PLANNER_RESPONSE" && hasTools && recentActivitySilenceSeconds < 120) {
       state = "executing_tool";
       canWrite = false;
       const tName = lastStep.toolName || "команду";
@@ -318,6 +367,11 @@ class RadarEngine {
       statusDescription = lastStep.toolSummary
         ? `Действие: "${lastStep.toolSummary}" — пожалуйста, подождите, не пишите.`
         : "Идет исполнение системного инструмента. Подождите окончания шага.";
+    } else if (last.type === "PLANNER_RESPONSE" && hasTools && recentActivitySilenceSeconds >= 120) {
+      state = "idle";
+      canWrite = true;
+      statusLabel = "ИИ готов к диалогу (МОЖНО ПИСАТЬ)";
+      statusDescription = "Предыдущее действие завершилось или не отвечает. Можно отправлять новые сообщения.";
     } else if (last.type === "GENERIC" && recentActivitySilenceSeconds < 120) {
       state = "thinking";
       canWrite = false;
@@ -370,7 +424,7 @@ export default function (bb: BbPluginApi) {
   // 1. REGISTER RPC METHODS
   bb.rpc.register(rpcContract, {
     get_radar_status: async (input) => {
-      return sanitizeRpc(radarEngine.getStatus(input?.conversationId));
+      return sanitizeRpc(radarEngine.getStatus(input?.conversationId, input?.threadId));
     },
 
     get_radar_timeline: async (input) => {

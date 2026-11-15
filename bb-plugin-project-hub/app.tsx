@@ -391,10 +391,32 @@ export function ProjectHubView() {
           setChatMessages((prev) => [...prev, aiMsg]);
           return { ok: true };
         } else {
-          return { ok: false, error: res?.error || "Ошибка n8n AI воркфлоу" };
+          const errMsg = res?.error || "Ошибка n8n AI воркфлоу";
+          const errCard: ChatMessage = {
+            id: `ai-msg-err-${Date.now()}`,
+            projectId: "proj-n8n-gemini-chat",
+            sender: "system",
+            senderName: "Система",
+            text: `⚠️ **Ошибка связи с n8n AI воркфлоу:** ${errMsg}\n\nУбедитесь, что воркфлоу активирован в n8n (http://localhost:5678).`,
+            timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+            status: "sent",
+          };
+          setChatMessages((prev) => [...prev, errCard]);
+          return { ok: false, error: errMsg };
         }
       } catch (err: any) {
-        return { ok: false, error: err?.message || "Сетевой сбой при обращении к n8n" };
+        const errMsg = err?.message || "Сетевой сбой при обращении к n8n";
+        const errCard: ChatMessage = {
+          id: `ai-msg-err-${Date.now()}`,
+          projectId: "proj-n8n-gemini-chat",
+          sender: "system",
+          senderName: "Система",
+          text: `⚠️ **Сетевой сбой:** ${errMsg}`,
+          timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+          status: "sent",
+        };
+        setChatMessages((prev) => [...prev, errCard]);
+        return { ok: false, error: errMsg };
       } finally {
         setIsSendingChat(false);
       }

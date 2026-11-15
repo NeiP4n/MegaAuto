@@ -1,11 +1,11 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
+import { definePluginApp, useRpc, useComposer } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import type { AgentRadarStatus } from "./src/types";
 import { ComposerStatusBanner } from "./src/components/ComposerStatusBanner";
 import { RadarNavPanel } from "./src/components/RadarNavPanel";
 
-function useRadarStatus() {
+function useRadarStatus(threadId?: string) {
   const rpc = useRpc<typeof rpcContract>();
   const [status, setStatus] = useState<AgentRadarStatus | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -13,7 +13,7 @@ function useRadarStatus() {
   const fetchStatus = useCallback(async () => {
     setIsLoading(true);
     try {
-      const res = await rpc.call("get_radar_status", {});
+      const res = await rpc.call("get_radar_status", { threadId });
       if (res) {
         setStatus(res);
       }
@@ -22,7 +22,7 @@ function useRadarStatus() {
     } finally {
       setIsLoading(false);
     }
-  }, [rpc]);
+  }, [rpc, threadId]);
 
   useEffect(() => {
     fetchStatus();
@@ -35,7 +35,9 @@ function useRadarStatus() {
 
 // Composer Banner Wrapper (renders natively directly inside the chat prompt card)
 function ComposerStatusBannerWrapper() {
-  const { status } = useRadarStatus();
+  const composer = useComposer();
+  const threadId = composer.scope.kind === "thread" ? composer.scope.threadId : undefined;
+  const { status } = useRadarStatus(threadId);
   return <ComposerStatusBanner status={status} />;
 }
 

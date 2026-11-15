@@ -488,6 +488,7 @@ export class WhatsAppBridgeController {
       };
       const verAsset = data.assets?.find((a) => a.name === "bridge-version.txt");
       const exeAsset = data.assets?.find((a) => a.name === "whatsapp-bridge.exe");
+      const shaAsset = data.assets?.find((a) => a.name === "whatsapp-bridge.exe.sha256" || a.name === "sha256.txt");
       if (!verAsset || !exeAsset) return;
 
       const verRes = await fetch(verAsset.browser_download_url, {
@@ -499,6 +500,18 @@ export class WhatsAppBridgeController {
       const currentSha = fs.existsSync(shaPath) ? fs.readFileSync(shaPath, "utf8").trim() : "";
       if (!latestSha || latestSha === currentSha) return;
 
+      let expectedSha256 = "";
+      if (shaAsset) {
+        const shaRes = await fetch(shaAsset.browser_download_url, { signal: AbortSignal.timeout(8000) });
+        if (shaRes.ok) {
+          const txt = (await shaRes.text()).trim();
+          const match = txt.match(/[a-fA-F0-9]{64}/);
+          if (match) expectedSha256 = match[0].toLowerCase();
+        }
+      } else if (/^[a-fA-F0-9]{64}$/.test(latestSha)) {
+        expectedSha256 = latestSha.toLowerCase();
+      }
+
       const exeRes = await fetch(exeAsset.browser_download_url, {
         redirect: "follow",
         signal: AbortSignal.timeout(180000),
@@ -508,10 +521,24 @@ export class WhatsAppBridgeController {
       // Sanity: a real build is tens of MB; never swap in an error page.
       if (buf.length < 1_000_000) return;
 
+      if (expectedSha256) {
+        const actualSha256 = crypto.createHash("sha256").update(buf).digest("hex").toLowerCase();
+        if (actualSha256 !== expectedSha256) {
+          this.lastError = `Checksum mismatch for downloaded bridge binary: expected ${expectedSha256}, got ${actualSha256}. Aborting update.`;
+          return;
+        }
+      }
+
       const tmp = this.bridgeExe + ".download";
-      fs.writeFileSync(tmp, buf);
-      fs.renameSync(tmp, this.bridgeExe);
-      fs.writeFileSync(shaPath, latestSha);
+      try {
+        fs.writeFileSync(tmp, buf);
+        fs.renameSync(tmp, this.bridgeExe);
+        fs.writeFileSync(shaPath, latestSha);
+      } finally {
+        if (fs.existsSync(tmp)) {
+          try { fs.unlinkSync(tmp); } catch {}
+        }
+      }
     } catch {
       // Offline, rate limit, missing release - keep the current binary.
     }

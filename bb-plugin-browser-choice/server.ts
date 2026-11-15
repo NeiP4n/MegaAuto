@@ -1,6 +1,9 @@
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { createRequire } from "node:module";
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs";
 
 // Dynamic runtime import of Patchright (Playwright's undetected stealth fork)
 function getPatchright() {
@@ -200,17 +203,13 @@ class BrowserController {
   private tabs: Map<string, TabState> = new Map();
   private activeTabId = "";
   private tabCounter = 0;
-  public currentThreadId = "thr_ewfspnvvtc";
+  public currentThreadId = "default";
 
   constructor(private log: (msg: string) => void) {}
 
   public getUserDataDir(): string {
-    const os = require("node:os");
-    const path = require("node:path");
-    const fs = require("node:fs");
-
     // Default / Main thread preserves existing WhatsApp session in patchright-chrome-profile
-    if (!this.currentThreadId || this.currentThreadId === "thr_ewfspnvvtc" || this.currentThreadId === "main") {
+    if (!this.currentThreadId || this.currentThreadId === "default" || this.currentThreadId === "main") {
       return path.join(os.homedir(), ".bb", "patchright-chrome-profile");
     }
 

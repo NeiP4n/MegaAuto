@@ -37,8 +37,12 @@ export function AiChatTab({
   const handleSend = async () => {
     const text = inputText.trim();
     if (!text || isSending) return;
+    const prevText = inputText;
     setInputText("");
-    await onSendMessage(text);
+    const res = await onSendMessage(text);
+    if (res && !res.ok) {
+      setInputText(prevText);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {

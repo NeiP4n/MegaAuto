@@ -844,10 +844,14 @@ export function WhatsAppView() {
         setTimeout(() => fetchMessages(selectedChat.jid, activeSessionId), 600);
       } else {
         setMessages((prev) => prev.filter((m) => m.id !== tempId));
+        setMessageInput(text);
+        if (att) setAttachment(att);
         setErrorMessage(res.message || "Failed to deliver message. Check bridge connection.");
       }
     } catch (e: any) {
       setMessages((prev) => prev.filter((m) => m.id !== tempId));
+      setMessageInput(text);
+      if (att) setAttachment(att);
       setErrorMessage(e?.message || "Communication error with WhatsApp bridge.");
     } finally {
       setSending(false);

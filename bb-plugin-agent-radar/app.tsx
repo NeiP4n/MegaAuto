@@ -2,11 +2,9 @@ import React, { useEffect, useState, useCallback } from "react";
 import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import type { AgentRadarStatus } from "./src/types";
-import { RadarOverlay } from "./src/components/RadarOverlay";
-import { RadarSegment } from "./src/components/RadarSegment";
+import { ComposerStatusBanner } from "./src/components/ComposerStatusBanner";
 import { RadarNavPanel } from "./src/components/RadarNavPanel";
 
-// Global hook for polling radar status across all mounted slots
 function useRadarStatus() {
   const rpc = useRpc<typeof rpcContract>();
   const [status, setStatus] = useState<AgentRadarStatus | null>(null);
@@ -25,7 +23,6 @@ function useRadarStatus() {
 
   useEffect(() => {
     fetchStatus();
-    // 1.5s live polling interval for instant feedback
     const interval = setInterval(fetchStatus, 1500);
     return () => clearInterval(interval);
   }, [fetchStatus]);
@@ -33,49 +30,33 @@ function useRadarStatus() {
   return { status, isLoading, refresh: fetchStatus };
 }
 
-// 1. App Overlay Wrapper
-function AppOverlayView() {
-  const { status, refresh } = useRadarStatus();
-  return <RadarOverlay status={status} onRefresh={refresh} />;
-}
-
-// 2. Thread Composer Context Segment Wrapper
-function ThreadContextSegmentSummary(props: any) {
+// Composer Banner Wrapper (renders natively directly inside the chat prompt card)
+function ComposerStatusBannerWrapper() {
   const { status } = useRadarStatus();
-  return <RadarSegment status={status} isExpanded={props.isExpanded} onToggle={props.onToggle} />;
+  return <ComposerStatusBanner status={status} />;
 }
 
-// 3. Nav Panel & Thread Tab View
+// Nav Panel & Tab
 function NavPanelView() {
   const { status, isLoading, refresh } = useRadarStatus();
   return <RadarNavPanel status={status} isLoading={isLoading} onRefresh={refresh} />;
 }
 
 export default definePluginApp((app) => {
-  // 1. Floating App Overlay (visible everywhere in the app)
-  app.slots.experimental_appOverlay({
-    id: "agent-radar-hud",
-    component: AppOverlayView,
+  // 1. Native Composer Customization (renders seamlessly inside the prompt input box)
+  app.composer.customize({
+    id: "agent-status",
+    scopes: ["thread"],
+    banners: [
+      {
+        id: "status-strip",
+        chrome: "bare",
+        component: ComposerStatusBannerWrapper,
+      },
+    ],
   });
 
-  // 2. Composer Context Segment (visible directly above the prompt input)
-  app.slots.experimental_threadContextSegment({
-    id: "agent-radar-segment",
-    title: "Радар занятости ИИ",
-    group: "agent-radar",
-    order: 0,
-    summary: ThreadContextSegmentSummary,
-  });
-
-  // 3. Thread Context Card Row (visible in thread pane details)
-  app.slots.experimental_threadContextCardRow({
-    id: "agent-radar-card-row",
-    group: "activity",
-    order: 0,
-    component: ThreadContextSegmentSummary,
-  });
-
-  // 4. Left Navigation Bar Panel
+  // 2. Left Navigation Bar Panel
   app.slots.navPanel({
     id: "agent-radar",
     title: "Agent Radar",
@@ -84,7 +65,7 @@ export default definePluginApp((app) => {
     component: NavPanelView,
   });
 
-  // 4. Thread Header Tab
+  // 3. Thread Tab
   app.slots.experimental_tab({
     context: { kind: "thread" },
     availability: "fixed",

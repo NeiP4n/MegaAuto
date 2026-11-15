@@ -18,13 +18,14 @@ export interface WhatsAppSessionInfo {
   connected: boolean;
   qr: string;
   is_active: boolean;
+  error?: string;
 }
 
 export interface WhatsAppStatus {
   session_id?: string;
   running: boolean;
   connected: boolean;
-  status: "connected" | "needs_scan" | "connecting" | "stopped" | "error";
+  status: "connected" | "needs_scan" | "connecting" | "stopped" | "error" | "logged_out";
   phone: string;
   qr: string;
   qrDataUrl: string | null;
@@ -70,7 +71,7 @@ export const rpcContract = defineRpcContract({
       session_id: z.string().optional(),
       running: z.boolean(),
       connected: z.boolean(),
-      status: z.enum(["connected", "needs_scan", "connecting", "stopped", "error"]),
+      status: z.enum(["connected", "needs_scan", "connecting", "stopped", "error", "logged_out"]),
       phone: z.string(),
       qr: z.string(),
       qrDataUrl: z.string().nullable(),
@@ -132,6 +133,13 @@ export const rpcContract = defineRpcContract({
     }),
   },
   delete_session: {
+    input: z.object({ session_id: z.string() }),
+    output: z.object({
+      success: z.boolean(),
+      message: z.string().optional(),
+    }),
+  },
+  restart_session: {
     input: z.object({ session_id: z.string() }),
     output: z.object({
       success: z.boolean(),
@@ -389,6 +397,25 @@ class WhatsAppBridgeController {
     }
   }
 
+  public async restartSession(sessionId: string): Promise<{ success: boolean; message?: string }> {
+    await this.ensureRunning();
+    try {
+      const res = await fetch("http://127.0.0.1:8080/api/sessions/restart", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId }),
+        signal: AbortSignal.timeout(10000),
+      });
+      if (res.ok) {
+        return { success: true };
+      }
+      const errText = await res.text();
+      return { success: false, message: errText };
+    } catch (e: unknown) {
+      return { success: false, message: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
   public async switchSession(sessionId: string): Promise<{ success: boolean; active?: string; message?: string }> {
     await this.ensureRunning();
     try {
@@ -453,7 +480,7 @@ class WhatsAppBridgeController {
         }
 
         const rawStatus = data.status as string | undefined;
-        const validStatuses = ["connected", "needs_scan", "connecting", "stopped", "error"] as const;
+        const validStatuses = ["connected", "needs_scan", "connecting", "stopped", "error", "logged_out"] as const;
         const resolvedStatus = validStatuses.includes(rawStatus as typeof validStatuses[number])
           ? (rawStatus as WhatsAppStatus["status"])
           : (data.connected ? "connected" : "connecting");
@@ -467,7 +494,10 @@ class WhatsAppBridgeController {
           qr: qrString,
           qrDataUrl,
           serverTime: typeof data.server_time === "string" ? data.server_time : new Date().toISOString(),
-          error: this.lastError,
+          error:
+            typeof data.error === "string" && data.error
+              ? data.error
+              : this.lastError,
           sessions: Array.isArray(data.sessions) ? (data.sessions as WhatsAppSessionInfo[]) : undefined,
         };
       }
@@ -837,6 +867,9 @@ export default async function plugin(bb: BbPluginApi) {
     },
     async delete_session(input) {
       return await bridge.deleteSession(input.session_id);
+    },
+    async restart_session(input) {
+      return await bridge.restartSession(input.session_id);
     },
     async start_bridge() {
       const ok = await bridge.start();

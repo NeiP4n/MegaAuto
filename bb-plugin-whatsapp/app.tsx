@@ -171,6 +171,7 @@ export function WhatsAppView() {
 
   // Error banner feedback
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [qrStalled, setQrStalled] = useState(false);
 
   // Account creation in progress (blocks double-click session collisions)
   const [creatingSession, setCreatingSession] = useState(false);
@@ -298,11 +299,46 @@ export function WhatsAppView() {
     }
   };
 
+  // Retry pairing / recover a stuck session: rebuild the client in place.
+  const handleRetrySession = useCallback(async () => {
+    setQrStalled(false);
+    try {
+      await rpc.call("restart_session", { session_id: activeSessionId });
+    } catch (e) {
+      console.error("restart_session failed:", e);
+    }
+    await fetchStatus(activeSessionId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rpc, activeSessionId]);
+
   const handleCreateSession = async (name?: string) => {
     if (creatingSession) return;
     setCreatingSession(true);
     setErrorMessage(null);
     try {
+      // Reuse an existing unpaired session instead of spawning a new junk
+      // account tab on every click.
+      const unpaired = sessions.find((s) => !s.phone && !s.connected);
+      if (unpaired) {
+        setActiveSessionId(unpaired.id);
+        try {
+          localStorage.setItem("bb_whatsapp_active_session", unpaired.id);
+        } catch {}
+        setSelectedChat(null);
+        setMessages([]);
+        setActiveTab("chats");
+        setStatus((prev) => ({
+          ...prev,
+          session_id: unpaired.id,
+          connected: false,
+          status: "connecting",
+          phone: "",
+          qr: "",
+          qrDataUrl: null,
+        }));
+        await fetchStatus(unpaired.id);
+        return;
+      }
       // The RPC runtime rejects undefined property values ("not a JSON
       // value"), so omit `name` entirely when no label was given.
       const res = await rpc.call("create_session", name ? { name } : {});
@@ -326,6 +362,9 @@ export function WhatsAppView() {
           qr: "",
           qrDataUrl: null,
         }));
+        // Bridge no longer switches the active account on create; make the
+        // bridge-side active pointer follow the UI's choice explicitly.
+        rpc.call("switch_session", { session_id: newSid }).catch(() => {});
         const s = await fetchStatus(newSid);
         // A stale bridge binary silently falls back to the active account for
         // unknown session ids; detect that instead of showing "nothing happened".
@@ -363,6 +402,18 @@ export function WhatsAppView() {
       console.error("Failed to delete session:", err);
     }
   };
+
+  // Mark the QR wait as stalled after 15s without a code so the pairing
+  // screen can say so and offer Retry instead of spinning forever.
+  useEffect(() => {
+    if (status.connected || status.qrDataUrl || status.phone || status.status === "stopped" || status.status === "error") {
+      setQrStalled(false);
+      return;
+    }
+    setQrStalled(false);
+    const t = setTimeout(() => setQrStalled(true), 15000);
+    return () => clearTimeout(t);
+  }, [status.connected, status.qrDataUrl, status.phone, status.status, status.session_id]);
 
   // Initial load and periodic polling
   useEffect(() => {
@@ -595,6 +646,8 @@ export function WhatsAppView() {
     ? "Connected"
     : status.status === "needs_scan"
     ? "Pairing needed"
+    : status.status === "logged_out"
+    ? "Logged out"
     : status.status === "stopped"
     ? "Bridge stopped"
     : status.status === "error"
@@ -626,6 +679,8 @@ export function WhatsAppView() {
                     ? "bg-[var(--wa-accent-strong)]"
                     : sess.status === "needs_scan"
                     ? "bg-[var(--wa-warning)] animate-pulse"
+                    : sess.status === "logged_out"
+                    ? "bg-[var(--wa-danger)]"
                     : "bg-[var(--wa-text-secondary)]"
                 }`}
                 title={sess.status}
@@ -672,6 +727,8 @@ export function WhatsAppView() {
                 ? "bg-[var(--wa-accent-strong)]"
                 : status.status === "needs_scan"
                 ? "bg-[var(--wa-warning)] animate-pulse"
+                : status.status === "logged_out"
+                ? "bg-[var(--wa-danger)]"
                 : "bg-[var(--wa-text-secondary)]"
             }`}
           />
@@ -722,76 +779,140 @@ export function WhatsAppView() {
           /* ---------- PAIRING / CONNECTING SCREEN ---------- */
           <div className="wa-chat-doodle flex-1 flex flex-col items-center justify-center p-6 overflow-y-auto">
             <div className="max-w-sm w-full bg-[var(--wa-panel)] border border-[var(--wa-border)] rounded-lg p-8 flex flex-col items-center text-center shadow-lg">
-              <div className="w-12 h-12 rounded-full bg-[var(--wa-panel-raised)] flex items-center justify-center text-[var(--wa-accent-strong)] mb-4">
-                <SvgWhatsApp className="w-6 h-6" />
-              </div>
-
-              <h2 className="text-lg font-light text-[var(--wa-text)] mb-1">
-                Link WhatsApp to Blackbox
-              </h2>
-              <p className="text-[13px] text-[var(--wa-text-secondary)] mb-6 leading-relaxed">
-                Scan the QR code with your phone to enable chats and agent tools.
-              </p>
-
-              <div className="bg-white p-3 rounded-lg mb-6 flex items-center justify-center w-[264px] h-[264px]">
-                {status.qrDataUrl ? (
-                  <img
-                    src={status.qrDataUrl}
-                    alt="Pairing QR code"
-                    className="w-60 h-60 select-none"
-                  />
-                ) : (
-                  <div className="flex flex-col items-center justify-center gap-2 text-neutral-500">
-                    <SvgRefresh className="w-6 h-6 animate-spin" />
-                    <span className="text-xs">
-                      {status.status === "stopped"
-                        ? "Bridge is stopped"
-                        : status.status === "error"
-                        ? "Bridge error"
-                        : "Requesting QR code..."}
-                    </span>
+              {status.status === "logged_out" ? (
+                /* Account was force-logged-out: credentials are dead, re-pair */
+                <>
+                  <div className="w-12 h-12 rounded-full bg-[rgba(241,92,109,0.12)] flex items-center justify-center text-[var(--wa-danger)] mb-4">
+                    <SvgAlertTriangle className="w-6 h-6" />
                   </div>
-                )}
-              </div>
+                  <h2 className="text-lg font-light text-[var(--wa-text)] mb-1">
+                    Account logged out
+                  </h2>
+                  <p className="text-[13px] text-[var(--wa-text-secondary)] mb-6 leading-relaxed">
+                    WhatsApp closed this session{status.phone ? ` (+${status.phone})` : ""}. This usually happens when a second bridge instance used the same account. Start pairing again to get a fresh QR code.
+                  </p>
+                  {status.error && (
+                    <div className="w-full mb-4 px-3 py-2 rounded-md bg-[rgba(241,92,109,0.1)] border border-[rgba(241,92,109,0.3)] text-[12px] text-[var(--wa-danger)] text-left break-words">
+                      {status.error}
+                    </div>
+                  )}
+                  <button
+                    onClick={handleRetrySession}
+                    className="w-full py-2 px-4 bg-[var(--wa-accent)] hover:bg-[var(--wa-accent-strong)] text-[#111b21] rounded-full text-[14px] font-medium transition-colors"
+                  >
+                    Re-pair account
+                  </button>
+                </>
+              ) : status.phone ? (
+                /* Paired but offline: reconnecting, NO QR exists for this state */
+                <>
+                  <div className="w-12 h-12 rounded-full bg-[var(--wa-panel-raised)] flex items-center justify-center text-[var(--wa-accent-strong)] mb-4">
+                    <SvgRefresh className="w-6 h-6 animate-spin" />
+                  </div>
+                  <h2 className="text-lg font-light text-[var(--wa-text)] mb-1">
+                    Reconnecting to WhatsApp
+                  </h2>
+                  <p className="text-[13px] text-[var(--wa-text-secondary)] mb-6 leading-relaxed">
+                    +{status.phone} is still paired. The bridge is restoring the connection; this usually takes a few seconds. No QR code is needed.
+                  </p>
+                  {status.error && (
+                    <div className="w-full mb-4 px-3 py-2 rounded-md bg-[rgba(241,92,109,0.1)] border border-[rgba(241,92,109,0.3)] text-[12px] text-[var(--wa-danger)] text-left break-words">
+                      {status.error}
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2.5 w-full">
+                    <button
+                      onClick={() => fetchStatus()}
+                      className="flex-1 py-2 px-4 bg-[var(--wa-accent)] hover:bg-[var(--wa-accent-strong)] text-[#111b21] rounded-full text-[14px] font-medium transition-colors"
+                    >
+                      Check now
+                    </button>
+                    <button
+                      onClick={handleRetrySession}
+                      className="py-2 px-4 border border-[var(--wa-border)] text-[var(--wa-text-secondary)] hover:bg-[var(--wa-hover)] rounded-full text-[14px] transition-colors"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                </>
+              ) : (
+                /* Unpaired: real pairing flow with QR */
+                <>
+                  <div className="w-12 h-12 rounded-full bg-[var(--wa-panel-raised)] flex items-center justify-center text-[var(--wa-accent-strong)] mb-4">
+                    <SvgWhatsApp className="w-6 h-6" />
+                  </div>
 
-              {status.error && (
-                <div className="w-full mb-4 px-3 py-2 rounded-md bg-[rgba(241,92,109,0.1)] border border-[rgba(241,92,109,0.3)] text-[12px] text-[var(--wa-danger)] text-left break-words">
-                  {status.error}
-                </div>
+                  <h2 className="text-lg font-light text-[var(--wa-text)] mb-1">
+                    Link WhatsApp to Blackbox
+                  </h2>
+                  <p className="text-[13px] text-[var(--wa-text-secondary)] mb-6 leading-relaxed">
+                    Scan the QR code with your phone to enable chats and agent tools.
+                  </p>
+
+                  <div className="bg-white p-3 rounded-lg mb-6 flex items-center justify-center w-[264px] h-[264px]">
+                    {status.qrDataUrl ? (
+                      <img
+                        src={status.qrDataUrl}
+                        alt="Pairing QR code"
+                        className="w-60 h-60 select-none"
+                      />
+                    ) : (
+                      <div className="flex flex-col items-center justify-center gap-2 text-neutral-500">
+                        <SvgRefresh className="w-6 h-6 animate-spin" />
+                        <span className="text-xs">
+                          {status.status === "stopped"
+                            ? "Bridge is stopped"
+                            : status.status === "error"
+                            ? "Bridge error"
+                            : "Requesting QR code..."}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  {qrStalled && !status.qrDataUrl && (
+                    <div className="w-full mb-4 px-3 py-2 rounded-md bg-[rgba(240,179,48,0.1)] border border-[rgba(240,179,48,0.35)] text-[12px] text-[var(--wa-warning)] text-left break-words">
+                      No QR code yet. The bridge may be stuck or an outdated whatsapp-bridge.exe is still running. Try pairing again; if it repeats, rebuild the exe (bridge\go build -o whatsapp-bridge.exe .).
+                    </div>
+                  )}
+
+                  {status.error && (
+                    <div className="w-full mb-4 px-3 py-2 rounded-md bg-[rgba(241,92,109,0.1)] border border-[rgba(241,92,109,0.3)] text-[12px] text-[var(--wa-danger)] text-left break-words">
+                      {status.error}
+                    </div>
+                  )}
+
+                  <div className="w-full text-left text-[13px] space-y-2.5 text-[var(--wa-text-secondary)] mb-6">
+                    <div className="flex items-center gap-3">
+                      <span className="w-5 h-5 rounded-full border border-[var(--wa-accent)] text-[var(--wa-accent-strong)] text-[11px] flex items-center justify-center shrink-0">1</span>
+                      <span>Open WhatsApp on your phone</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="w-5 h-5 rounded-full border border-[var(--wa-accent)] text-[var(--wa-accent-strong)] text-[11px] flex items-center justify-center shrink-0">2</span>
+                      <span>Tap Settings &gt; Linked devices</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="w-5 h-5 rounded-full border border-[var(--wa-accent)] text-[var(--wa-accent-strong)] text-[11px] flex items-center justify-center shrink-0">3</span>
+                      <span>Tap Link a device and point your camera at the code</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2.5 w-full">
+                    <button
+                      onClick={() => fetchStatus()}
+                      className="flex-1 py-2 px-4 bg-[var(--wa-accent)] hover:bg-[var(--wa-accent-strong)] text-[#111b21] rounded-full text-[14px] font-medium transition-colors"
+                    >
+                      I scanned it
+                    </button>
+                    <button
+                      onClick={handleRetrySession}
+                      className="py-2 px-4 border border-[var(--wa-border)] text-[var(--wa-text-secondary)] hover:bg-[var(--wa-hover)] rounded-full text-[14px] transition-colors"
+                    >
+                      Retry pairing
+                    </button>
+                  </div>
+                </>
               )}
-
-              <div className="w-full text-left text-[13px] space-y-2.5 text-[var(--wa-text-secondary)] mb-6">
-                <div className="flex items-center gap-3">
-                  <span className="w-5 h-5 rounded-full border border-[var(--wa-accent)] text-[var(--wa-accent-strong)] text-[11px] flex items-center justify-center shrink-0">1</span>
-                  <span>Open WhatsApp on your phone</span>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="w-5 h-5 rounded-full border border-[var(--wa-accent)] text-[var(--wa-accent-strong)] text-[11px] flex items-center justify-center shrink-0">2</span>
-                  <span>Tap Settings &gt; Linked devices</span>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="w-5 h-5 rounded-full border border-[var(--wa-accent)] text-[var(--wa-accent-strong)] text-[11px] flex items-center justify-center shrink-0">3</span>
-                  <span>Tap Link a device and point your camera at the code</span>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2.5 w-full">
-                <button
-                  onClick={() => fetchStatus()}
-                  className="flex-1 py-2 px-4 bg-[var(--wa-accent)] hover:bg-[var(--wa-accent-strong)] text-[#111b21] rounded-full text-[14px] font-medium transition-colors"
-                >
-                  I scanned it
-                </button>
-                <button
-                  onClick={async () => {
-                    await rpc.call("restart_bridge");
-                    fetchStatus();
-                  }}
-                  className="py-2 px-4 border border-[var(--wa-border)] text-[var(--wa-text-secondary)] hover:bg-[var(--wa-hover)] rounded-full text-[14px] transition-colors"
-                >
-                  Restart bridge
-                </button>
-              </div>
             </div>
           </div>
         ) : activeTab === "tools" ? (

@@ -414,7 +414,10 @@ class HubStore {
 
   public save(data?: StoreData): void {
     try {
-      fs.writeFileSync(this.storeFile, JSON.stringify(data || this.data, null, 2), "utf-8");
+      fs.writeFileSync(this.storeFile, JSON.stringify(data || this.data, null, 2), {
+        encoding: "utf-8",
+        mode: 0o600,
+      });
     } catch {
       // ignore
     }
@@ -693,18 +696,33 @@ function isLocalPort5678(u: string): boolean {
   return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]):5678(\/|\?|$)/i.test(u.trim());
 }
 
-function sanitizeWebhookPath(rawPath: string): string | null {
+function buildSafeWebhookUrl(baseUrl: string, rawPath: string): string | null {
   if (!rawPath || typeof rawPath !== "string") return null;
   const trimmed = rawPath.trim();
   // Reject directory traversal or path manipulation before normalization
   if (trimmed.includes("..") || trimmed.includes("\\")) return null;
   if (/^[a-z0-9+.-]+:\/\//i.test(trimmed)) return null;
-  const normalized = path.posix.normalize("/" + trimmed.replace(/^[\/\\]+/, ""));
-  if (normalized.includes("..")) return null;
-  if (normalized.startsWith("/webhook/") || normalized.startsWith("/webhook-test/")) {
-    return normalized;
+
+  try {
+    let cleanPath = trimmed;
+    if (!cleanPath.startsWith("/") && !cleanPath.startsWith("webhook/") && !cleanPath.startsWith("webhook-test/")) {
+      cleanPath = "webhook/" + cleanPath;
+    }
+    const base = baseUrl.replace(/\/+$/, "") + "/";
+    const parsed = new URL(cleanPath.replace(/^[\/\\]+/, ""), base);
+    const baseParsed = new URL(base);
+    // Origin must strictly match instance base URL (no SSRF / redirects)
+    if (parsed.origin !== baseParsed.origin) return null;
+    // Decode URL path to check for encoded traversal (%2e%2e, %5c, backslashes)
+    const decoded = decodeURIComponent(parsed.pathname);
+    if (decoded.includes("..") || decoded.includes("\\")) return null;
+    if (!parsed.pathname.startsWith("/webhook/") && !parsed.pathname.startsWith("/webhook-test/")) {
+      return null;
+    }
+    return parsed.toString();
+  } catch {
+    return null;
   }
-  return `/webhook${normalized.startsWith("/") ? normalized : "/" + normalized}`;
 }
 
 function readLocalSqliteWorkflowsAndExecutions(): {
@@ -801,6 +819,7 @@ const N8N_DEFAULT_ENV = {
 
 let localN8nProcess: ChildProcess | null = null;
 let isStartingServer = false;
+let serverState: "stopped" | "starting" | "running" = "stopped";
 const serverLogs: string[] = [];
 
 function appendServerLog(msg: string) {
@@ -809,6 +828,169 @@ function appendServerLog(msg: string) {
   if (serverLogs.length > 200) {
     serverLogs.shift();
   }
+}
+
+async function startLocalN8nProcess(): Promise<{ ok: boolean; message: string; pid?: number }> {
+  healthCache.clear();
+  const health = await checkN8nHealth("http://127.0.0.1:5678", undefined, true);
+  if (health.connected) {
+    serverState = "running";
+    return {
+      ok: true,
+      message: "Сервер n8n уже работает",
+      pid: localN8nProcess?.pid,
+    };
+  }
+
+  if (serverState === "starting" || isStartingServer || (localN8nProcess && !localN8nProcess.killed)) {
+    return {
+      ok: true,
+      message: "Сервер n8n уже запускается...",
+      pid: localN8nProcess?.pid,
+    };
+  }
+
+  serverState = "starting";
+  isStartingServer = true;
+  appendServerLog("Запуск локального сервера n8n (127.0.0.1:5678)...");
+  const isWin = process.platform === "win32";
+  let cmd = "n8n";
+  if (isWin) {
+    const npmPath = process.env.APPDATA ? path.join(process.env.APPDATA, "npm", "n8n.cmd") : "";
+    cmd = npmPath && fs.existsSync(npmPath) ? npmPath : "n8n.cmd";
+  }
+
+  try {
+    const child = spawn(cmd, ["start"], {
+      shell: isWin,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        ...N8N_DEFAULT_ENV,
+      },
+    });
+
+    localN8nProcess = child;
+
+    child.stdout?.on("data", (chunk: any) => {
+      const str = chunk.toString();
+      for (const line of str.split("\n")) {
+        if (line.trim()) appendServerLog(line);
+      }
+    });
+
+    child.stderr?.on("data", (chunk: any) => {
+      const str = chunk.toString();
+      for (const line of str.split("\n")) {
+        if (line.trim()) appendServerLog(line);
+      }
+    });
+
+    child.on("exit", (code: any) => {
+      appendServerLog(`Сервер n8n завершил работу (код ${code})`);
+      if (localN8nProcess === child) {
+        localN8nProcess = null;
+        serverState = "stopped";
+      }
+      isStartingServer = false;
+      healthCache.clear();
+    });
+
+    child.on("error", (err: any) => {
+      appendServerLog(`Ошибка процесса n8n: ${err.message}`);
+      if (localN8nProcess === child) {
+        localN8nProcess = null;
+        serverState = "stopped";
+      }
+      isStartingServer = false;
+      healthCache.clear();
+    });
+
+    // Wait for health check readiness with deadline (up to 15s)
+    const deadline = Date.now() + 15000;
+    let ready = false;
+    while (Date.now() < deadline) {
+      if (localN8nProcess !== child || child.killed) {
+        serverState = "stopped";
+        isStartingServer = false;
+        return {
+          ok: false,
+          message: "Процесс n8n неожиданно завершился при запуске",
+        };
+      }
+      const h = await checkN8nHealth("http://127.0.0.1:5678", undefined, true);
+      if (h.connected) {
+        ready = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 600));
+    }
+
+    isStartingServer = false;
+    serverState = "running";
+
+    if (ready) {
+      return {
+        ok: true,
+        message: "Сервер n8n успешно запущен и готов к работе",
+        pid: child.pid,
+      };
+    } else {
+      return {
+        ok: true,
+        message: `Сервер n8n запущен (PID ${child.pid}), ожидает завершения инициализации...`,
+        pid: child.pid,
+      };
+    }
+  } catch (err: any) {
+    serverState = "stopped";
+    isStartingServer = false;
+    appendServerLog(`Не удалось запустить n8n: ${err?.message}`);
+    return {
+      ok: false,
+      message: err?.message || "Ошибка запуска n8n",
+    };
+  }
+}
+
+function stopLocalN8nProcess(): { ok: boolean; message: string } {
+  appendServerLog("Остановка локального сервера n8n...");
+  healthCache.clear();
+
+  const child = localN8nProcess;
+  if (child && child.pid) {
+    const pid = child.pid;
+    try {
+      if (process.platform === "win32") {
+        spawn("taskkill", ["/pid", String(pid), "/f", "/t"]);
+      } else {
+        child.kill("SIGTERM");
+        setTimeout(() => {
+          if (!child.killed) {
+            try {
+              child.kill("SIGKILL");
+            } catch {
+              // ignore
+            }
+          }
+        }, 3000);
+      }
+      appendServerLog(`Сервер n8n остановлен (PID ${pid})`);
+    } catch (e: any) {
+      appendServerLog(`Ошибка при остановке процесса: ${e?.message}`);
+    }
+    if (localN8nProcess === child) {
+      localN8nProcess = null;
+    }
+    serverState = "stopped";
+    isStartingServer = false;
+    return { ok: true, message: `Сервер n8n остановлен (PID ${pid})` };
+  }
+
+  return {
+    ok: false,
+    message: "Сервер запущен внешне, плагин управляет только собственным процессом",
+  };
 }
 
 // Ensure cleanup on plugin/process shutdown
@@ -868,14 +1050,26 @@ async function probeN8n(
       const res = await fetch(url, { signal: controller.signal, headers });
       if (!res.ok) return null;
       let version = res.headers.get("x-n8n-version") || res.headers.get("x-version") || "";
+      let isN8n = Boolean(version);
       try {
         const data = (await res.json()) as any;
-        if (data?.version) version = String(data.version);
-        else if (data?.n8nVersion) version = String(data.n8nVersion);
-        else if (data?.status === "ok") version = version || "online";
+        if (data?.version) {
+          version = String(data.version);
+          isN8n = true;
+        } else if (data?.n8nVersion) {
+          version = String(data.n8nVersion);
+          isN8n = true;
+        } else if (data?.status === "ok") {
+          isN8n = true;
+          version = version || "online";
+        } else if (data?.versionCli || data?.instanceId) {
+          isN8n = true;
+          version = version || data?.versionCli || "online";
+        }
       } catch {
-        // not json - header version or "unknown" is fine
+        // not json - only valid if header confirmed it's n8n
       }
+      if (!isN8n) return null;
       return { version: version || "online" };
     } catch {
       return null;
@@ -1164,7 +1358,10 @@ export default function (bb: BbPluginApi) {
       const acc = store.addAccount(input);
       return {
         ok: true,
-        account: acc,
+        account: {
+          ...acc,
+          apiKey: acc.apiKey ? "••••••••" : undefined,
+        },
       };
     },
 
@@ -1172,7 +1369,12 @@ export default function (bb: BbPluginApi) {
       const acc = store.disconnectAccount(input.accountId);
       return {
         ok: !!acc,
-        account: acc,
+        account: acc
+          ? {
+              ...acc,
+              apiKey: acc.apiKey ? "••••••••" : undefined,
+            }
+          : undefined,
       };
     },
 
@@ -1491,12 +1693,10 @@ export default function (bb: BbPluginApi) {
     dispatch_webhook: async ({ accountId, path: webhookPath, method = "POST", payload }) => {
       const acc = store.getAccountById(accountId);
       if (!acc) return { ok: false, error: "Инстанс не найден" };
-      const safePath = sanitizeWebhookPath(webhookPath);
-      if (!safePath) {
+      const targetUrl = buildSafeWebhookUrl(acc.url, webhookPath);
+      if (!targetUrl) {
         return { ok: false, error: "Недопустимый путь вебхука: путь должен находиться внутри /webhook/" };
       }
-      const cleanBase = acc.url.replace(/\/+$/, "");
-      const targetUrl = `${cleanBase}${safePath}`;
       const start = Date.now();
       try {
         const headers: Record<string, string> = { "Content-Type": "application/json" };
@@ -1521,125 +1721,11 @@ export default function (bb: BbPluginApi) {
     },
 
     start_local_server: async () => {
-      healthCache.clear();
-      const health = await checkN8nHealth("http://127.0.0.1:5678", undefined, true);
-      if (health.connected) {
-        return {
-          ok: true,
-          message: "Сервер n8n уже работает",
-          pid: localN8nProcess?.pid,
-        };
-      }
-
-      if (isStartingServer || (localN8nProcess && !localN8nProcess.killed)) {
-        return {
-          ok: true,
-          message: "Сервер n8n уже запускается...",
-          pid: localN8nProcess?.pid,
-        };
-      }
-
-      isStartingServer = true;
-      appendServerLog("Запуск локального сервера n8n (127.0.0.1:5678)...");
-      const isWin = process.platform === "win32";
-      let cmd = "n8n";
-      if (isWin) {
-        const npmPath = process.env.APPDATA ? path.join(process.env.APPDATA, "npm", "n8n.cmd") : "";
-        if (npmPath && fs.existsSync(npmPath)) {
-          cmd = npmPath;
-        } else {
-          cmd = "n8n.cmd";
-        }
-      }
-
-      try {
-        localN8nProcess = spawn(cmd, ["start"], {
-          shell: isWin,
-          stdio: ["ignore", "pipe", "pipe"],
-          env: {
-            ...process.env,
-            ...N8N_DEFAULT_ENV,
-          },
-        });
-
-        localN8nProcess.stdout?.on("data", (chunk: any) => {
-          const str = chunk.toString();
-          for (const line of str.split("\n")) {
-            if (line.trim()) appendServerLog(line);
-          }
-        });
-
-        localN8nProcess.stderr?.on("data", (chunk: any) => {
-          const str = chunk.toString();
-          for (const line of str.split("\n")) {
-            if (line.trim()) appendServerLog(line);
-          }
-        });
-
-        localN8nProcess.on("exit", (code: any) => {
-          appendServerLog(`Сервер n8n завершил работу (код ${code})`);
-          localN8nProcess = null;
-          isStartingServer = false;
-          healthCache.clear();
-        });
-
-        localN8nProcess.on("error", (err: any) => {
-          appendServerLog(`Ошибка процесса n8n: ${err.message}`);
-          localN8nProcess = null;
-          isStartingServer = false;
-          healthCache.clear();
-        });
-
-        isStartingServer = false;
-        return {
-          ok: true,
-          message: "Команда запуска n8n передана",
-          pid: localN8nProcess.pid,
-        };
-      } catch (err: any) {
-        isStartingServer = false;
-        appendServerLog(`Не удалось запустить n8n: ${err?.message}`);
-        return {
-          ok: false,
-          message: err?.message || "Ошибка запуска n8n",
-        };
-      }
+      return await startLocalN8nProcess();
     },
 
     stop_local_server: async () => {
-      appendServerLog("Остановка локального сервера n8n...");
-      healthCache.clear();
-
-      if (localN8nProcess && localN8nProcess.pid) {
-        const pid = localN8nProcess.pid;
-        try {
-          if (process.platform === "win32") {
-            spawn("taskkill", ["/pid", String(pid), "/f", "/t"]);
-          } else {
-            localN8nProcess.kill("SIGTERM");
-            setTimeout(() => {
-              if (localN8nProcess && !localN8nProcess.killed) {
-                localN8nProcess.kill("SIGKILL");
-              }
-            }, 3000);
-          }
-          appendServerLog(`Сервер n8n остановлен (PID ${pid})`);
-        } catch (e: any) {
-          appendServerLog(`Ошибка при остановке процесса: ${e?.message}`);
-        }
-        localN8nProcess = null;
-        return { ok: true, message: `Сервер n8n остановлен (PID ${pid})` };
-      }
-
-      const health = await checkN8nHealth("http://127.0.0.1:5678", undefined, true);
-      if (health.connected) {
-        return {
-          ok: false,
-          message: "Сервер запущен внешне, плагин управляет только собственным процессом",
-        };
-      }
-
-      return { ok: true, message: "Сервер не запущен" };
+      return stopLocalN8nProcess();
     },
 
     get_local_server_status: async () => {
@@ -1715,6 +1801,9 @@ export default function (bb: BbPluginApi) {
           exitCode: 0,
           stdout: JSON.stringify(
             {
+              connectedAccounts: accounts.filter((a) => a.status === "online").length,
+              projects: projects.length,
+              messagesTotal: store.getTotalMessagesCount(),
               n8nConnected: health.connected,
               n8nBaseUrl: cfg.n8nBaseUrl,
               n8nVersion: health.version,
@@ -1742,54 +1831,12 @@ export default function (bb: BbPluginApi) {
           };
         }
         if (action === "start") {
-          const health = await checkN8nHealth("http://127.0.0.1:5678", undefined, true);
-          if (health.connected) {
-            return { exitCode: 0, stdout: "Сервер n8n уже запущен (http://127.0.0.1:5678)" };
-          }
-          if (isStartingServer) {
-            return { exitCode: 0, stdout: "Сервер n8n уже запускается..." };
-          }
-          isStartingServer = true;
-          appendServerLog("Запуск локального сервера n8n (CLI)...");
-          const isWin = process.platform === "win32";
-          const npmPath = process.env.APPDATA ? path.join(process.env.APPDATA, "npm", "n8n.cmd") : "";
-          const cmd = isWin && npmPath && fs.existsSync(npmPath) ? npmPath : isWin ? "n8n.cmd" : "n8n";
-          localN8nProcess = spawn(cmd, ["start"], {
-            shell: isWin,
-            stdio: ["ignore", "pipe", "pipe"],
-            env: {
-              ...process.env,
-              ...N8N_DEFAULT_ENV,
-            },
-          });
-          localN8nProcess.on("exit", () => {
-            localN8nProcess = null;
-            isStartingServer = false;
-          });
-          localN8nProcess.on("error", () => {
-            localN8nProcess = null;
-            isStartingServer = false;
-          });
-          isStartingServer = false;
-          return { exitCode: 0, stdout: `Команда запуска n8n передана (PID: ${localN8nProcess.pid})` };
+          const res = await startLocalN8nProcess();
+          return { exitCode: res.ok ? 0 : 1, stdout: res.message, stderr: res.ok ? undefined : res.message };
         }
         if (action === "stop") {
-          appendServerLog("Остановка локального сервера n8n (CLI)...");
-          if (localN8nProcess && localN8nProcess.pid) {
-            const pid = localN8nProcess.pid;
-            if (process.platform === "win32") {
-              spawn("taskkill", ["/pid", String(pid), "/f", "/t"]);
-            } else {
-              localN8nProcess.kill("SIGTERM");
-            }
-            localN8nProcess = null;
-            return { exitCode: 0, stdout: `Сервер n8n остановлен (PID: ${pid})` };
-          }
-          const health = await checkN8nHealth("http://127.0.0.1:5678", undefined, true);
-          if (health.connected) {
-            return { exitCode: 1, stderr: "Сервер запущен внешне, плагин управляет только собственным процессом." };
-          }
-          return { exitCode: 0, stdout: "Сервер n8n не был запущен" };
+          const res = stopLocalN8nProcess();
+          return { exitCode: res.ok ? 0 : 1, stdout: res.message, stderr: res.ok ? undefined : res.message };
         }
         return { exitCode: 1, stderr: "Usage: bb project-hub server [status|start|stop]" };
       }
@@ -1810,8 +1857,9 @@ export default function (bb: BbPluginApi) {
         if (!webhookPath) return { exitCode: 1, stderr: "Usage: bb project-hub webhook <path> [jsonPayload]" };
         const accounts = store.getAccounts();
         if (accounts.length === 0) return { exitCode: 1, stderr: "Нет доступных аккаунтов" };
-        const safePath = sanitizeWebhookPath(webhookPath);
-        if (!safePath) return { exitCode: 1, stderr: "Недопустимый путь вебхука: путь должен находиться внутри /webhook/" };
+        const acc = accounts[0];
+        const targetUrl = buildSafeWebhookUrl(acc.url, webhookPath);
+        if (!targetUrl) return { exitCode: 1, stderr: "Недопустимый путь вебхука: путь должен находиться внутри /webhook/" };
         let payload = {};
         if (payloadStr) {
           try {
@@ -1820,9 +1868,6 @@ export default function (bb: BbPluginApi) {
             payload = { text: payloadStr };
           }
         }
-        const acc = accounts[0];
-        const cleanBase = acc.url.replace(/\/+$/, "");
-        const targetUrl = `${cleanBase}${safePath}`;
         try {
           const res = await fetch(targetUrl, {
             method: "POST",
@@ -2080,24 +2125,23 @@ export default function (bb: BbPluginApi) {
       const accId = args?.accountId || store.getAccounts()[0]?.id;
       const acc = store.getAccountById(accId);
       if (!acc) return JSON.stringify({ ok: false, error: "Account not found" });
-      const safePath = sanitizeWebhookPath(args.path);
-      if (!safePath) {
+      const targetUrl = buildSafeWebhookUrl(acc.url, args.path);
+      if (!targetUrl) {
         return JSON.stringify({
           ok: false,
           error: "Недопустимый путь вебхука: путь содержит недопустимые символы (..) или выходит за пределы /webhook/",
         });
       }
+      const parsedUrl = new URL(targetUrl);
       // Security: Whitelist check for automated agent dispatches
       const allowedPrefixes = ["/webhook/test", "/webhook-test/", "/webhook/api/projects/"];
-      const isWhitelisted = allowedPrefixes.some((p) => safePath.startsWith(p));
+      const isWhitelisted = allowedPrefixes.some((p) => parsedUrl.pathname.startsWith(p));
       if (!isWhitelisted) {
         return JSON.stringify({
           ok: false,
-          error: `Доступ запрещён: путь '${safePath}' не входит в белый список для агентов (${allowedPrefixes.join(", ")}). Произвольные вебхуки запускаются только вручную оператором.`,
+          error: `Доступ запрещён: путь '${parsedUrl.pathname}' не входит в белый список для агентов (${allowedPrefixes.join(", ")}). Произвольные вебхуки запускаются только вручную оператором.`,
         });
       }
-      const cleanBase = acc.url.replace(/\/+$/, "");
-      const targetUrl = `${cleanBase}${safePath}`;
       const method = args.method || "POST";
       const start = Date.now();
       try {
@@ -2167,34 +2211,8 @@ export default function (bb: BbPluginApi) {
         );
       }
       if (args.action === "start") {
-        const health = await checkN8nHealth("http://127.0.0.1:5678", undefined, true);
-        if (health.connected) return "Сервер n8n уже запущен (http://127.0.0.1:5678)";
-        if (isStartingServer || (localN8nProcess && !localN8nProcess.killed)) {
-          return "Сервер n8n уже запускается...";
-        }
-        isStartingServer = true;
-        appendServerLog("Запуск локального сервера n8n (Agent Tool)...");
-        const isWin = process.platform === "win32";
-        const npmPath = process.env.APPDATA ? path.join(process.env.APPDATA, "npm", "n8n.cmd") : "";
-        const cmd = isWin && npmPath && fs.existsSync(npmPath) ? npmPath : isWin ? "n8n.cmd" : "n8n";
-        localN8nProcess = spawn(cmd, ["start"], {
-          shell: isWin,
-          stdio: ["ignore", "pipe", "pipe"],
-          env: {
-            ...process.env,
-            ...N8N_DEFAULT_ENV,
-          },
-        });
-        localN8nProcess.on("exit", () => {
-          localN8nProcess = null;
-          isStartingServer = false;
-        });
-        localN8nProcess.on("error", () => {
-          localN8nProcess = null;
-          isStartingServer = false;
-        });
-        isStartingServer = false;
-        return `Команда запуска n8n передана (PID: ${localN8nProcess.pid})`;
+        const res = await startLocalN8nProcess();
+        return JSON.stringify(res, null, 2);
       }
       return "Действие не разрешено: остановка сервера доступна только оператору через кнопку в UI";
     },

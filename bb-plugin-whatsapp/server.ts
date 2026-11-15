@@ -178,6 +178,18 @@ export const rpcContract = defineRpcContract({
     input: z.object({ session_id: z.string(), file: z.string() }),
     output: z.object({ success: z.boolean(), message: z.string() }),
   },
+  get_registered_tools: {
+    input: z.object({}).nullish(),
+    output: z.object({
+      tools: z.array(
+        z.object({
+          name: z.string(),
+          description: z.string(),
+          category: z.string(),
+        })
+      ),
+    }),
+  },
   get_agent_activity: {
     input: z.object({}).nullish(),
     output: z.object({
@@ -1487,6 +1499,9 @@ export default async function plugin(bb: BbPluginApi) {
     async get_agent_activity() {
       return { entries: agentActivity };
     },
+    async get_registered_tools() {
+      return { tools: registeredTools };
+    },
     async start_bridge() {
       const ok = await bridge.start();
       return { success: ok, message: ok ? "Bridge started" : "Failed to start bridge" };
@@ -1549,6 +1564,13 @@ export default async function plugin(bb: BbPluginApi) {
   }
   const agentActivity: AgentActivityEntry[] = [];
 
+  interface RegisteredToolInfo {
+    name: string;
+    description: string;
+    category: "Read" | "Write" | "System";
+  }
+  const registeredTools: RegisteredToolInfo[] = [];
+
   function summarizeArgs(args: unknown): string {
     if (!args || typeof args !== "object") return "";
     return Object.entries(args as Record<string, unknown>)
@@ -1572,6 +1594,18 @@ export default async function plugin(bb: BbPluginApi) {
       : def.name === "whatsapp_status"
       ? "system"
       : "read";
+    registeredTools.push({
+      name: def.name,
+      description: def.description,
+      category:
+        def.name.includes("send")
+          ? "Write"
+          : def.name === "whatsapp_status" ||
+            def.name === "whatsapp_claim_session" ||
+            def.name === "whatsapp_release_session"
+          ? "System"
+          : "Read",
+    });
     const origExecute = def.execute;
     return (rawRegisterTool as (d: any) => void)({
       ...def,

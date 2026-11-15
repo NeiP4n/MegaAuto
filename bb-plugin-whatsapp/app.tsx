@@ -118,24 +118,9 @@ interface AgentActivityEntry {
 
 interface RegisteredToolInfo {
   name: string;
-  desc: string;
+  description: string;
   category: "Read" | "Write" | "System";
 }
-
-const REGISTERED_TOOLS: RegisteredToolInfo[] = [
-  { name: "whatsapp_status", desc: "Check bridge state, connection, paired phone, and QR pairing status.", category: "System" },
-  { name: "whatsapp_list_chats", desc: "List recent WhatsApp chats with last message preview and timestamps.", category: "Read" },
-  { name: "whatsapp_list_messages", desc: "Query message history with filters (query, date, limit).", category: "Read" },
-  { name: "whatsapp_search_contacts", desc: "Lookup contacts by name or phone number.", category: "Read" },
-  { name: "whatsapp_get_chat", desc: "Get metadata and state for a specific chat by JID.", category: "Read" },
-  { name: "whatsapp_get_direct_chat", desc: "Find or resolve the 1-on-1 direct chat for a given phone number.", category: "Read" },
-  { name: "whatsapp_get_contact_chats", desc: "List all chats involving a specific contact or phone number.", category: "Read" },
-  { name: "whatsapp_get_last_interaction", desc: "Retrieve the most recent message exchanged with a contact.", category: "Read" },
-  { name: "whatsapp_get_message_context", desc: "Retrieve surrounding messages before and after a given message ID.", category: "Read" },
-  { name: "whatsapp_send_message", desc: "Dispatch text messages to any phone number or group JID.", category: "Write" },
-  { name: "whatsapp_send_file", desc: "Send documents, images, audio files to contacts.", category: "Write" },
-  { name: "whatsapp_download_media", desc: "Download attached media files to local disk and return their file path.", category: "Read" },
-];
 
 /**
  * WhatsApp Web look: the layout, bubbles and palette follow the WhatsApp Web
@@ -300,6 +285,7 @@ export function WhatsAppView() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [qrStalled, setQrStalled] = useState(false);
   const [agentActivity, setAgentActivity] = useState<AgentActivityEntry[]>([]);
+  const [registeredTools, setRegisteredTools] = useState<RegisteredToolInfo[]>([]);
 
   // Account creation in progress (blocks double-click session collisions)
   const [creatingSession, setCreatingSession] = useState(false);
@@ -631,6 +617,14 @@ export function WhatsAppView() {
       }
     } catch {
       // older server without the feed - stay quiet
+    }
+    try {
+      const res = await rpc.call("get_registered_tools", {});
+      if (res && Array.isArray(res.tools)) {
+        setRegisteredTools(res.tools as RegisteredToolInfo[]);
+      }
+    } catch {
+      // older server without the registry - stay quiet
     }
   }, [rpc]);
 
@@ -1357,7 +1351,7 @@ export function WhatsAppView() {
                     <span>Agent interface</span>
                   </div>
                   <span className="text-[12px] text-[var(--wa-accent-strong)]">
-                    {REGISTERED_TOOLS.length} tools registered
+                    {registeredTools.length} tools registered
                   </span>
                 </div>
                 <p className="text-[13px] text-[var(--wa-text-secondary)] leading-relaxed mb-4">
@@ -1423,10 +1417,10 @@ export function WhatsAppView() {
                   <h3 className="text-[13px] font-medium text-[var(--wa-text)] uppercase tracking-wide">
                     Registered agent tools
                   </h3>
-                  <span className="text-[12px] text-[var(--wa-text-secondary)]">12 tools</span>
+                  <span className="text-[12px] text-[var(--wa-text-secondary)]">{registeredTools.length} tools</span>
                 </div>
                 <div className="divide-y divide-[var(--wa-border)] text-[13px]">
-                  {REGISTERED_TOOLS.map((t) => (
+                  {registeredTools.map((t) => (
                     <div key={t.name} className="py-2.5 flex items-start justify-between gap-4">
                       <div className="flex flex-col min-w-0">
                         <div className="flex items-center gap-2">
@@ -1443,7 +1437,7 @@ export function WhatsAppView() {
                             {t.category}
                           </span>
                         </div>
-                        <span className="text-[var(--wa-text-secondary)] text-[12px] mt-0.5 leading-snug">{t.desc}</span>
+                        <span className="text-[var(--wa-text-secondary)] text-[12px] mt-0.5 leading-snug">{t.description}</span>
                       </div>
                       <span className="w-1.5 h-1.5 rounded-full bg-[var(--wa-accent-strong)] shrink-0 mt-1.5" />
                     </div>

@@ -3,7 +3,7 @@ Connect your WhatsApp account to Blackbox and empower AI agents to read, search,
 ## What you get
 
 - **Interactive WhatsApp UI**: A full-featured chat interface docked right inside Blackbox with conversations, message history, media preview, contact searching, and real-time status.
-- **12 Agent Tools**: Comprehensive tools for Blackbox agents to query chat history, resolve contacts, inspect message context, download media attachments, and send text or file messages.
+- **15 Agent Tools**: Comprehensive tools for Blackbox agents to query chat history, resolve contacts, inspect message context, download media attachments, and send text or file messages.
 - **Terminal CLI**: Fast `bb whatsapp` CLI commands for checking bridge status, pairing via QR codes, browsing chats, and messaging contacts directly from your shell.
 - **Local & Private**: All messages, contacts, and authentication sessions are stored locally in an embedded SQLite database (`bridge/store/`). No data is sent to third-party cloud servers.
 
@@ -12,7 +12,7 @@ Connect your WhatsApp account to Blackbox and empower AI agents to read, search,
 The plugin combines three high-performance layers:
 
 1. **Go Bridge (`whatsmeow`)**: A standalone daemon communicating directly with WhatsApp servers via WebSocket and Noise encryption. It provides a local HTTP API on port 8080 and maintains local SQLite message stores.
-2. **Blackbox Plugin Backend (`server.ts`)**: Manages bridge daemon lifecycles, exposes RPC methods to the frontend UI, registers all 12 agent tools, and provides the `bb whatsapp` CLI.
+2. **Blackbox Plugin Backend (`server.ts`)**: Manages bridge daemon lifecycles, exposes RPC methods to the frontend UI, registers all 15 agent tools, and provides the `bb whatsapp` CLI.
 3. **Blackbox UI (`app.tsx`)**: A responsive panel featuring QR code authentication pairing, chat list navigation, message timelines with media downloads, and agent tool status monitors.
 
 ## For agents

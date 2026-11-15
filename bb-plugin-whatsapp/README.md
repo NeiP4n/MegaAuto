@@ -15,7 +15,7 @@ The plugin links three main layers into Blackbox:
 ┌─────────────────────────▼────────────────────────────────┐
 │               Blackbox Backend (server.ts)               │
 │  - Bridge Process Controller (spawn/watch/restart)       │
-│  - 12 Registered Agent Tools (bb.agents.registerTool)    │
+│  - 15 Registered Agent Tools (bb.agents.registerTool)    │
 │  - CLI Command Handlers (bb whatsapp <cmd>)              │
 │  - Local SQLite direct query fallbacks                   │
 └─────────────────────────▲────────────────────────────────┘
@@ -37,18 +37,21 @@ In addition, an optional standalone Python FastMCP server (`mcp-server/`) is pro
 
 - **Full Multi-Device WhatsApp Engine**: Operates as an independent linked device using `whatsmeow`. Does not require browser automation or third-party web scrapers.
 - **Embedded Local Storage**: Message history, chats, and contact cards persist locally in SQLite databases (`bridge/store/messages.db` and `bridge/store/whatsapp.db`).
-- **12 Registered Agent Tools**: Grants Blackbox agents full programmatic control to search contacts, browse messages, fetch conversation context, and send files.
-- **Unified UI Panel**: Built using Blackbox vendored UI components (`components/ui`), featuring live chat threads, contact search, media attachment downloads, new conversation dialog, and bridge diagnostics.
+- **15 Registered Agent Tools**: Grants Blackbox agents full programmatic control to search contacts, browse messages, fetch conversation context, and send files.
+- **Unified UI Panel**: Native WhatsApp-style panel featuring live chat threads, contact search, media attachment downloads, new conversation dialog, and bridge diagnostics.
 - **Terminal CLI**: Fast commands (`bb whatsapp ...`) for automation, scripting, and headless bridge management.
 
 ---
 
-## 12 Registered Agent Tools
+## 15 Registered Agent Tools
 
 Agents running in Blackbox threads automatically receive the following tools:
 
 | Tool | Parameters | Description |
 | --- | --- | --- |
+| `whatsapp_list_accounts` | _none_ | List all paired accounts (session id, name, phone, status, active flag). |
+| `whatsapp_claim_session` | `session_id`, `holder`, `ttl_seconds?` | Take an exclusive, expiring claim on an account so agents don't interleave sends. |
+| `whatsapp_release_session` | `session_id`, `holder` | Release a claim taken with `whatsapp_claim_session`. |
 | `whatsapp_status` | _none_ | Check bridge connection, phone number, and QR pairing status. |
 | `whatsapp_list_chats` | `query?`, `limit?` | List recent conversations with latest message preview and timestamp. |
 | `whatsapp_list_messages` | `chat_jid`, `limit?` | Retrieve messages from a chat with media details and sender information. |

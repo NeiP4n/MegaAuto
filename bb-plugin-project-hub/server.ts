@@ -890,21 +890,20 @@ export default function (bb: BbPluginApi) {
       const now = new Date();
       const timeStr = now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
+      // Both modes are operator-originated: recording a "message" send as a
+      // webhook event made your own message bump the unread counter.
       const newMsg: ChatMessage = {
         id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
         projectId: input.projectId,
-        sender: input.mode === "command" ? "user" : "webhook",
-        senderName: input.mode === "command" ? "Оператор" : "Webhook Event",
+        sender: "user",
+        senderName: "Оператор",
         text: input.text,
         timestamp: timeStr,
         status: "sent",
-        metadata:
-          input.mode === "command"
-            ? {
-                workflowName: "interactive_command",
-                status: "running",
-              }
-            : undefined,
+        metadata: {
+          workflowName: input.mode === "command" ? "interactive_command" : "interactive_message",
+          status: "running",
+        },
       };
 
       store.addMessage(newMsg);

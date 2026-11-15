@@ -87,58 +87,23 @@ export function AiChatTab({
 
   return (
     <div className="flex flex-col h-full w-full bg-background select-text font-sans overflow-hidden">
-      {/* Header */}
-      <div className="flex items-center justify-between border-b border-border/40 px-3.5 py-2 bg-card/30 shrink-0">
-        <div className="flex items-center gap-2">
-          <div className="w-6 h-6 rounded-md bg-primary/15 border border-primary/30 flex items-center justify-center text-primary">
-            <SvgSparkles className="w-3.5 h-3.5" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-bold text-foreground tracking-tight">
-                n8n AI Chat Agent
-              </span>
-              <span className="px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-primary/15 text-primary border border-primary/30">
-                gemini-3.8-flash (acp)
-              </span>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <div className="flex items-center gap-1.5 text-[11px] font-mono text-muted-foreground mr-1">
-            <span className={`w-2 h-2 rounded-full ${n8nConnected ? "bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.6)]" : "bg-destructive"}`} />
-            <span>{n8nConnected ? "n8n online" : "n8n offline"}</span>
-          </div>
-
-          <button
-            onClick={onClearHistory}
-            disabled={messages.length === 0}
-            className="p-1 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-30 disabled:pointer-events-none cursor-pointer"
-            title="Очистить историю чата"
-          >
-            <SvgTrash className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      </div>
-
       {/* Messages Thread */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-3.5">
+      <div className="flex-1 overflow-y-auto p-3.5 space-y-3">
         {isLoadingHistory ? (
           <div className="h-full flex items-center justify-center text-xs text-muted-foreground gap-2">
             <SvgActivity className="w-4 h-4 animate-spin text-primary" />
             <span>Загрузка истории чата...</span>
           </div>
         ) : messages.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center text-center max-w-md mx-auto py-8">
-            <div className="w-12 h-12 rounded-2xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary mb-3">
-              <SvgSparkles className="w-6 h-6" />
+          <div className="h-full flex flex-col items-center justify-center text-center max-w-sm mx-auto py-2">
+            <div className="w-10 h-10 rounded-xl bg-primary/10 border border-primary/20 flex items-center justify-center text-primary mb-2">
+              <SvgSparkles className="w-5 h-5" />
             </div>
-            <h3 className="text-sm font-semibold text-foreground">
+            <h3 className="text-xs font-semibold text-foreground">
               AI Агент n8n готов к диалогу
             </h3>
-            <p className="text-xs text-muted-foreground mt-1 mb-4 leading-relaxed">
-              Модель <span className="text-primary font-mono">Gemini 3.8 Flash ACP</span> подключена напрямую к движку n8n. Задавайте вопросы по созданию сценариев, нодам и скриптам.
+            <p className="text-[11px] text-muted-foreground mt-0.5 mb-3 leading-relaxed">
+              Модель <span className="text-primary font-mono font-medium">Gemini 3.8 Flash ACP</span> подключена к n8n.
             </p>
 
             {/* Quick Prompts */}
@@ -150,7 +115,7 @@ export function AiChatTab({
                     setInputText(prompt);
                     textareaRef.current?.focus();
                   }}
-                  className="px-3 py-2 rounded-lg bg-card/60 hover:bg-card border border-border/40 hover:border-primary/40 text-xs text-foreground/80 hover:text-foreground transition-all cursor-pointer text-left"
+                  className="px-2.5 py-1.5 rounded-lg bg-card/60 hover:bg-card border border-border/40 hover:border-primary/40 text-[11px] text-foreground/80 hover:text-foreground transition-all cursor-pointer text-left truncate"
                 >
                   {prompt}
                 </button>
@@ -231,7 +196,7 @@ export function AiChatTab({
       </div>
 
       {/* Input Bar */}
-      <div className="p-3 border-t border-border/40 bg-card/30 shrink-0">
+      <div className="p-2.5 border-t border-border/40 bg-card/30 shrink-0">
         <div className="relative flex items-end gap-2 bg-background border border-border/50 rounded-xl p-1.5 focus-within:border-primary/50 focus-within:ring-1 focus-within:ring-primary/20 transition-all">
           <textarea
             ref={textareaRef}
@@ -239,23 +204,23 @@ export function AiChatTab({
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Задайте вопрос n8n AI Агенту (Gemini 3.8 Flash ACP)..."
-            className="flex-1 bg-transparent border-0 px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-none resize-none max-h-24 min-h-[32px]"
+            placeholder="Задайте вопрос n8n AI Агенту..."
+            className="flex-1 bg-transparent border-0 px-2 py-1 text-xs text-foreground placeholder:text-muted-foreground/60 focus:outline-none resize-none max-h-20 min-h-[30px]"
           />
 
           <button
             onClick={handleSend}
             disabled={!inputText.trim() || isSending}
-            className="p-2 rounded-lg bg-primary/20 hover:bg-primary/30 text-primary border border-primary/40 disabled:opacity-30 disabled:pointer-events-none transition-all cursor-pointer shrink-0"
+            className="p-1.5 rounded-lg bg-primary/20 hover:bg-primary/30 text-primary border border-primary/40 disabled:opacity-30 disabled:pointer-events-none transition-all cursor-pointer shrink-0"
             title="Отправить (Enter)"
           >
             <SvgSend className="w-3.5 h-3.5" />
           </button>
         </div>
 
-        <div className="flex items-center justify-between text-[10px] text-muted-foreground px-1 mt-1.5 font-mono">
-          <span>Нажмите Enter для отправки, Shift+Enter для новой строки</span>
-          <span className="text-primary/80">Gemini 3.8 Flash • ACP Ready</span>
+        <div className="flex items-center justify-between text-[10px] text-muted-foreground px-1 mt-1 font-mono">
+          <span>Enter — отправить</span>
+          <span className="text-primary/70 hidden sm:inline">Gemini 3.8 Flash • ACP</span>
         </div>
       </div>
     </div>

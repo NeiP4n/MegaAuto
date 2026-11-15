@@ -8,7 +8,7 @@ import { ExecutionLog } from "./src/components/ExecutionLog";
 import { WebhookConsole } from "./src/components/WebhookConsole";
 import { AiChatTab } from "./src/components/AiChatTab";
 import { AddInstanceModal } from "./src/components/AddInstanceModal";
-import { SvgZap, SvgActivity, SvgRefresh, SvgCheckCircle, SvgAlertCircle, SvgPlay, SvgSquare, SvgSparkles } from "./src/icons";
+import { SvgZap, SvgActivity, SvgRefresh, SvgCheckCircle, SvgAlertCircle, SvgPlay, SvgSquare, SvgSparkles, SvgTrash } from "./src/icons";
 
 function isLocalPort5678(url: string): boolean {
   const clean = (url || "").trim();
@@ -596,39 +596,35 @@ export function ProjectHubView() {
           isServerStarting={isServerBusy}
         />
 
-        {/* Column 3: Detail Workspace (Top Tabs: [ Воркфлоу & Логи ] [ ✦ Чат с ИИ (Gemini ACP) ]) */}
+        {/* Column 3: Detail Workspace (Top Tabs: [ Воркфлоу ] [ ✦ ИИ-Чат ]) */}
         <section className="flex-1 flex flex-col h-full overflow-hidden bg-background">
           {/* Header Switcher Tabs */}
-          <div className="h-10 border-b border-border bg-card/60 px-4 flex items-center justify-between shrink-0">
-            <div className="flex items-center gap-1.5">
+          <div className="h-10 border-b border-border bg-card/60 px-3 flex items-center justify-between shrink-0 gap-2">
+            <div className="flex items-center gap-1 shrink-0">
               <button
                 type="button"
                 onClick={() => setColumnTab("workspace")}
-                className={`px-3 py-1 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors ${
+                className={`px-2.5 py-1 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors ${
                   columnTab === "workspace"
-                    ? "bg-accent text-accent-foreground shadow-sm font-semibold"
+                    ? "bg-accent text-accent-foreground shadow-xs font-semibold"
                     : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
                 }`}
               >
                 <SvgActivity className="w-3.5 h-3.5 text-primary" />
-                <span>Воркфлоу & Логи</span>
+                <span>Воркфлоу</span>
               </button>
 
               <button
                 type="button"
                 onClick={() => setColumnTab("chat")}
-                className={`px-3 py-1 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors relative ${
+                className={`px-2.5 py-1 rounded-md text-xs font-medium flex items-center gap-1.5 transition-colors relative ${
                   columnTab === "chat"
-                    ? "bg-primary/15 text-primary border border-primary/30 shadow-sm font-semibold"
+                    ? "bg-primary/15 text-primary border border-primary/30 shadow-xs font-semibold"
                     : "text-muted-foreground hover:text-foreground hover:bg-accent/40"
                 }`}
               >
-                <span className="relative flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-primary opacity-75"></span>
-                  <span className="relative inline-flex rounded-full h-2 w-2 bg-primary"></span>
-                </span>
                 <SvgSparkles className="w-3.5 h-3.5 text-primary" />
-                <span>Чат с ИИ (Gemini ACP)</span>
+                <span>ИИ-Чат</span>
                 {chatMessages.length > 0 && (
                   <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-primary/20 text-primary font-mono">
                     {chatMessages.length}
@@ -637,11 +633,39 @@ export function ProjectHubView() {
               </button>
             </div>
 
-            <div className="text-[11px] text-muted-foreground flex items-center gap-2">
-              <span className="text-primary/90 font-mono font-medium">gemini-3.8-flash-acp</span>
-              <span className="text-border">|</span>
-              <span className="text-muted-foreground">/webhook/ai-chat</span>
-            </div>
+            {columnTab === "chat" ? (
+              <div className="flex items-center gap-2 min-w-0 shrink">
+                <span className="hidden sm:inline-block px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-primary/10 text-primary border border-primary/20 truncate max-w-[140px]">
+                  Gemini 3.8 Flash
+                </span>
+                <div className="flex items-center gap-1.5 text-[11px] font-mono text-muted-foreground shrink-0">
+                  <span
+                    className={`w-2 h-2 rounded-full ${
+                      isServerRunning || activeAccount?.status === "online"
+                        ? "bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.5)]"
+                        : "bg-destructive"
+                    }`}
+                  />
+                  <span className="text-[10px]">
+                    {isServerRunning || activeAccount?.status === "online" ? "online" : "offline"}
+                  </span>
+                </div>
+                <button
+                  onClick={handleClearChatHistory}
+                  disabled={chatMessages.length === 0}
+                  className="p-1 rounded text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-30 disabled:pointer-events-none cursor-pointer shrink-0"
+                  title="Очистить историю чата"
+                >
+                  <SvgTrash className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ) : (
+              activeWorkflow && (
+                <div className="text-[10px] text-muted-foreground font-mono truncate">
+                  ID: <span className="text-foreground">{activeWorkflow.id}</span>
+                </div>
+              )
+            )}
           </div>
 
           {columnTab === "chat" ? (

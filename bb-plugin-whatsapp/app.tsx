@@ -166,6 +166,14 @@ export function WhatsAppView() {
   const [messages, setMessages] = useState<WhatsAppMessage[]>([]);
   const [chatSearch, setChatSearch] = useState("");
   const [messageInput, setMessageInput] = useState("");
+  const [attachment, setAttachment] = useState<{
+    dataUrl: string;
+    base64: string;
+    mime: string;
+    filename: string;
+    size: number;
+  } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [sending, setSending] = useState(false);
   const [activeTab, setActiveTab] = useState<"chats" | "tools">("chats");
 
@@ -472,15 +480,45 @@ export function WhatsAppView() {
   }, [messages]);
 
   // Send message from conversation composer with full optimistic feedback & persistence
+  const handleAttachmentPick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (file.size > 15 * 1024 * 1024) {
+      setErrorMessage("File is too large (max 15 MB).");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result || "");
+      const base64 = dataUrl.split(",", 2)[1] || "";
+      if (!base64) {
+        setErrorMessage("Could not read the selected file.");
+        return;
+      }
+      setAttachment({
+        dataUrl,
+        base64,
+        mime: file.type || "application/octet-stream",
+        filename: file.name,
+        size: file.size,
+      });
+    };
+    reader.onerror = () => setErrorMessage("Could not read the selected file.");
+    reader.readAsDataURL(file);
+  };
+
   const handleSendMessage = async () => {
-    if (!selectedChat || !messageInput.trim() || sending) return;
+    if (!selectedChat || sending) return;
+    const text = messageInput.trim();
+    const att = attachment;
+    if (!text && !att) return;
     setSending(true);
     setErrorMessage(null);
-    const text = messageInput.trim();
     const tempId = "opt-" + Date.now();
     const nowIso = new Date().toISOString();
 
-    // Optimistically add message
+    // Optimistically add message (with local preview for attachments)
     setMessages((prev) => [
       ...prev,
       {
@@ -490,20 +528,36 @@ export function WhatsAppView() {
         content: text,
         timestamp: nowIso,
         is_from_me: true,
-        media_type: "",
-        filename: "",
-        url: "",
-        file_length: 0,
+        media_type: att
+          ? att.mime.startsWith("image/")
+            ? "image"
+            : att.mime.startsWith("video/")
+            ? "video"
+            : "document"
+          : "",
+        filename: att?.filename || "",
+        url: att?.dataUrl || "",
+        file_length: att?.size || 0,
       },
     ]);
     setMessageInput("");
+    setAttachment(null);
 
     try {
-      const res = await rpc.call("send_message", {
-        recipient: selectedChat.jid,
-        message: text,
-        session_id: activeSessionId,
-      });
+      const res = att
+        ? await rpc.call("send_media", {
+            recipient: selectedChat.jid,
+            caption: text,
+            mime_type: att.mime,
+            filename: att.filename,
+            data_base64: att.base64,
+            session_id: activeSessionId,
+          })
+        : await rpc.call("send_message", {
+            recipient: selectedChat.jid,
+            message: text,
+            session_id: activeSessionId,
+          });
 
       if (res.success) {
         if (res.id) {
@@ -1192,7 +1246,13 @@ export function WhatsAppView() {
                               )}
 
                               {/* Media attachment */}
-                              {msg.media_type && (
+                              {msg.media_type && msg.media_type.includes("image") && msg.url.startsWith("data:") ? (
+                                <img
+                                  src={msg.url}
+                                  alt={msg.filename || "photo"}
+                                  className="rounded-md max-w-[280px] max-h-[320px] object-cover mx-1 mt-1.5"
+                                />
+                              ) : msg.media_type && (
                                 <div className="mx-1 mt-1.5">
                                   <div className="flex items-center justify-between gap-3 bg-[rgba(0,0,0,0.15)] rounded-md p-2">
                                     <div className="flex items-center gap-2 min-w-0">
@@ -1255,11 +1315,55 @@ export function WhatsAppView() {
                     <div ref={messagesEndRef} />
                   </div>
 
+                  {/* Attachment preview */}
+                  {attachment && (
+                    <div className="px-4 py-2 bg-[var(--wa-header)] border-t border-[var(--wa-border)] flex items-center gap-3 shrink-0">
+                      {attachment.mime.startsWith("image/") ? (
+                        <img
+                          src={attachment.dataUrl}
+                          alt={attachment.filename}
+                          className="w-12 h-12 rounded-md object-cover shrink-0"
+                        />
+                      ) : (
+                        <div className="w-12 h-12 rounded-md bg-[var(--wa-panel-raised)] flex items-center justify-center text-[var(--wa-accent-strong)] shrink-0">
+                          <SvgFile className="w-5 h-5" />
+                        </div>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[13px] text-[var(--wa-text)] truncate">{attachment.filename}</p>
+                        <span className="text-[11px] text-[var(--wa-text-secondary)]">
+                          {(attachment.size / 1024).toFixed(1)} KB - caption goes in the message box
+                        </span>
+                      </div>
+                      <button
+                        onClick={() => setAttachment(null)}
+                        title="Remove attachment"
+                        className="p-1.5 rounded-full text-[var(--wa-icon)] hover:bg-[var(--wa-hover)] shrink-0"
+                      >
+                        <SvgX className="w-4 h-4" />
+                      </button>
+                    </div>
+                  )}
+
                   {/* Composer */}
                   <div className="px-4 py-2 bg-[var(--wa-header)] flex items-center gap-2 shrink-0">
                     <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*,video/*"
+                      className="hidden"
+                      onChange={handleAttachmentPick}
+                    />
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      title="Send a photo or video"
+                      className="w-10 h-10 rounded-full text-[var(--wa-icon)] hover:bg-[var(--wa-hover)] transition-colors flex items-center justify-center shrink-0"
+                    >
+                      <SvgImage className="w-5 h-5" />
+                    </button>
+                    <input
                       type="text"
-                      placeholder="Type a message"
+                      placeholder={attachment ? "Add a caption..." : "Type a message"}
                       value={messageInput}
                       onChange={(e) => setMessageInput(e.target.value)}
                       onKeyDown={(e) => {
@@ -1272,7 +1376,7 @@ export function WhatsAppView() {
                     />
                     <button
                       onClick={handleSendMessage}
-                      disabled={!messageInput.trim() || sending}
+                      disabled={(!messageInput.trim() && !attachment) || sending}
                       className="w-10 h-10 bg-[var(--wa-accent)] hover:bg-[var(--wa-accent-strong)] disabled:bg-[var(--wa-input)] disabled:text-[var(--wa-text-secondary)] text-[#111b21] rounded-full transition-colors flex items-center justify-center shrink-0"
                     >
                       {sending ? (

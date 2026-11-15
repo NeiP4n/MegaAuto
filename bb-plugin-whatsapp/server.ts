@@ -204,6 +204,23 @@ export const rpcContract = defineRpcContract({
       chat_jid: z.string().optional(),
     }),
   },
+  send_media: {
+    input: z.object({
+      recipient: z.string().min(1),
+      caption: z.string().optional(),
+      mime_type: z.string().optional(),
+      filename: z.string().optional(),
+      data_base64: z.string().min(1),
+      session_id: z.string().optional(),
+    }),
+    output: z.object({
+      success: z.boolean(),
+      message: z.string(),
+      id: z.string().optional(),
+      timestamp: z.string().optional(),
+      chat_jid: z.string().optional(),
+    }),
+  },
   download_media: {
     input: z.object({
       message_id: z.string().min(1),
@@ -668,6 +685,46 @@ class WhatsAppBridgeController {
     }
   }
 
+  public async sendMedia(
+    recipient: string,
+    dataBase64: string,
+    mimeType: string,
+    filename: string,
+    caption: string,
+    sessionId?: string
+  ): Promise<{ success: boolean; message: string; id?: string; timestamp?: string; chat_jid?: string }> {
+    await this.ensureRunning();
+    try {
+      const res = await fetch("http://127.0.0.1:8080/api/send-media", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session: sessionId || "",
+          recipient,
+          caption,
+          mime_type: mimeType,
+          filename,
+          data_b64: dataBase64,
+        }),
+        // Media uploads can take a while on slow links.
+        signal: AbortSignal.timeout(120000),
+      });
+
+      const data = (await res.json()) as Record<string, unknown>;
+      return {
+        success: Boolean(data.success),
+        message: typeof data.message === "string"
+          ? data.message
+          : (data.success ? "Media sent" : "Failed to send media"),
+        id: typeof data.id === "string" ? data.id : undefined,
+        timestamp: typeof data.timestamp === "string" ? data.timestamp : undefined,
+        chat_jid: typeof data.chat_jid === "string" ? data.chat_jid : undefined,
+      };
+    } catch (e: unknown) {
+      return { success: false, message: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
   public async downloadMedia(
     messageId: string,
     chatJid: string,
@@ -946,6 +1003,16 @@ export default async function plugin(bb: BbPluginApi) {
     },
     async send_message(input) {
       return await bridge.sendMessage(input.recipient, input.message, input.media_path, input.session_id);
+    },
+    async send_media(input) {
+      return await bridge.sendMedia(
+        input.recipient,
+        input.data_base64,
+        input.mime_type ?? "",
+        input.filename ?? "",
+        input.caption ?? "",
+        input.session_id
+      );
     },
     async download_media(input) {
       return await bridge.downloadMedia(input.message_id, input.chat_jid, input.session_id);

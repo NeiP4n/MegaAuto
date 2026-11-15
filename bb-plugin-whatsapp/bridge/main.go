@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -1559,6 +1560,106 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 			w.WriteHeader(http.StatusInternalServerError)
 		}
 
+		json.NewEncoder(w).Encode(SendMessageResponse{
+			Success:   success,
+			Message:   msgText,
+			ID:        msgID,
+			Timestamp: msgTime,
+			ChatJID:   targetChatJID,
+		})
+	})
+
+	// 9b. Send media endpoint: accepts base64 payloads from the plugin UI
+	// (which has no filesystem paths to hand to /api/send).
+	mux.HandleFunc("/api/send-media", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			Session   string `json:"session,omitempty"`
+			Recipient string `json:"recipient"`
+			Caption   string `json:"caption"`
+			MimeType  string `json:"mime_type"`
+			Filename  string `json:"filename"`
+			DataB64   string `json:"data_b64"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request format", http.StatusBadRequest)
+			return
+		}
+		if req.Recipient == "" {
+			http.Error(w, "Recipient is required", http.StatusBadRequest)
+			return
+		}
+		if req.DataB64 == "" {
+			http.Error(w, "data_b64 is required", http.StatusBadRequest)
+			return
+		}
+
+		data, err := base64.StdEncoding.DecodeString(req.DataB64)
+		if err != nil {
+			http.Error(w, "data_b64 is not valid base64", http.StatusBadRequest)
+			return
+		}
+		if len(data) == 0 || len(data) > 64<<20 {
+			http.Error(w, "media payload must be 1 byte to 64 MB", http.StatusRequestEntityTooLarge)
+			return
+		}
+
+		sess := sm.LookupSession(req.Session)
+		if sess == nil {
+			http.Error(w, "WhatsApp session not found: "+req.Session, http.StatusBadRequest)
+			return
+		}
+		if sess.Client == nil {
+			http.Error(w, "WhatsApp session is not started yet - pair or reconnect first", http.StatusBadRequest)
+			return
+		}
+
+		// Keep the original extension so sendWhatsAppMessage picks the right
+		// WhatsApp media type; fall back to the declared mime type.
+		ext := strings.ToLower(filepath.Ext(req.Filename))
+		if ext == "" {
+			switch {
+			case strings.HasPrefix(req.MimeType, "image/jpeg"):
+				ext = ".jpg"
+			case strings.HasPrefix(req.MimeType, "image/"):
+				ext = "." + strings.TrimPrefix(strings.SplitN(req.MimeType, ";", 2)[0], "image/")
+			case strings.HasPrefix(req.MimeType, "video/mp4"):
+				ext = ".mp4"
+			}
+		}
+		if req.Filename == "" {
+			req.Filename = "media" + ext
+		}
+		tmp, err := os.CreateTemp("", "bbwa-*"+ext)
+		if err != nil {
+			http.Error(w, "Failed to stage media: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer os.Remove(tmp.Name())
+		if _, err := tmp.Write(data); err != nil {
+			tmp.Close()
+			http.Error(w, "Failed to stage media: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		tmp.Close()
+
+		success, msgText, msgID, msgTime, targetChatJID := sendWhatsAppMessage(
+			sess.Client,
+			sess.MessageStore,
+			req.Recipient,
+			req.Caption,
+			tmp.Name(),
+			sess.logger,
+		)
+
+		w.Header().Set("Content-Type", "application/json")
+		if !success {
+			w.WriteHeader(http.StatusInternalServerError)
+		}
 		json.NewEncoder(w).Encode(SendMessageResponse{
 			Success:   success,
 			Message:   msgText,

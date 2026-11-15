@@ -10,7 +10,7 @@ import { AddInstanceModal } from "./src/components/AddInstanceModal";
 import { SvgZap, SvgActivity, SvgRefresh, SvgCheckCircle, SvgAlertCircle, SvgPlay, SvgSquare } from "./src/icons";
 
 function isLocalPort5678(url: string): boolean {
-  return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]):5678(\/|$)/i.test(url.trim());
+  return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]):5678(\/|\?|$)/i.test(url.trim());
 }
 
 export function ProjectHubView() {

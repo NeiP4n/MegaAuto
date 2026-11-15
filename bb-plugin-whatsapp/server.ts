@@ -1089,12 +1089,13 @@ export class WhatsAppBridgeController {
    * Get metadata for a specific chat JID.
    * Falls back to searching getChats() if the bridge has no dedicated endpoint.
    */
-  public async getChat(jid: string): Promise<WhatsAppChat | null> {
+  public async getChat(jid: string, sessionId?: string): Promise<WhatsAppChat | null> {
     await this.ensureRunning();
+    const sessQ = sessionId ? `&session=${encodeURIComponent(sessionId)}` : "";
     // Try dedicated endpoint first
     try {
       const res = await fetch(
-        `http://127.0.0.1:${this.bridgePort}/api/chat?jid=${encodeURIComponent(jid)}`,
+        `http://127.0.0.1:${this.bridgePort}/api/chat?jid=${encodeURIComponent(jid)}${sessQ}`,
         { signal: AbortSignal.timeout(5000) }
       );
       if (res.ok) {
@@ -1106,7 +1107,7 @@ export class WhatsAppBridgeController {
     }
     // Fallback: search all chats
     try {
-      const all = await this.getChats();
+      const all = await this.getChats("", sessionId);
       return all.find((c) => c.jid === jid) ?? null;
     } catch {
       return null;
@@ -1117,8 +1118,9 @@ export class WhatsAppBridgeController {
    * Resolve the direct-message JID for a phone number.
    * Phone may be "+1234567890", "1234567890", or already a JID.
    */
-  public async getDirectChat(phone: string): Promise<WhatsAppChat | null> {
+  public async getDirectChat(phone: string, sessionId?: string): Promise<WhatsAppChat | null> {
     await this.ensureRunning();
+    const sessQ = sessionId ? `&session=${encodeURIComponent(sessionId)}` : "";
     // Normalise: strip leading + and spaces, append WhatsApp suffix
     const digits = phone.replace(/^\+/, "").replace(/\s/g, "");
     const candidateJid = digits.includes("@") ? digits : `${digits}@s.whatsapp.net`;
@@ -1126,7 +1128,7 @@ export class WhatsAppBridgeController {
     // Try bridge endpoint
     try {
       const res = await fetch(
-        `http://127.0.0.1:${this.bridgePort}/api/chat?jid=${encodeURIComponent(candidateJid)}`,
+        `http://127.0.0.1:${this.bridgePort}/api/chat?jid=${encodeURIComponent(candidateJid)}${sessQ}`,
         { signal: AbortSignal.timeout(5000) }
       );
       if (res.ok) {
@@ -1153,14 +1155,14 @@ export class WhatsAppBridgeController {
   /**
    * List all chats that involve a contact identified by JID or phone number.
    */
-  public async getContactChats(contactJidOrPhone: string): Promise<WhatsAppChat[]> {
+  public async getContactChats(contactJidOrPhone: string, sessionId?: string): Promise<WhatsAppChat[]> {
     await this.ensureRunning();
     const digits = contactJidOrPhone.replace(/^\+/, "").replace(/\s/g, "");
     const prefix = digits.split("@")[0]; // strip @s.whatsapp.net if present
 
     try {
       const res = await fetch(
-        `http://127.0.0.1:${this.bridgePort}/api/contact-chats?jid=${encodeURIComponent(contactJidOrPhone)}`,
+        `http://127.0.0.1:${this.bridgePort}/api/contact-chats?jid=${encodeURIComponent(contactJidOrPhone)}${sessionId ? `&session=${encodeURIComponent(sessionId)}` : ""}`,
         { signal: AbortSignal.timeout(5000) }
       );
       if (res.ok) {
@@ -1188,7 +1190,8 @@ export class WhatsAppBridgeController {
    * Return the most recent message in a chat with a given contact JID or phone.
    */
   public async getLastInteraction(
-    contactJidOrPhone: string
+    contactJidOrPhone: string,
+    sessionId?: string
   ): Promise<WhatsAppMessage | null> {
     await this.ensureRunning();
     const digits = contactJidOrPhone.replace(/^\+/, "").replace(/\s/g, "");
@@ -1197,7 +1200,7 @@ export class WhatsAppBridgeController {
     // Try bridge endpoint
     try {
       const res = await fetch(
-        `http://127.0.0.1:${this.bridgePort}/api/last-interaction?jid=${encodeURIComponent(candidateJid)}`,
+        `http://127.0.0.1:${this.bridgePort}/api/last-interaction?jid=${encodeURIComponent(candidateJid)}${sessionId ? `&session=${encodeURIComponent(sessionId)}` : ""}`,
         { signal: AbortSignal.timeout(5000) }
       );
       if (res.ok) {
@@ -1223,13 +1226,14 @@ export class WhatsAppBridgeController {
   public async getMessageContext(
     messageId: string,
     chatJid: string,
-    contextSize = 5
+    contextSize = 5,
+    sessionId?: string
   ): Promise<{ before: WhatsAppMessage[]; target: WhatsAppMessage | null; after: WhatsAppMessage[] }> {
     await this.ensureRunning();
 
     // Try bridge endpoint
     try {
-      const url = `http://127.0.0.1:${this.bridgePort}/api/message-context?message_id=${encodeURIComponent(messageId)}&chat_jid=${encodeURIComponent(chatJid)}&context=${contextSize}`;
+      const url = `http://127.0.0.1:${this.bridgePort}/api/message-context?message_id=${encodeURIComponent(messageId)}&chat_jid=${encodeURIComponent(chatJid)}&context=${contextSize}${sessionId ? `&session=${encodeURIComponent(sessionId)}` : ""}`;
       const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
       if (res.ok) {
         const data = (await res.json()) as {
@@ -1460,19 +1464,38 @@ export default async function plugin(bb: BbPluginApi) {
 
   // --- Agent Tools ---
 
+  // 0. whatsapp_list_accounts
+  registerToolLogged({
+    name: "whatsapp_list_accounts",
+    description: "List all paired WhatsApp accounts (session id, name, phone number, connection status, which is active). Call this FIRST when the user has multiple WhatsApp accounts or asks to use a specific number; pass the chosen session id to the other whatsapp_* tools via their session_id parameter.",
+    parameters: z.object({}),
+    presentation: {
+      label: {
+        pending: "Listing WhatsApp accounts",
+        completed: "Listed WhatsApp accounts",
+      },
+    },
+    execute: async () => {
+      const sessions = await bridge.getSessions();
+      return JSON.stringify(sessions, null, 2);
+    },
+  });
+
   // 1. whatsapp_status
   registerToolLogged({
     name: "whatsapp_status",
     description: "Check WhatsApp multidevice bridge status, connection state, phone number, and QR code pairing status.",
-    parameters: z.object({}),
+    parameters: z.object({
+      session_id: z.string().optional().describe("Target account session id from whatsapp_list_accounts. Omit to use the active account."),
+    }),
     presentation: {
       label: {
         pending: "Checking WhatsApp bridge status",
         completed: "Checked WhatsApp status",
       },
     },
-    execute: async () => {
-      const status = await bridge.getStatus();
+    execute: async ({ session_id }) => {
+      const status = await bridge.getStatus(session_id);
       return JSON.stringify(status, null, 2);
     },
   });
@@ -1484,6 +1507,7 @@ export default async function plugin(bb: BbPluginApi) {
     parameters: z.object({
       query: z.string().optional().describe("Optional search query to filter chats by name or JID"),
       limit: z.number().optional().describe("Maximum number of chats to return (default 20)"),
+      session_id: z.string().optional().describe("Target account session id from whatsapp_list_accounts. Omit to use the active account."),
     }),
     presentation: {
       label: {
@@ -1491,8 +1515,8 @@ export default async function plugin(bb: BbPluginApi) {
         completed: "Retrieved WhatsApp chats",
       },
     },
-    execute: async ({ query, limit = 20 }) => {
-      const chats = await bridge.getChats(query);
+    execute: async ({ query, limit = 20, session_id }) => {
+      const chats = await bridge.getChats(query, session_id);
       return JSON.stringify(chats.slice(0, limit), null, 2);
     },
   });
@@ -1504,6 +1528,7 @@ export default async function plugin(bb: BbPluginApi) {
     parameters: z.object({
       chat_jid: z.string().describe("The JID of the chat to retrieve messages from (e.g. '1234567890@s.whatsapp.net' or 'group_id@g.us')"),
       limit: z.number().optional().describe("Maximum number of messages to return (default 20)"),
+      session_id: z.string().optional().describe("Target account session id from whatsapp_list_accounts. Omit to use the active account."),
     }),
     presentation: {
       label: {
@@ -1511,8 +1536,8 @@ export default async function plugin(bb: BbPluginApi) {
         completed: "Retrieved WhatsApp messages",
       },
     },
-    execute: async ({ chat_jid, limit = 20 }) => {
-      const msgs = await bridge.getMessages(chat_jid, limit);
+    execute: async ({ chat_jid, limit = 20, session_id }) => {
+      const msgs = await bridge.getMessages(chat_jid, limit, session_id);
       return JSON.stringify(msgs, null, 2);
     },
   });
@@ -1523,6 +1548,7 @@ export default async function plugin(bb: BbPluginApi) {
     description: "Search WhatsApp contacts by name or phone number.",
     parameters: z.object({
       query: z.string().min(1).describe("Search term to match against contact names or phone numbers"),
+      session_id: z.string().optional().describe("Target account session id from whatsapp_list_accounts. Omit to use the active account."),
     }),
     presentation: {
       label: {
@@ -1530,8 +1556,8 @@ export default async function plugin(bb: BbPluginApi) {
         completed: "Searched WhatsApp contacts",
       },
     },
-    execute: async ({ query }) => {
-      const contacts = await bridge.searchContacts(query);
+    execute: async ({ query, session_id }) => {
+      const contacts = await bridge.searchContacts(query, session_id);
       return JSON.stringify(contacts, null, 2);
     },
   });
@@ -1544,6 +1570,7 @@ export default async function plugin(bb: BbPluginApi) {
       recipient: z.string().min(1).describe("Recipient phone number with country code (e.g. '+1234567890') or full JID"),
       message: z.string().min(1).describe("The text message content to send"),
       allow_unknown_blast: z.boolean().optional().describe("Override the first-time-recipient hourly cap (max 5 new numbers/hour). Only set when the user explicitly asked to message many new contacts - bulk cold messaging gets WhatsApp accounts banned."),
+      session_id: z.string().optional().describe("Target account session id from whatsapp_list_accounts. Omit to use the active account."),
     }),
     presentation: {
       label: {
@@ -1551,8 +1578,8 @@ export default async function plugin(bb: BbPluginApi) {
         completed: "Sent WhatsApp message",
       },
     },
-    execute: async ({ recipient, message, allow_unknown_blast }) => {
-      const res = await bridge.sendMessage(recipient, message, undefined, undefined, allow_unknown_blast);
+    execute: async ({ recipient, message, allow_unknown_blast, session_id }) => {
+      const res = await bridge.sendMessage(recipient, message, undefined, session_id, allow_unknown_blast);
       return JSON.stringify(res, null, 2);
     },
   });
@@ -1566,6 +1593,7 @@ export default async function plugin(bb: BbPluginApi) {
       file_path: z.string().min(1).describe("Absolute local path to the file to send"),
       caption: z.string().optional().describe("Optional caption for the file"),
       allow_unknown_blast: z.boolean().optional().describe("Override the first-time-recipient hourly cap. Only set when the user explicitly asked for bulk messaging to new contacts."),
+      session_id: z.string().optional().describe("Target account session id from whatsapp_list_accounts. Omit to use the active account."),
     }),
     presentation: {
       label: {
@@ -1573,8 +1601,8 @@ export default async function plugin(bb: BbPluginApi) {
         completed: "Sent file via WhatsApp",
       },
     },
-    execute: async ({ recipient, file_path, caption = "", allow_unknown_blast }) => {
-      const res = await bridge.sendMessage(recipient, caption, file_path, undefined, allow_unknown_blast);
+    execute: async ({ recipient, file_path, caption = "", allow_unknown_blast, session_id }) => {
+      const res = await bridge.sendMessage(recipient, caption, file_path, session_id, allow_unknown_blast);
       return JSON.stringify(res, null, 2);
     },
   });
@@ -1586,6 +1614,7 @@ export default async function plugin(bb: BbPluginApi) {
     parameters: z.object({
       message_id: z.string().min(1).describe("The message ID containing the media"),
       chat_jid: z.string().min(1).describe("The chat JID where the message was received"),
+      session_id: z.string().optional().describe("Target account session id from whatsapp_list_accounts. Omit to use the active account."),
     }),
     presentation: {
       label: {
@@ -1593,8 +1622,8 @@ export default async function plugin(bb: BbPluginApi) {
         completed: "Downloaded WhatsApp media",
       },
     },
-    execute: async ({ message_id, chat_jid }) => {
-      const res = await bridge.downloadMedia(message_id, chat_jid);
+    execute: async ({ message_id, chat_jid, session_id }) => {
+      const res = await bridge.downloadMedia(message_id, chat_jid, session_id);
       return JSON.stringify(res, null, 2);
     },
   });
@@ -1605,6 +1634,7 @@ export default async function plugin(bb: BbPluginApi) {
     description: "Retrieve specific chat metadata (name, last message, timestamp) by its WhatsApp JID.",
     parameters: z.object({
       jid: z.string().min(1).describe("The WhatsApp JID of the chat (e.g. '1234567890@s.whatsapp.net' or 'groupid@g.us')"),
+      session_id: z.string().optional().describe("Target account session id from whatsapp_list_accounts. Omit to use the active account."),
     }),
     presentation: {
       label: {
@@ -1612,8 +1642,8 @@ export default async function plugin(bb: BbPluginApi) {
         completed: "Fetched WhatsApp chat",
       },
     },
-    execute: async ({ jid }) => {
-      const chat = await bridge.getChat(jid);
+    execute: async ({ jid, session_id }) => {
+      const chat = await bridge.getChat(jid, session_id);
       if (!chat) return JSON.stringify({ error: "Chat not found", jid });
       return JSON.stringify(chat, null, 2);
     },
@@ -1625,6 +1655,7 @@ export default async function plugin(bb: BbPluginApi) {
     description: "Find or resolve the direct (1-on-1) WhatsApp chat JID for a given phone number.",
     parameters: z.object({
       phone: z.string().min(1).describe("Phone number with country code (e.g. '+1234567890' or '1234567890') or existing JID"),
+      session_id: z.string().optional().describe("Target account session id from whatsapp_list_accounts. Omit to use the active account."),
     }),
     presentation: {
       label: {
@@ -1632,8 +1663,8 @@ export default async function plugin(bb: BbPluginApi) {
         completed: "Resolved direct WhatsApp chat",
       },
     },
-    execute: async ({ phone }) => {
-      const chat = await bridge.getDirectChat(phone);
+    execute: async ({ phone, session_id }) => {
+      const chat = await bridge.getDirectChat(phone, session_id);
       if (!chat) return JSON.stringify({ error: "No direct chat found for this number", phone });
       return JSON.stringify(chat, null, 2);
     },
@@ -1645,6 +1676,7 @@ export default async function plugin(bb: BbPluginApi) {
     description: "List all WhatsApp chats (direct and group) involving a specific contact identified by JID or phone number.",
     parameters: z.object({
       contact: z.string().min(1).describe("Contact JID (e.g. '1234567890@s.whatsapp.net') or phone number with country code"),
+      session_id: z.string().optional().describe("Target account session id from whatsapp_list_accounts. Omit to use the active account."),
     }),
     presentation: {
       label: {
@@ -1652,8 +1684,8 @@ export default async function plugin(bb: BbPluginApi) {
         completed: "Fetched chats for contact",
       },
     },
-    execute: async ({ contact }) => {
-      const chats = await bridge.getContactChats(contact);
+    execute: async ({ contact, session_id }) => {
+      const chats = await bridge.getContactChats(contact, session_id);
       return JSON.stringify(chats, null, 2);
     },
   });
@@ -1664,6 +1696,7 @@ export default async function plugin(bb: BbPluginApi) {
     description: "Get the most recent WhatsApp message exchanged with a specific contact or in a given chat JID.",
     parameters: z.object({
       contact: z.string().min(1).describe("Contact JID (e.g. '1234567890@s.whatsapp.net') or phone number with country code"),
+      session_id: z.string().optional().describe("Target account session id from whatsapp_list_accounts. Omit to use the active account."),
     }),
     presentation: {
       label: {
@@ -1671,8 +1704,8 @@ export default async function plugin(bb: BbPluginApi) {
         completed: "Fetched last WhatsApp interaction",
       },
     },
-    execute: async ({ contact }) => {
-      const msg = await bridge.getLastInteraction(contact);
+    execute: async ({ contact, session_id }) => {
+      const msg = await bridge.getLastInteraction(contact, session_id);
       if (!msg) return JSON.stringify({ error: "No messages found for this contact", contact });
       return JSON.stringify(msg, null, 2);
     },
@@ -1686,6 +1719,7 @@ export default async function plugin(bb: BbPluginApi) {
       message_id: z.string().min(1).describe("The ID of the target WhatsApp message"),
       chat_jid: z.string().min(1).describe("The JID of the chat containing the message"),
       context_size: z.number().optional().describe("Number of messages to retrieve before and after the target (default 5)"),
+      session_id: z.string().optional().describe("Target account session id from whatsapp_list_accounts. Omit to use the active account."),
     }),
     presentation: {
       label: {
@@ -1693,8 +1727,8 @@ export default async function plugin(bb: BbPluginApi) {
         completed: "Fetched WhatsApp message context",
       },
     },
-    execute: async ({ message_id, chat_jid, context_size = 5 }) => {
-      const ctx = await bridge.getMessageContext(message_id, chat_jid, context_size);
+    execute: async ({ message_id, chat_jid, context_size = 5, session_id }) => {
+      const ctx = await bridge.getMessageContext(message_id, chat_jid, context_size, session_id);
       return JSON.stringify(ctx, null, 2);
     },
   });
@@ -1702,6 +1736,7 @@ export default async function plugin(bb: BbPluginApi) {
   // Configure agent tools so threads automatically have access
   bb.agents.configure((_context) => ({
     tools: [
+      "whatsapp_list_accounts",
       "whatsapp_status",
       "whatsapp_list_chats",
       "whatsapp_list_messages",
@@ -1738,8 +1773,36 @@ export default async function plugin(bb: BbPluginApi) {
     async run(argv, _ctx) {
       const sub = argv[0]?.toLowerCase() || "status";
 
+      // Every read/send subcommand accepts `--session <id>` to target a
+      // specific account; without it the active account is used.
+      const takeSessionFlag = (args: string[]): { sessionId?: string; rest: string[] } => {
+        const i = args.indexOf("--session");
+        if (i === -1) return { rest: args };
+        const rest = [...args];
+        rest.splice(i, 1);
+        const sessionId = rest.splice(i, 1)[0];
+        return { sessionId, rest };
+      };
+      const { sessionId: cliSession, rest: restArgs } = takeSessionFlag(argv.slice(1));
+
+      if (sub === "accounts") {
+        const sessions = await bridge.getSessions();
+        if (sessions.length === 0) {
+          return { exitCode: 0, stdout: "No accounts configured." };
+        }
+        const lines = sessions.map((sess) => {
+          const mark = sess.is_active ? "*" : " ";
+          const phone = sess.phone ? `+${sess.phone}` : "(not paired)";
+          return `${mark} ${sess.id}  ${sess.name}  ${phone}  [${sess.status}]${sess.connected ? " CONNECTED" : ""}`;
+        });
+        return {
+          exitCode: 0,
+          stdout: `WhatsApp Accounts (* = active):\n\n${lines.join("\n")}\n\nTarget a specific account with: bb whatsapp <command> ... --session <id>`,
+        };
+      }
+
       if (sub === "status") {
-        const s = await bridge.getStatus();
+        const s = await bridge.getStatus(cliSession);
         return {
           exitCode: 0,
           stdout: `WhatsApp Bridge Status:\n  State: ${s.status.toUpperCase()}\n  Connected: ${s.connected ? "YES" : "NO"}\n  Phone: ${s.phone || "Not paired"}\n  Running: ${s.running ? "YES" : "NO"}\n${s.error ? `  Error: ${s.error}\n` : ""}`,
@@ -1747,7 +1810,7 @@ export default async function plugin(bb: BbPluginApi) {
       }
 
       if (sub === "qr") {
-        const s = await bridge.getStatus();
+        const s = await bridge.getStatus(cliSession);
         if (s.connected) {
           return { exitCode: 0, stdout: `Already paired and connected to WhatsApp (+${s.phone})` };
         }
@@ -1761,7 +1824,7 @@ export default async function plugin(bb: BbPluginApi) {
       }
 
       if (sub === "chats") {
-        const chats = await bridge.getChats();
+        const chats = await bridge.getChats("", cliSession);
         if (chats.length === 0) {
           return { exitCode: 0, stdout: "No chats found or bridge not synced yet." };
         }
@@ -1770,11 +1833,11 @@ export default async function plugin(bb: BbPluginApi) {
       }
 
       if (sub === "contacts") {
-        const query = argv.slice(1).join(" ");
+        const query = restArgs.join(" ");
         if (!query) {
-          return { exitCode: 1, stderr: "Usage: bb whatsapp contacts <query>" };
+          return { exitCode: 1, stderr: "Usage: bb whatsapp contacts <query> [--session <id>]" };
         }
-        const contacts = await bridge.searchContacts(query);
+        const contacts = await bridge.searchContacts(query, cliSession);
         if (contacts.length === 0) {
           return { exitCode: 0, stdout: "No contacts matched." };
         }
@@ -1783,12 +1846,12 @@ export default async function plugin(bb: BbPluginApi) {
       }
 
       if (sub === "messages") {
-        const chatJid = argv[1];
-        const limit = Number(argv[2]) || 20;
+        const chatJid = restArgs[0];
+        const limit = Number(restArgs[1]) || 20;
         if (!chatJid) {
-          return { exitCode: 1, stderr: "Usage: bb whatsapp messages <chat_jid> [limit]" };
+          return { exitCode: 1, stderr: "Usage: bb whatsapp messages <chat_jid> [limit] [--session <id>]" };
         }
-        const msgs = await bridge.getMessages(chatJid, limit);
+        const msgs = await bridge.getMessages(chatJid, limit, cliSession);
         if (msgs.length === 0) {
           return { exitCode: 0, stdout: "No messages found in this chat." };
         }
@@ -1801,23 +1864,23 @@ export default async function plugin(bb: BbPluginApi) {
       }
 
       if (sub === "send-file") {
-        const recipient = argv[1];
-        const filePath = argv[2];
-        const caption = argv.slice(3).join(" ");
+        const recipient = restArgs[0];
+        const filePath = restArgs[1];
+        const caption = restArgs.slice(2).join(" ");
         if (!recipient || !filePath) {
-          return { exitCode: 1, stderr: "Usage: bb whatsapp send-file <recipient> <path> [caption]" };
+          return { exitCode: 1, stderr: "Usage: bb whatsapp send-file <recipient> <path> [caption] [--session <id>]" };
         }
-        const res = await bridge.sendMessage(recipient, caption, filePath);
+        const res = await bridge.sendMessage(recipient, caption, filePath, cliSession);
         return { exitCode: res.success ? 0 : 1, stdout: res.message };
       }
 
       if (sub === "send") {
-        const recipient = argv[1];
-        const message = argv.slice(2).join(" ");
+        const recipient = restArgs[0];
+        const message = restArgs.slice(1).join(" ");
         if (!recipient || !message) {
-          return { exitCode: 1, stderr: "Usage: bb whatsapp send <recipient> <message>" };
+          return { exitCode: 1, stderr: "Usage: bb whatsapp send <recipient> <message> [--session <id>]" };
         }
-        const res = await bridge.sendMessage(recipient, message);
+        const res = await bridge.sendMessage(recipient, message, undefined, cliSession);
         return { exitCode: res.success ? 0 : 1, stdout: res.message };
       }
 
@@ -1850,7 +1913,7 @@ export default async function plugin(bb: BbPluginApi) {
         return { exitCode: res.success ? 0 : 1, stdout: res.message };
       }
 
-      return { exitCode: 1, stderr: `Unknown subcommand: ${sub}. Available: status, qr, chats, contacts, messages, send, send-file, start, stop, restart, backup, restore.` };
+      return { exitCode: 1, stderr: `Unknown subcommand: ${sub}. Available: status, accounts, qr, chats, contacts, messages, send, send-file, start, stop, restart, backup, restore. Most accept --session <id>.` };
     },
   });
 }

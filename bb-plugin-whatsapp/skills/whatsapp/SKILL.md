@@ -1,183 +1,116 @@
 ---
 name: whatsapp
-description: "Send WhatsApp messages, read and search chat history, look up contacts, download media, and manage the WhatsApp multi-device bridge. Use when the user asks to chat, search contacts, read messages, send files, or check bridge status."
+description: "Send WhatsApp messages, read and search chat history, look up contacts, download media, and manage MULTIPLE WhatsApp accounts through the multi-device bridge. Use when the user asks to chat, search contacts, read messages, send files, check status, or work with more than one WhatsApp number."
 ---
 
-# WhatsApp MCP Plugin for Blackbox
+# WhatsApp Multi-Account Plugin for Blackbox
 
-Connects your WhatsApp account via the official multi-device protocol (`whatsmeow` bridge). Messages and contacts are stored locally in SQLite and exposed through 12 registered Blackbox agent tools, the `bb whatsapp` CLI, and an interactive chat UI in Blackbox.
+Connects one or more WhatsApp accounts via the official multi-device protocol (`whatsmeow` bridge). Everything goes through the registered agent tools below or the `bb whatsapp` CLI.
+
+**NEVER do these - they are slow, fragile, and unsafe:**
+- Do NOT open or query the SQLite stores (`bridge/store/**.db`) directly.
+- Do NOT call `http://127.0.0.1:8080/api/...` by hand with curl/Invoke-RestMethod/python.
+- Do NOT guess session ids - list them with `whatsapp_list_accounts`.
+- Do NOT restart the bridge or a session while a pairing or the initial history sync is in progress (that kills the pair and gets the account logged out).
+
+## Multiple accounts (read this first)
+
+Each paired number is a **session** with a stable `session_id` (e.g. `default`, `session_1763..._4821`).
+
+1. Call `whatsapp_list_accounts` (or `bb whatsapp accounts`) to get every account: `session_id`, name, phone, status, and which one is **active**.
+2. Every other `whatsapp_*` tool accepts an optional `session_id` parameter. Omit it to use the active account; pass it to act from a specific number.
+3. Chats, messages and contacts are **per account** - a JID from account A does not exist in account B's store.
 
 ## Registered Agent Tools
 
-These tools are automatically available to agents in Blackbox threads:
+### Accounts & Status
 
-### Status & Connection
-
-#### `whatsapp_status`
-Check bridge status, connection state, authenticated phone number, and QR code pairing status.
+#### `whatsapp_list_accounts`
+List all paired accounts. Call this FIRST when multiple numbers exist or the user names a number to send from.
 ```json
 {}
 ```
-Returns `{ "connected": boolean, "status": "connected" | "connecting" | "needs_scan" | "disconnected", "phone": string, "qr": string }`. If `connected` is false, notify the user to scan the pairing QR code displayed in the Blackbox WhatsApp UI panel or generated via CLI.
+Returns `[{ "id": "session_1763..._4821", "name": "Work", "phone": "12025551234", "status": "connected", "connected": true, "is_active": false }]`.
 
----
+#### `whatsapp_status`
+Check bridge/account status and pairing state.
+```json
+{ "session_id": "default" }  // optional
+```
+Returns `{ "connected": bool, "status": "connected"|"connecting"|"needs_scan"|"logged_out"|..., "phone": string, "pairing": bool, "syncing": bool }`. If `pairing` or `syncing` is true, WAIT - do not restart anything.
 
 ### Contacts
 
 #### `whatsapp_search_contacts`
-Search saved contacts and direct chats by name or phone number.
 ```json
-{
-  "query": "Alice"
-}
+{ "query": "Alice", "session_id": "default" }
 ```
-Returns a list of `{ "jid": string, "name": string, "phone_number": string }`.
-
----
 
 ### Chats
 
 #### `whatsapp_list_chats`
-List recent chats with last message previews, timestamps, and contact names.
 ```json
-{
-  "query": "Design Team", // optional
-  "limit": 20             // optional, default 20
-}
+{ "query": "Design Team", "limit": 20, "session_id": "default" }
 ```
-Returns an array of chat summaries. Direct chats use JID format `<phone>@s.whatsapp.net`; group chats use `<id>@g.us`.
+Direct chats: `<phone>@s.whatsapp.net`; groups: `<id>@g.us`.
 
-#### `whatsapp_get_chat`
-Retrieve detailed metadata for a specific chat by JID.
-```json
-{
-  "jid": "12025551234@s.whatsapp.net"
-}
-```
-
-#### `whatsapp_get_direct_chat`
-Find or resolve the direct (1-on-1) chat JID for a given phone number.
-```json
-{
-  "phone": "+12025551234" // with or without '+' or existing JID
-}
-```
-
-#### `whatsapp_get_contact_chats`
-List all chats (both direct 1-on-1 and group chats) involving a contact.
-```json
-{
-  "contact": "12025551234@s.whatsapp.net" // JID or phone number
-}
-```
-
----
+#### `whatsapp_get_chat` / `whatsapp_get_direct_chat` / `whatsapp_get_contact_chats` / `whatsapp_get_last_interaction` / `whatsapp_get_message_context`
+All take their usual ids plus optional `session_id`.
 
 ### Messages & History
 
 #### `whatsapp_list_messages`
-Retrieve message history from a chat.
 ```json
-{
-  "chat_jid": "12025551234@s.whatsapp.net",
-  "limit": 50 // optional, default 20
-}
+{ "chat_jid": "12025551234@s.whatsapp.net", "limit": 50, "session_id": "default" }
 ```
-Returns an array of messages with `timestamp`, `sender`, `content`, `is_from_me`, `id`, `media_type`, and `filename`.
-
-#### `whatsapp_get_last_interaction`
-Retrieve the most recent message exchanged with a contact or chat.
-```json
-{
-  "contact": "12025551234@s.whatsapp.net"
-}
-```
-
-#### `whatsapp_get_message_context`
-Retrieve messages immediately before and after a target message to inspect context.
-```json
-{
-  "message_id": "3EB0ABC123DEF",
-  "chat_jid": "12025551234@s.whatsapp.net",
-  "context_size": 5 // optional, default 5
-}
-```
-Returns `{ "target": {...} | null, "before": [...], "after": [...] }`.
-
----
 
 ### Sending & Media
 
 #### `whatsapp_send_message`
-Send a text message to a phone number or group JID.
 ```json
-{
-  "recipient": "+12025551234", // phone number with country code or full JID
-  "message": "Hello from Blackbox!"
-}
+{ "recipient": "+12025551234", "message": "Hello!", "session_id": "default" }
 ```
-Returns `{ "success": true, "message": "Message sent" }`.
 
 #### `whatsapp_send_file`
-Send a media file (image, video, document, or audio) to a recipient.
 ```json
-{
-  "recipient": "12025551234@s.whatsapp.net",
-  "file_path": "C:/path/to/invoice.pdf", // absolute path on disk
-  "caption": "Your monthly invoice"      // optional
-}
+{ "recipient": "12025551234@s.whatsapp.net", "file_path": "C:/path/to/invoice.pdf", "caption": "Invoice", "session_id": "default" }
 ```
-Returns `{ "success": true, "message": "File sent" }`.
 
 #### `whatsapp_download_media`
-Download media attached to an incoming message and retrieve its local file path.
 ```json
-{
-  "message_id": "3EB0ABC123DEF",
-  "chat_jid": "12025551234@s.whatsapp.net"
-}
+{ "message_id": "3EB0ABC123DEF", "chat_jid": "12025551234@s.whatsapp.net", "session_id": "default" }
 ```
-Returns `{ "success": true, "file_path": "C:/.../store/media/image.jpeg" }`.
 
----
+## Send limits (enforced by the bridge, not optional)
+
+Sending from any account is rate-limited to keep the WhatsApp accounts safe. If a send returns HTTP 429 with `retry_after`, wait and retry later - do NOT work around it:
+
+- **2 s minimum spacing** between sends (serialized per account).
+- **50 messages per 10 minutes** per account.
+- **500 messages per day** per account (persisted across restarts).
+- **5 NEW recipients per hour** per account. `allow_unknown_blast: true` overrides only this cap and only when the user explicitly asked to message many new contacts - bulk cold messaging gets accounts banned by WhatsApp.
 
 ## CLI Commands
 
-The plugin provides the `bb whatsapp` CLI command group in Blackbox:
-
 ```bash
-# Check bridge connection and authenticated phone
-bb whatsapp status
-
-# Show terminal QR code for pairing
-bb whatsapp qr
-
-# List recent conversations
-bb whatsapp chats
-
-# Search contacts
-bb whatsapp contacts "Alice"
-
-# List messages in a specific chat
-bb whatsapp messages "12025551234@s.whatsapp.net" 50
-
-# Send a text message
-bb whatsapp send "+12025551234" "Hello from Blackbox!"
-
-# Send a file with optional caption
-bb whatsapp send-file "+12025551234" "C:/path/to/photo.jpg" "Vacation photo"
-
-# Bridge lifecycle management
-bb whatsapp start
-bb whatsapp restart
-bb whatsapp stop
+bb whatsapp accounts                          # list accounts: * = active, session ids, phones, status
+bb whatsapp status [--session <id>]           # connection + pairing state
+bb whatsapp qr [--session <id>]               # pairing QR for a new/existing account
+bb whatsapp chats [--session <id>]
+bb whatsapp contacts "Alice" [--session <id>]
+bb whatsapp messages <chat_jid> [limit] [--session <id>]
+bb whatsapp send <recipient> <message> [--session <id>]
+bb whatsapp send-file <recipient> <path> [caption] [--session <id>]
+bb whatsapp backup [session_id]               # zip creds + message store
+bb whatsapp restore <session_id> <file.zip>
+bb whatsapp start | stop | restart            # bridge lifecycle
 ```
-
----
 
 ## Usage Guidelines & Best Practices
 
-1. **Check Connection First**: Before sending messages or if queries return empty, verify `whatsapp_status`. If `connected: false`, instruct the user to scan the QR code via UI or `bb whatsapp qr`.
-2. **Recipient Identification**: For `recipient`, use either international phone format (e.g., `+12025551234`) or full WhatsApp JID (e.g., `12025551234@s.whatsapp.net` or `123456-7890@g.us`).
-3. **Media Handling**: When an incoming message has a non-empty `media_type` or `filename`, use `whatsapp_download_media` to save it locally before processing or inspecting it.
-4. **Safety & Confirmation**: Always verify the recipient's identity before sending sensitive information or messages on behalf of the user.
+1. **Pick the account first**: `whatsapp_list_accounts` -> choose `session_id` -> pass it to every follow-up call.
+2. **Check connection before sending**: `whatsapp_status`; if `connected: false`, tell the user to pair in the Blackbox WhatsApp tab. If `pairing`/`syncing`, wait.
+3. **Recipient format**: international phone (`+12025551234`) or full JID; groups are `<id>@g.us`.
+4. **Media**: incoming messages with `media_type` set can be saved via `whatsapp_download_media`, then inspected locally.
+5. **Confirm before sending**: verify recipient identity before sending anything sensitive on the user's behalf.
+6. **Pairing a new account**: the user scans the QR in the Blackbox WhatsApp tab themselves; pairing + initial sync can take several minutes. Never restart the session during that window.

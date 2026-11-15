@@ -1887,13 +1887,39 @@ export default async function plugin(bb: BbPluginApi) {
       { name: "messages", summary: "List messages in a chat", usage: "bb whatsapp messages <chat_jid> [limit]" },
       { name: "send", summary: "Send a message (recipient or --to chat name)", usage: "bb whatsapp send --account <name|phone> --to <chat name> <message>  |  bb whatsapp send <recipient> <message>" },
       { name: "say", summary: "Broadcast a message to all chats (dry-run first)", usage: "bb whatsapp say --all [--groups] [--limit N] [--dry-run] [--yes] <message>" },
+      { name: "claim", summary: "Take an exclusive agent claim on an account", usage: "bb whatsapp claim --account <name|phone> [--holder <name>] [--ttl <seconds>]" },
+      { name: "release", summary: "Release your claim on an account", usage: "bb whatsapp release --account <name|phone> [--holder <name>]" },
       { name: "send-file", summary: "Send a file", usage: "bb whatsapp send-file <recipient> <path> [caption]" },
       { name: "start", summary: "Start the WhatsApp bridge daemon", usage: "bb whatsapp start" },
       { name: "stop", summary: "Stop the WhatsApp bridge daemon", usage: "bb whatsapp stop" },
       { name: "restart", summary: "Restart the WhatsApp bridge daemon", usage: "bb whatsapp restart" },
     ],
     async run(argv, _ctx) {
-      const sub = argv[0]?.toLowerCase() || "status";
+      // `bb whatsapp` and `bb whatsapp --help` print the cheat sheet: the
+      // local agent probes it constantly, so it must exist and be fast.
+      const first = argv[0]?.toLowerCase();
+      if (!first || first === "--help" || first === "-h" || first === "help") {
+        return {
+          exitCode: 0,
+          stdout: [
+            "WhatsApp CLI - cheat sheet (no session_id / JID needed, names resolve):",
+            "",
+            "  bb whatsapp send --to \"Mom\" \"привет\"                        send to a chat BY NAME",
+            "  bb whatsapp send --account 16838505031 --to \"Mom\" \"текст\"     pick account by phone/name",
+            "  bb whatsapp say --all \"текст\" --dry-run                     preview broadcast (count + recipients)",
+            "  bb whatsapp say --all \"текст\" --yes                       broadcast to all chats (groups off; add --groups)",
+            "  bb whatsapp messages \"Mom\" 20                             read a chat by name",
+            "  bb whatsapp chats                                             list recent chats",
+            "  bb whatsapp accounts                                          list accounts (id, name, phone, status)",
+            "  bb whatsapp claim --account <name|phone> --holder my-agent    exclusive claim (TTL, default 10 min)",
+            "  bb whatsapp release --account <name|phone> --holder my-agent  release your claim",
+            "",
+            "More: status, qr, contacts <query>, send-file, backup, restore, start, stop, restart.",
+            "Every command also accepts --session <id> (see bb whatsapp accounts).",
+          ].join("\n"),
+        };
+      }
+      const sub = first;
 
       // Every read/send subcommand accepts `--session <id>` to target a
       // specific account; without it the active account is used.
@@ -2176,7 +2202,33 @@ export default async function plugin(bb: BbPluginApi) {
         return { exitCode: res.success ? 0 : 1, stdout: res.message };
       }
 
-      return { exitCode: 1, stderr: `Unknown subcommand: ${sub}. Available: status, accounts, qr, chats, contacts, messages, send, say, send-file, start, stop, restart, backup, restore. Most accept --session <id>; send/say accept --account <name|phone> and --to <chat name>.` };
+      // claim/release: exclusive agent claim on an account (see the
+      // whatsapp_claim_session tool; this is its CLI twin).
+      if (sub === "claim" || sub === "release") {
+        const holderF = takeFlag(restArgs, "--holder");
+        const ttlF = takeFlag(holderF.rest, "--ttl");
+        const accountF = takeFlag(ttlF.rest, "--account");
+        const token = accountF.value || cliSession || accountF.rest[0];
+        if (!token) {
+          return { exitCode: 1, stderr: `Usage: bb whatsapp ${sub} --account <name|phone|session_id> [--holder <name>]${sub === "claim" ? " [--ttl <seconds>]" : ""}` };
+        }
+        const acc = await resolveAccount(token);
+        if (!acc.sessionId) return { exitCode: 1, stderr: acc.error };
+        const holder = holderF.value || "cli";
+        if (sub === "claim") {
+          const res = await bridge.claimSession(acc.sessionId, holder, Number(ttlF.value) || 0);
+          return {
+            exitCode: res.success ? 0 : 1,
+            stdout: res.success
+              ? `Claimed ${acc.sessionId} as "${res.holder}" until ${res.expires_at}`
+              : res.message,
+          };
+        }
+        const res = await bridge.releaseSession(acc.sessionId, holder, false);
+        return { exitCode: res.success ? 0 : 1, stdout: res.success ? `Released ${acc.sessionId}` : res.message };
+      }
+
+      return { exitCode: 1, stderr: `Unknown subcommand: ${sub}. Available: status, accounts, qr, chats, contacts, messages, send, say, send-file, claim, release, start, stop, restart, backup, restore. Most accept --session <id>; send/say/claim/release accept --account <name|phone> and send accepts --to <chat name>. Or run: bb whatsapp --help` };
     },
   });
 }

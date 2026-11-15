@@ -122,13 +122,17 @@ Sending from any account is rate-limited to keep the WhatsApp accounts safe. If 
 ## CLI Commands
 
 ```bash
+bb whatsapp --help                            # short cheat sheet with examples
 bb whatsapp accounts                          # list accounts: * = active, session ids, phones, status
 bb whatsapp status [--session <id>]           # connection + pairing state
 bb whatsapp qr [--session <id>]               # pairing QR for a new/existing account
 bb whatsapp chats [--session <id>]
 bb whatsapp contacts "Alice" [--session <id>]
-bb whatsapp messages <chat_jid> [limit] [--session <id>]
-bb whatsapp send <recipient> <message> [--session <id>]
+bb whatsapp messages <chat name|jid> [limit] [--session <id>]
+bb whatsapp send [--account <name|phone>] [--to <chat name>] <recipient> <message>
+bb whatsapp say --all [--groups] [--limit N] [--dry-run] [--yes] <message>
+bb whatsapp claim --account <name|phone> [--holder <name>] [--ttl <seconds>]
+bb whatsapp release --account <name|phone> [--holder <name>]
 bb whatsapp send-file <recipient> <path> [caption] [--session <id>]
 bb whatsapp backup [session_id]               # zip creds + message store
 bb whatsapp restore <session_id> <file.zip>

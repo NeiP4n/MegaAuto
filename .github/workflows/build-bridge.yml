@@ -67,10 +67,12 @@ jobs:
         run: |
           set -euo pipefail
           echo "$GITHUB_SHA" > bridge-version.txt
+          sha256sum bb-plugin-whatsapp/bridge/whatsapp-bridge.exe | cut -d' ' -f1 > whatsapp-bridge.exe.sha256
           gh release delete bridge-latest --yes --cleanup-tag 2>/dev/null || true
           gh release create bridge-latest \
             --title "WhatsApp bridge (latest)" \
             --notes "Auto-built from $GITHUB_SHA" \
             --prerelease \
             bb-plugin-whatsapp/bridge/whatsapp-bridge.exe \
+            whatsapp-bridge.exe.sha256 \
             bridge-version.txt

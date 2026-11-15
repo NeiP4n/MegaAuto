@@ -41,9 +41,15 @@ function ComposerStatusBannerWrapper() {
   return <ComposerStatusBanner status={status} />;
 }
 
-// Nav Panel & Tab
+// Left Nav Panel
 function NavPanelView() {
   const { status, isLoading, refresh } = useRadarStatus();
+  return <RadarNavPanel status={status} isLoading={isLoading} onRefresh={refresh} />;
+}
+
+// Thread Tab (receives threadId from context props)
+function ThreadTabView({ threadId }: { threadId?: string }) {
+  const { status, isLoading, refresh } = useRadarStatus(threadId);
   return <RadarNavPanel status={status} isLoading={isLoading} onRefresh={refresh} />;
 }
 
@@ -78,6 +84,6 @@ export default definePluginApp((app) => {
     title: "Agent Radar",
     icon: "Terminal",
     layout: "flush",
-    component: NavPanelView,
+    component: ThreadTabView,
   });
 });

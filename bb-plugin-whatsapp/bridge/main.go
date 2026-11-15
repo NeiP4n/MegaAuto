@@ -165,6 +165,20 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 	return err
 }
 
+// UpdateMessageContent rewrites a stored message's text in place, used when
+// a message edit arrives. Reports whether a matching row existed.
+func (store *MessageStore) UpdateMessageContent(id, chatJID, content string) (bool, error) {
+	res, err := store.db.Exec(
+		"UPDATE messages SET content = ? WHERE id = ? AND chat_jid = ?",
+		content, id, chatJID,
+	)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
+}
+
 // Get messages from a chat
 // HasChat reports whether a chat row exists (i.e. we have exchanged messages
 // with this JID or it synced from history).
@@ -235,6 +249,46 @@ func extractTextContent(msg *waProto.Message) string {
 		return text
 	} else if extendedText := msg.GetExtendedTextMessage(); extendedText != nil {
 		return extendedText.GetText()
+	}
+
+	// Bot/AI and other rich responses keep their text in dedicated
+	// containers instead of conversation/extendedText.
+	if im := msg.GetInteractiveMessage(); im != nil {
+		parts := make([]string, 0, 3)
+		if t := im.GetHeader().GetTitle(); t != "" {
+			parts = append(parts, t)
+		}
+		if t := im.GetBody().GetText(); t != "" {
+			parts = append(parts, t)
+		}
+		if t := im.GetFooter().GetText(); t != "" {
+			parts = append(parts, t)
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, "\n")
+		}
+	}
+	if bm := msg.GetButtonsMessage(); bm != nil {
+		if t := bm.GetContentText(); t != "" {
+			return t
+		}
+	}
+	if lm := msg.GetListMessage(); lm != nil {
+		parts := make([]string, 0, 2)
+		if t := lm.GetTitle(); t != "" {
+			parts = append(parts, t)
+		}
+		if t := lm.GetDescription(); t != "" {
+			parts = append(parts, t)
+		}
+		if len(parts) > 0 {
+			return strings.Join(parts, "\n")
+		}
+	}
+	if ht := msg.GetTemplateMessage().GetHydratedTemplate(); ht != nil {
+		if t := ht.GetHydratedContentText(); t != "" {
+			return t
+		}
 	}
 
 	// For now, we're ignoring non-text messages
@@ -525,6 +579,35 @@ func handleMessage(sess *Session, messageStore *MessageStore, msg *events.Messag
 	// Save message to database
 	chatJID := msg.Info.Chat.String()
 	sender := msg.Info.Sender.User
+
+	// Message edits arrive wrapped as editedMessage > protocolMessage
+	// (MESSAGE_EDIT). whatsmeow unwraps the outer layer, so the protocol
+	// message sits here with the ORIGINAL message ID in its key. Meta AI
+	// streams replies as a chain of these edits - update the stored row
+	// instead of dropping the edit (which froze the first streamed chunk)
+	// or inserting it as a new message.
+	if pm := msg.Message.GetProtocolMessage(); pm.GetType() == waProto.ProtocolMessage_MESSAGE_EDIT {
+		targetID := pm.GetKey().GetID()
+		newContent := extractTextContent(pm.GetEditedMessage())
+		newMediaType, newFilename, newURL, newMediaKey, newFileSHA256, newFileEncSHA256, newFileLength := extractMediaInfo(pm.GetEditedMessage())
+		if targetID == "" || (newContent == "" && newMediaType == "") {
+			return
+		}
+		updated, uerr := messageStore.UpdateMessageContent(targetID, chatJID, newContent)
+		if uerr != nil {
+			logger.Warnf("Failed to apply message edit for %s: %v", targetID, uerr)
+		} else if !updated {
+			// The original never arrived on this bridge (paired later): store
+			// the final content under the original ID so later edits match.
+			if serr := messageStore.StoreMessage(
+				targetID, chatJID, sender, newContent, msg.Info.Timestamp, msg.Info.IsFromMe,
+				newMediaType, newFilename, newURL, newMediaKey, newFileSHA256, newFileEncSHA256, newFileLength, msg.Info.PushName,
+			); serr != nil {
+				logger.Warnf("Failed to store edited message %s: %v", targetID, serr)
+			}
+		}
+		return
+	}
 
 	// Get appropriate chat name (pass pushName to resolve real contact names)
 	name := GetChatName(client, messageStore, msg.Info.Chat, chatJID, nil, msg.Info.PushName, logger)
@@ -2652,14 +2735,11 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 					continue
 				}
 
-				// Extract text content
+				// Extract text content (shared extractor: also covers bot/AI
+				// rich containers like interactiveMessage, not just plain text)
 				var content string
 				if msg.Message.Message != nil {
-					if conv := msg.Message.Message.GetConversation(); conv != "" {
-						content = conv
-					} else if ext := msg.Message.Message.GetExtendedTextMessage(); ext != nil {
-						content = ext.GetText()
-					}
+					content = extractTextContent(msg.Message.Message)
 				}
 
 				// Extract media info

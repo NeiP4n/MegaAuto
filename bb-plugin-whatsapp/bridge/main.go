@@ -28,6 +28,7 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/proto/waCompanionReg"
 	"go.mau.fi/whatsmeow/proto/waMmsRetry"
 	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
@@ -35,6 +36,17 @@ import (
 	waLog "go.mau.fi/whatsmeow/util/log"
 	"google.golang.org/protobuf/proto"
 )
+
+func init() {
+	// Identify as Google Chrome on Windows so WhatsApp mobile recognizes the
+	// companion device as a legitimate desktop browser session.
+	// Defaults in whatsmeow (Os: "whatsmeow", PlatformType: UNKNOWN) cause:
+	// 1) The phone to hang on "Вход..." for 2-3 minutes with "Ошибка подключения".
+	// 2) The device to appear on the phone as "whatsmeow".
+	// 3) WhatsApp servers to drop the connection (~50s later) with a 401 device_removed error.
+	store.SetOSInfo("Windows", [3]uint32{10, 0, 22631})
+	store.DeviceProps.PlatformType = waCompanionReg.DeviceProps_CHROME.Enum()
+}
 
 // BuildSHA is stamped by CI (-ldflags "-X main.BuildSHA=<sha>") so the
 // plugin can tell which commit the running binary was built from and
@@ -2525,6 +2537,7 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 func main() {
 	logger := waLog.Stdout("Bridge", "INFO", true)
 	logger.Infof("Starting WhatsApp Multi-Account Bridge...")
+	logger.Infof("Device identity configured: Google Chrome on Windows (PlatformType=%v, OS=%s)", *store.DeviceProps.PlatformType, *store.DeviceProps.Os)
 
 	// Sync the WhatsApp Web client version with the live one (upstream-
 	// recommended: whatsmeow.GetLatestVersion + store.SetWAVersion). A

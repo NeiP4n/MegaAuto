@@ -391,6 +391,7 @@ export const rpcContract = defineRpcContract({
   update_api_config: {
     input: z.object({
       apiKey: z.string().optional(),
+      clearApiKey: z.boolean().optional(),
       endpointUrl: z.string().optional(),
       mediaEndpointUrl: z.string().optional(),
     }),
@@ -531,8 +532,8 @@ export class MetaMuseController {
         memories: Array.from(this.memories.values()),
       };
       fs.writeFileSync(this.storageFile, JSON.stringify(data, null, 2), "utf-8");
-    } catch {
-      // Ignored
+    } catch (err) {
+      console.error("[meta-muse] Failed to persist state to disk:", err);
     }
   }
 
@@ -648,17 +649,17 @@ export class MetaMuseController {
     };
   }
 
-  public updateConfig(patch: { apiKey?: string; endpointUrl?: string; mediaEndpointUrl?: string }): {
+  public updateConfig(patch: { apiKey?: string; clearApiKey?: boolean; endpointUrl?: string; mediaEndpointUrl?: string }): {
     success: boolean;
     isConfigured: boolean;
   } {
-    if (patch.apiKey !== undefined) {
+    if (patch.clearApiKey) {
+      this.config.apiKey = undefined;
+    } else if (patch.apiKey !== undefined) {
       const trimmed = patch.apiKey.trim();
-      // Protect genuine key from being overwritten by masked bullets (••••••••)
+      // Protect genuine key from being overwritten by empty strings or masked bullets (••••••••)
       if (trimmed && !trimmed.includes("•")) {
         this.config.apiKey = trimmed;
-      } else if (!trimmed) {
-        this.config.apiKey = undefined;
       }
     }
     if (patch.endpointUrl !== undefined) this.config.endpointUrl = patch.endpointUrl.trim() || undefined;
@@ -683,7 +684,12 @@ export class MetaMuseController {
 
     const conv = this.conversations.get(convId)!;
     const now = new Date().toISOString();
-    const mode = params.mode || conv.mode || this.currentMode;
+    // Global Strict Mode or explicitly requested Strict Mode takes absolute precedence
+    const isStrictMode =
+      this.currentMode === "strict_sandbox" ||
+      params.mode === "strict_sandbox" ||
+      conv.mode === "strict_sandbox";
+    const mode = isStrictMode ? "strict_sandbox" : (params.mode || conv.mode || this.currentMode);
 
     // 1. User message
     const userMsg: MuseMessage = {
@@ -700,8 +706,8 @@ export class MetaMuseController {
     let reply = "";
     const suggestions: string[] = [];
 
-    if (mode === "strict_sandbox") {
-      reply = "Strict Mode активен: исходящие сетевые запросы заблокированы политикой режима. Выполнение ограничено локальным контекстом и базой знаний.";
+    if (isStrictMode) {
+      reply = "Strict Mode активен: исходящие сетевые запросы API модели заблокированы политикой режима. Ответ сформирован локально без сетевых вызовов.";
       suggestions.push("Проверить локальную память", "Телеметрия хост-процесса", "Список активных задач");
     } else if (this.config.apiKey || this.config.endpointUrl) {
       const abortController = new AbortController();
@@ -1052,6 +1058,11 @@ export class MetaMuseController {
       const c = this.conversations.get(conversationId)!;
       c.mode = mode;
       c.updatedAt = new Date().toISOString();
+    } else if (mode === "strict_sandbox") {
+      // Global switch to Strict Mode propagates to all existing conversations
+      for (const c of this.conversations.values()) {
+        c.mode = mode;
+      }
     }
     this.saveState();
 

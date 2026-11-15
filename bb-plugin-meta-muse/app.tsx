@@ -89,15 +89,16 @@ export function MetaMuseView() {
     }
   }, [rpc]);
 
-  const handleSaveApiConfig = async (newConfig: { apiKey?: string; endpointUrl?: string; mediaEndpointUrl?: string }) => {
+  const handleSaveApiConfig = async (newConfig: {
+    apiKey?: string;
+    clearApiKey?: boolean;
+    endpointUrl?: string;
+    mediaEndpointUrl?: string;
+  }) => {
     try {
       const res = await rpc.call("update_api_config", newConfig);
       if (res) {
-        setApiConfig((prev) => ({
-          ...prev,
-          ...newConfig,
-          isConfigured: res.isConfigured,
-        }));
+        await loadApiConfig();
         setLastChatError(null);
         setLastMediaError(null);
       }
@@ -541,12 +542,14 @@ export function MetaMuseView() {
       </main>
 
       {/* API Configuration Modal */}
-      <ApiConfigModal
-        isOpen={isApiModalOpen}
-        onClose={() => setIsApiModalOpen(false)}
-        config={apiConfig}
-        onSave={handleSaveApiConfig}
-      />
+      {isApiModalOpen && (
+        <ApiConfigModal
+          isOpen={isApiModalOpen}
+          onClose={() => setIsApiModalOpen(false)}
+          config={apiConfig}
+          onSave={handleSaveApiConfig}
+        />
+      )}
     </div>
   );
 }

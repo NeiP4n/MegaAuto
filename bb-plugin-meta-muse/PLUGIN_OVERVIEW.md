@@ -1,6 +1,6 @@
 # Meta Muse AI: Deep Dive & Technical Overview
 
-> **Honest status (after de-mock review):** the LLM backend, the media generator and the isolated VM enclave described in this document are design intent, not current reality. Chat returns an explicit "no AI backend connected" reply, media jobs fail with a clear error, and VM metrics show real host-process data (RSS, uptime) with no fabricated sandbox. The scheduler (cron/interval/due date) and the local memory store are real.
+> **Honest status:** by default, no external LLM backend or media generator is configured. Until an API key or custom endpoint is configured in settings, chat and media requests return explicit configuration notices, and VM metrics show real host-process data (RSS, uptime) with no fabricated sandbox. The scheduler (cron/interval/due date) and local memory store are real and functional.
 
 ## 1. System Architecture
 

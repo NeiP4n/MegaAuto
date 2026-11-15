@@ -13,7 +13,13 @@ interface ApiConfigModalProps {
   isOpen: boolean;
   onClose: () => void;
   config: ApiConfig;
-  onSave: (config: { apiKey?: string; endpointUrl?: string; mediaEndpointUrl?: string; modelName?: string }) => Promise<void>;
+  onSave: (config: {
+    apiKey?: string;
+    clearApiKey?: boolean;
+    endpointUrl?: string;
+    mediaEndpointUrl?: string;
+    modelName?: string;
+  }) => Promise<void>;
 }
 
 export function ApiConfigModal({
@@ -26,8 +32,19 @@ export function ApiConfigModal({
   const [endpointUrl, setEndpointUrl] = useState(config.endpointUrl || "");
   const [mediaEndpointUrl, setMediaEndpointUrl] = useState(config.mediaEndpointUrl || "");
   const [showKey, setShowKey] = useState(false);
+  const [clearRequested, setClearRequested] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
+
+  React.useEffect(() => {
+    if (isOpen) {
+      setApiKey(config.apiKey || "");
+      setEndpointUrl(config.endpointUrl || "");
+      setMediaEndpointUrl(config.mediaEndpointUrl || "");
+      setShowKey(false);
+      setClearRequested(false);
+    }
+  }, [isOpen, config]);
 
   if (!isOpen) return null;
 
@@ -36,16 +53,15 @@ export function ApiConfigModal({
     setIsSaving(true);
     try {
       const trimmedKey = apiKey.trim();
-      // Protect against overwriting genuine key with masked bullets (••••••••)
+      // Protect genuine key from accidental empty overwrite or masked bullets (••••••••)
       let keyPayload: string | undefined = undefined;
-      if (trimmedKey && !trimmedKey.includes("•")) {
+      if (!clearRequested && trimmedKey && !trimmedKey.includes("•")) {
         keyPayload = trimmedKey;
-      } else if (trimmedKey === "") {
-        keyPayload = "";
       }
 
       await onSave({
         apiKey: keyPayload,
+        clearApiKey: clearRequested,
         endpointUrl: endpointUrl.trim() || undefined,
         mediaEndpointUrl: mediaEndpointUrl.trim() || undefined,
       });
@@ -122,19 +138,48 @@ export function ApiConfigModal({
               <label className="text-[11px] text-slate-300 font-medium">
                 API Ключ (Bearer Token):
               </label>
-              <button
-                type="button"
-                onClick={() => setShowKey(!showKey)}
-                className="text-[10px] text-slate-400 hover:text-cyan-300"
-              >
-                {showKey ? "Скрыть" : "Показать"}
-              </button>
+              <div className="flex items-center space-x-2">
+                {config.isConfigured && !clearRequested && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setClearRequested(true);
+                      setApiKey("");
+                    }}
+                    className="text-[10px] text-rose-400 hover:text-rose-300 hover:underline"
+                  >
+                    Очистить ключ
+                  </button>
+                )}
+                {clearRequested && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setClearRequested(false);
+                      setApiKey(config.apiKey || "");
+                    }}
+                    className="text-[10px] text-slate-400 hover:text-slate-300"
+                  >
+                    Отменить очистку
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowKey(!showKey)}
+                  className="text-[10px] text-slate-400 hover:text-cyan-300"
+                >
+                  {showKey ? "Скрыть" : "Показать"}
+                </button>
+              </div>
             </div>
             <input
               type={showKey ? "text" : "password"}
               value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="sk-..."
+              onChange={(e) => {
+                setApiKey(e.target.value);
+                if (clearRequested) setClearRequested(false);
+              }}
+              placeholder={config.isConfigured ? "•••••••• (сохранён в памяти)" : "sk-..."}
               className="w-full bg-[#161C2B] text-xs text-slate-100 rounded-xl p-2.5 border border-slate-700/80 focus:outline-none focus:border-cyan-400 font-mono"
             />
           </div>

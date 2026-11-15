@@ -9,7 +9,7 @@
   },
   "bb": {
     "name": "Meta Muse AI",
-    "description": "Proactive companion with chat history, cron/interval task scheduling, and long-term memory. No LLM backend, media generator, or VM sandbox is connected yet - those states are reported honestly.",
+    "description": "Proactive companion with chat history, cron/interval task scheduling, and long-term memory. No external LLM backend or media generator is configured by default - connect an API key or custom endpoint in settings.",
     "branding": {
       "icon": "Sparkles"
     },

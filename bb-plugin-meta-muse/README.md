@@ -2,7 +2,7 @@
 
 > **Meta Muse AI** is a proactive companion plugin for the Blackbox (BB) environment: conversation threads, a proactive task scheduler (cron / interval / due date) and associative long-term memory persisted locally.
 >
-> **Honest status:** there is no LLM backend, media generator, or isolated VM wired into this plugin yet. Chat replies state that no AI backend is connected, media jobs fail immediately with a clear error, and the VM tab shows real host-process metrics (RSS memory, uptime) instead of fabricated sandbox telemetry.
+> **Honest status:** by default, no external LLM backend or media generator is configured. Until an API key or custom endpoint is configured in settings, chat and media requests return explicit configuration notices, and the VM tab shows real host-process metrics (RSS memory, uptime) without fabricated sandbox telemetry.
 
 ---
 

@@ -194,6 +194,10 @@ export function WhatsAppView() {
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [historyNote, setHistoryNote] = useState<string | null>(null);
   const msgListRef = useRef<HTMLDivElement>(null);
+  // Per-account memory of the open chat and its scroll position, so
+  // switching account tabs and coming back lands where you left off.
+  const chatMemoryRef = useRef<Map<string, { jid: string | null; scrollTop: number }>>(new Map());
+  const pendingScrollRestoreRef = useRef<number | null>(null);
   const lastMsgKeyRef = useRef<string>("");
   const chatOpenedAtRef = useRef<number>(0);
   const [chatSearch, setChatSearch] = useState("");
@@ -397,6 +401,11 @@ export function WhatsAppView() {
   // Multi-account session actions
   const handleSwitchSession = async (sessionId: string) => {
     if (sessionId === activeSessionId) return;
+    // Remember where we are on the account we leave.
+    chatMemoryRef.current.set(activeSessionId, {
+      jid: selectedChat?.jid ?? null,
+      scrollTop: msgListRef.current?.scrollTop ?? 0,
+    });
     setActiveSessionId(sessionId);
     try {
       localStorage.setItem("bb_whatsapp_active_session", sessionId);
@@ -409,8 +418,16 @@ export function WhatsAppView() {
       if (s?.connected) {
         const cList = await fetchChats("", sessionId);
         if (cList.length > 0) {
-          setSelectedChat(cList[0]);
-          fetchMessages(cList[0].jid, sessionId);
+          const remembered = chatMemoryRef.current.get(sessionId);
+          const restored = remembered?.jid ? cList.find((c) => c.jid === remembered.jid) : undefined;
+          const target = restored || cList[0];
+          // Restore the scroll only when we actually got the same chat back;
+          // applied by the scroll effect below once messages render.
+          if (restored && remembered) {
+            pendingScrollRestoreRef.current = remembered.scrollTop;
+          }
+          setSelectedChat(target);
+          fetchMessages(target.jid, sessionId);
         }
       }
     } catch (e) {
@@ -607,6 +624,21 @@ export function WhatsAppView() {
   // Scroll to bottom only when a new message lands at the end (or the chat
   // changed) - prepending older history must not yank the viewport down.
   useEffect(() => {
+    // Account switch restore: jump back to where this chat was left
+    // instead of scrolling to the newest message.
+    if (pendingScrollRestoreRef.current != null && messages.length > 0) {
+      const y = pendingScrollRestoreRef.current;
+      pendingScrollRestoreRef.current = null;
+      const el = msgListRef.current;
+      if (el) {
+        requestAnimationFrame(() => {
+          el.scrollTop = y;
+        });
+      }
+      const last = messages[messages.length - 1];
+      if (last) lastMsgKeyRef.current = `${selectedChat?.jid}:${last.id}`;
+      return;
+    }
     const last = messages[messages.length - 1];
     const key = last ? `${selectedChat?.jid}:${last.id}` : "";
     if (key && key !== lastMsgKeyRef.current) {

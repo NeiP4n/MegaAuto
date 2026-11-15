@@ -32,6 +32,13 @@ export function WebhookConsole({
   };
 
   const handleSend = async () => {
+    // Confirmation check for production webhooks
+    const isProductionWebhook = !webhookPath.includes("test") && !jsonPayload.includes('"test": true');
+    if (isProductionWebhook) {
+      const confirmed = window.confirm(`Отправить запрос на рабочий вебхук n8n (${webhookPath})?`);
+      if (!confirmed) return;
+    }
+
     let parsedPayload: Record<string, unknown> = {};
     try {
       if (jsonPayload.trim()) {

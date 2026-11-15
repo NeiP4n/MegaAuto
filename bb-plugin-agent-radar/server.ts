@@ -377,13 +377,27 @@ class RadarEngine {
     const hasTools = Array.isArray(last.tool_calls) && last.tool_calls.length > 0;
 
     if (last.type === "PLANNER_RESPONSE" && hasTools && recentActivitySilenceSeconds < 120) {
-      state = "executing_tool";
-      canWrite = false;
-      const tName = lastStep.toolName || "команду";
-      statusLabel = `ИИ выполняет: ${tName}`;
-      statusDescription = lastStep.toolSummary
-        ? `Действие: "${lastStep.toolSummary}" — пожалуйста, подождите, не пишите.`
-        : "Идет исполнение системного инструмента. Подождите окончания шага.";
+      const isQuestion = lastStep.toolName?.includes("ask_question") || lastStep.toolName?.includes("AskUserQuestion");
+      const isSchedule = lastStep.toolName?.includes("schedule");
+      if (isQuestion) {
+        state = "waiting_user";
+        canWrite = true;
+        statusLabel = "ИИ ожидает вашего ответа";
+        statusDescription = "Пожалуйста, ответьте на вопрос в чате, чтобы продолжить работу.";
+      } else if (isSchedule) {
+        state = "background_task";
+        canWrite = true;
+        statusLabel = "Фоновая задача запущена (МОЖНО ПИСАТЬ)";
+        statusDescription = "Задача выполняется в фоне. Вы можете отправлять сообщения.";
+      } else {
+        state = "executing_tool";
+        canWrite = false;
+        const tName = lastStep.toolName || "команду";
+        statusLabel = `ИИ выполняет: ${tName}`;
+        statusDescription = lastStep.toolSummary
+          ? `Действие: "${lastStep.toolSummary}" — пожалуйста, подождите, не пишите.`
+          : "Идет исполнение системного инструмента. Подождите окончания шага.";
+      }
     } else if (last.type === "PLANNER_RESPONSE" && hasTools && recentActivitySilenceSeconds >= 120) {
       state = "idle";
       canWrite = true;

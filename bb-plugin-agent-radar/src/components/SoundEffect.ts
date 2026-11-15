@@ -38,33 +38,3 @@ export function playReadyChime(volume = 0.35) {
     // Audio context may be restricted before first gesture
   }
 }
-
-export function playBusyChime(volume = 0.2) {
-  try {
-    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-    if (!AudioCtx) return;
-    const ctx = new AudioCtx();
-    if (ctx.state === "suspended") ctx.resume();
-
-    const now = ctx.currentTime;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-
-    osc.type = "triangle";
-    osc.frequency.setValueAtTime(440, now);
-    osc.frequency.exponentialRampToValueAtTime(330, now + 0.15);
-
-    gain.gain.setValueAtTime(0, now);
-    gain.gain.linearRampToValueAtTime(volume * 0.15, now + 0.02);
-    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.15);
-
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-
-    osc.start(now);
-    osc.stop(now + 0.15);
-    setTimeout(() => ctx.close().catch(() => {}), 400);
-  } catch {
-    // ignore
-  }
-}

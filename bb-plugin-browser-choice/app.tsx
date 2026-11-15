@@ -62,11 +62,11 @@ export function BrowserView() {
     canGoBack: false,
     canGoForward: false,
     version: "",
-    port: 9222,
+    port: 0,
     error: null,
   });
 
-  const [urlInput, setUrlInput] = useState("https://news.ycombinator.com");
+  const [urlInput, setUrlInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [devToolsOpen, setDevToolsOpen] = useState(false);
   const [devToolsTab, setDevToolsTab] = useState<"console" | "elements" | "text" | "snapshot" | "settings">("console");
@@ -892,11 +892,10 @@ export function BrowserView() {
               <div className="p-2 space-y-2 font-sans text-xs">
                 <div className="text-sm font-semibold text-foreground">Patchright Engine Status</div>
                 <div className="bg-muted p-3 rounded border border-border space-y-1 font-mono text-[11px]">
-                  <div>Engine: <span className="text-emerald-600 dark:text-emerald-400">Patchright + Google Chrome</span> (v{status.version})</div>
-                  <div>CDP Port: <span className="text-primary">{status.port}</span></div>
-                  <div>WebSocket: <span className="text-foreground">ws://127.0.0.1:{status.port}/devtools/browser</span></div>
+                  <div>Engine: <span className="text-emerald-600 dark:text-emerald-400">Patchright Stealth Engine</span></div>
                   <div>Active Tabs: <span className="text-emerald-600 dark:text-emerald-400">{status.tabs.length}</span></div>
-                  <div>Status: <span className={status.running ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}>{status.running ? "Active & Connected" : "Connecting..."}</span></div>
+                  <div>Stealth Mode: <span className={status.stealth ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground"}>{status.stealth ? "Enabled" : "Disabled"}</span></div>
+                  <div>Status: <span className={status.running ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}>{status.running ? "Active & Connected" : "Stopped"}</span></div>
                 </div>
                 <button
                   onClick={() => rpc.call("restart_engine").then(refreshStatus)}

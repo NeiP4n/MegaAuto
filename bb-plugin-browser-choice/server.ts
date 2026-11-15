@@ -193,8 +193,8 @@ class BrowserController {
   private browser: any = null;
   private context: any = null;
   public engineType: "patchright" | "chrome" = "patchright";
-  public port = 9222;
-  public version = "131.0";
+  public port = 0;
+  public version = "patchright";
   public stealth = true;
   public lastError: string | null = null;
   private isStarting = false;

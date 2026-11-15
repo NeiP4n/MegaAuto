@@ -1856,8 +1856,8 @@ export default function (bb: BbPluginApi) {
           const health = await checkN8nHealth(targetUrl, apiKey);
           return {
             ok: health.connected,
-            syncedProjects: store.getProjects().length,
-            syncedMessages: store.getTotalMessagesCount(),
+            syncedProjects: 0,
+            syncedMessages: 0,
             error: health.connected ? undefined : `n8n не отвечает на ${targetUrl}`,
           };
         }
@@ -1891,7 +1891,7 @@ export default function (bb: BbPluginApi) {
       const ok = errors.length < accountsToSync.length;
       return {
         ok,
-        syncedProjects: totalSyncedProjects || store.getProjects().length,
+        syncedProjects: totalSyncedProjects,
         syncedMessages: store.getTotalMessagesCount(),
         error: errors.length > 0 ? errors.join("; ") : undefined,
       };

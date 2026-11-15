@@ -196,6 +196,19 @@ export const rpcContract = defineRpcContract({
       chat_jid: z.string().optional(),
     }),
   },
+  download_media: {
+    input: z.object({
+      message_id: z.string().min(1),
+      chat_jid: z.string().min(1),
+      session_id: z.string().optional(),
+    }),
+    output: z.object({
+      success: z.boolean(),
+      message: z.string(),
+      filename: z.string().optional(),
+      path: z.string().optional(),
+    }),
+  },
   search_contacts: {
     input: z.object({ query: z.string(), session_id: z.string().optional() }),
     output: z.array(
@@ -572,7 +585,8 @@ class WhatsAppBridgeController {
 
   public async downloadMedia(
     messageId: string,
-    chatJid: string
+    chatJid: string,
+    sessionId?: string
   ): Promise<{ success: boolean; message: string; filename?: string; path?: string }> {
     await this.ensureRunning();
     try {
@@ -580,6 +594,7 @@ class WhatsAppBridgeController {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          session: sessionId || "",
           message_id: messageId,
           chat_jid: chatJid,
         }),
@@ -843,6 +858,9 @@ export default async function plugin(bb: BbPluginApi) {
     },
     async send_message(input) {
       return await bridge.sendMessage(input.recipient, input.message, input.media_path, input.session_id);
+    },
+    async download_media(input) {
+      return await bridge.downloadMedia(input.message_id, input.chat_jid, input.session_id);
     },
     async search_contacts(input) {
       return await bridge.searchContacts(input.query, input.session_id);

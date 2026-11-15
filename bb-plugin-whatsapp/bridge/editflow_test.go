@@ -58,6 +58,7 @@ func TestUpdateMessageContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
+	defer store.db.Close()
 	chat := "12345@s.whatsapp.net"
 	if err := store.StoreChat(chat, "Meta AI", time.Now()); err != nil {
 		t.Fatalf("store chat: %v", err)

@@ -11,7 +11,7 @@
     "name": "Agent Radar (Activity HUD)",
     "description": "Real-time AI activity tracker and turn indicator. Shows live tool execution, status HUD, and signals when it is safe to send messages.",
     "branding": {
-      "icon": "Activity"
+      "icon": "Terminal"
     },
     "server": "./server.ts",
     "app": "./app.tsx"

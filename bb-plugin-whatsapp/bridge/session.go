@@ -365,7 +365,7 @@ func (sm *SessionManager) startSession(s *Session) {
 			s.loggedOut.Store(true)
 			s.pairing.Store(false)
 			s.syncing.Store(false)
-			s.setErr("WhatsApp logged this account out. Re-pair it with a fresh QR code.")
+			s.setErr(fmt.Sprintf("WhatsApp logged this account out (reason=%v, on_connect=%v). Re-pair it with a fresh QR code.", v.Reason, v.OnConnect))
 			// Drop the dead device credentials so a session restart goes
 			// straight to pairing instead of reconnecting into another 401.
 			if s.Client.Store != nil && s.Client.Store.ID != nil {

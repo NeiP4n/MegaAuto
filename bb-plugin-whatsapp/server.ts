@@ -554,8 +554,27 @@ export class WhatsAppBridgeController {
         env: { ...process.env, WHATSAPP_BRIDGE_PORT: String(this.bridgePort) },
       });
 
+      // Persistent bridge log: the 2 KB in-memory tail is useless for
+      // post-mortem pairing/logout diagnosis, so tee everything the bridge
+      // prints into bridge/bridge.log (rotated to bridge.log.old at 8 MB on
+      // each start). This file is what we ask the user to send.
+      let logStream: fs.WriteStream | null = null;
+      try {
+        const logPath = path.join(this.bridgeDir, "bridge.log");
+        try {
+          const sz = fs.statSync(logPath).size;
+          if (sz > 8 * 1024 * 1024) {
+            try { fs.unlinkSync(logPath + ".old"); } catch { /* none */ }
+            fs.renameSync(logPath, logPath + ".old");
+          }
+        } catch { /* no log yet */ }
+        logStream = fs.createWriteStream(logPath, { flags: "a" });
+        logStream.write(`\n===== bridge started ${new Date().toISOString()} pid=${this.process?.pid} =====\n`);
+      } catch { /* logging is best-effort */ }
+
       const appendTail = (text: string) => {
         this.bridgeLogTail = (this.bridgeLogTail + text).slice(-2048);
+        try { logStream?.write(text); } catch { /* ignore */ }
       };
 
       this.process.stdout?.on("data", (data: Buffer) => appendTail(data.toString()));
@@ -575,6 +594,7 @@ export class WhatsAppBridgeController {
 
       this.process.on("exit", (code: number | null) => {
         this.process = null;
+        try { logStream?.end(); } catch { /* ignore */ }
         if (!this.stopRequested && code !== 0 && code !== null) {
           const tail = this.bridgeLogTail.trim();
           const reason = /already in use|already running|Only one usage|address already in use/i.test(tail)

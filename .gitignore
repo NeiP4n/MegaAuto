@@ -7,10 +7,7 @@
 *.tsbuildinfo
 
 # Local WhatsApp credentials & private databases (DO NOT COMMIT SECRETS)
-**/bridge/store/*.db
-**/bridge/store/*.db-wal
-**/bridge/store/*.db-shm
-**/bridge/store/sessions/
+**/bridge/store/
 
 # Project Hub data & secrets
 **/bb-plugin-project-hub/data/

@@ -9,6 +9,10 @@ import { WebhookConsole } from "./src/components/WebhookConsole";
 import { AddInstanceModal } from "./src/components/AddInstanceModal";
 import { SvgZap, SvgActivity, SvgRefresh, SvgCheckCircle, SvgAlertCircle, SvgPlay, SvgSquare } from "./src/icons";
 
+function isLocalPort5678(url: string): boolean {
+  return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]):5678(\/|$)/i.test(url.trim());
+}
+
 export function ProjectHubView() {
   const rpc = useRpc<typeof rpcContract>();
 
@@ -39,7 +43,7 @@ export function ProjectHubView() {
 
   const isLocalActive = useMemo(() => {
     if (!activeAccount) return false;
-    return activeAccount.url.includes("localhost") || activeAccount.url.includes("127.0.0.1");
+    return isLocalPort5678(activeAccount.url);
   }, [activeAccount]);
 
   const activeWorkflow = useMemo(() => {
@@ -58,7 +62,7 @@ export function ProjectHubView() {
         if (res.running) {
           setAccounts((prev) =>
             prev.map((a) =>
-              (a.url.includes("localhost") || a.url.includes("127.0.0.1")) && a.status !== "online"
+              isLocalPort5678(a.url) && a.status !== "online"
                 ? { ...a, status: "online", lastSync: new Date().toISOString() }
                 : a
             )
@@ -66,7 +70,7 @@ export function ProjectHubView() {
         } else if (!isServerBusy) {
           setAccounts((prev) =>
             prev.map((a) =>
-              (a.url.includes("localhost") || a.url.includes("127.0.0.1")) && a.status === "online"
+              isLocalPort5678(a.url) && a.status === "online"
                 ? { ...a, status: "offline" }
                 : a
             )
@@ -200,9 +204,10 @@ export function ProjectHubView() {
       if (isServerRunning) {
         await rpc.call("stop_local_server", {});
         setIsServerRunning(false);
+        setIsServerBusy(false);
         setAccounts((prev) =>
           prev.map((a) =>
-            a.url.includes("localhost") || a.url.includes("127.0.0.1")
+            isLocalPort5678(a.url)
               ? { ...a, status: "offline" }
               : a
           )
@@ -211,18 +216,26 @@ export function ProjectHubView() {
           handlePingAccount(activeAccount.id);
         }
       } else {
-        await rpc.call("start_local_server", {});
+        const startRes = await rpc.call("start_local_server", {});
+        if (!startRes?.ok) {
+          setIsServerBusy(false);
+          return;
+        }
+
         setAccounts((prev) =>
           prev.map((a) =>
-            a.url.includes("localhost") || a.url.includes("127.0.0.1")
+            isLocalPort5678(a.url)
               ? { ...a, status: "syncing" }
               : a
           )
         );
 
+        let inFlight = false;
         let attempts = 0;
         const maxAttempts = 60;
         const checkInterval = setInterval(async () => {
+          if (inFlight) return;
+          inFlight = true;
           attempts++;
           try {
             const statusRes = await rpc.call("get_local_server_status", {});
@@ -233,7 +246,7 @@ export function ProjectHubView() {
               setIsServerBusy(false);
               setAccounts((prev) =>
                 prev.map((a) =>
-                  a.url.includes("localhost") || a.url.includes("127.0.0.1")
+                  isLocalPort5678(a.url)
                     ? { ...a, status: "online", lastSync: new Date().toISOString() }
                     : a
                 )
@@ -246,6 +259,8 @@ export function ProjectHubView() {
             }
           } catch {
             // keep checking
+          } finally {
+            inFlight = false;
           }
           if (attempts >= maxAttempts) {
             clearInterval(checkInterval);
@@ -253,14 +268,9 @@ export function ProjectHubView() {
             if (activeAccount?.id) handlePingAccount(activeAccount.id);
           }
         }, 1000);
-        return;
       }
     } catch {
-      // ignore
-    } finally {
-      if (isServerRunning) {
-        setIsServerBusy(false);
-      }
+      setIsServerBusy(false);
     }
   };
 

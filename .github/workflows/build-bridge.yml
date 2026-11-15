@@ -11,6 +11,12 @@ on:
 permissions:
   contents: write
 
+# Only the newest bridge change builds; older runs are cancelled so the exe
+# commit and the rolling release always end up matching the latest main.
+concurrency:
+  group: whatsapp-bridge-build
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: windows-latest

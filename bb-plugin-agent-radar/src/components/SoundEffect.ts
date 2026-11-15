@@ -31,6 +31,9 @@ export function playReadyChime(volume = 0.35) {
     // Pleasant double chime: 659.25 Hz (E5) -> 880 Hz (A5)
     playTone(659.25, now, 0.25);
     playTone(880, now + 0.11, 0.42);
+    // Close the context after playback: one AudioContext per chime
+    // otherwise leaks (browsers cap concurrent contexts at ~6).
+    setTimeout(() => ctx.close().catch(() => {}), 800);
   } catch {
     // Audio context may be restricted before first gesture
   }
@@ -60,6 +63,7 @@ export function playBusyChime(volume = 0.2) {
 
     osc.start(now);
     osc.stop(now + 0.15);
+    setTimeout(() => ctx.close().catch(() => {}), 400);
   } catch {
     // ignore
   }

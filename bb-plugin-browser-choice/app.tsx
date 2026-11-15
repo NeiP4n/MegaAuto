@@ -38,6 +38,7 @@ export function BrowserView() {
 
   const [status, setStatus] = useState<{
     running: boolean;
+    engine?: "patchright" | "chrome";
     activeTabId: string;
     tabs: TabSummary[];
     currentUrl: string;

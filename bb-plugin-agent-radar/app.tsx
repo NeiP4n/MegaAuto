@@ -11,6 +11,7 @@ function useRadarStatus() {
   const [isLoading, setIsLoading] = useState(false);
 
   const fetchStatus = useCallback(async () => {
+    setIsLoading(true);
     try {
       const res = await rpc.call("get_radar_status", {});
       if (res) {
@@ -18,6 +19,8 @@ function useRadarStatus() {
       }
     } catch {
       // ignore
+    } finally {
+      setIsLoading(false);
     }
   }, [rpc]);
 

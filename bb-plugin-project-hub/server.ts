@@ -1013,11 +1013,16 @@ function findPortPid(port: number = 5678): number | null {
     if (process.platform === "win32") {
       const out = execSync("netstat -ano -p tcp", { encoding: "utf8", timeout: 2000 });
       for (const line of out.split("\n")) {
-        if (line.includes(`:${port}`) && line.includes("LISTENING")) {
-          const parts = line.trim().split(/\s+/);
-          const pid = parseInt(parts[parts.length - 1], 10);
-          if (!isNaN(pid) && pid > 0) return pid;
-        }
+        // netstat columns: proto, local addr, foreign addr, state, pid.
+        // Match the LOCAL address exactly - a substring match on ":5678"
+        // also hits :15678/:56780 and returns someone else's PID.
+        if (!line.includes("LISTENING")) continue;
+        const parts = line.trim().split(/\s+/);
+        if (parts.length < 5) continue;
+        const localAddr = parts[1];
+        if (!localAddr.endsWith(`:${port}`)) continue;
+        const pid = parseInt(parts[parts.length - 1], 10);
+        if (!isNaN(pid) && pid > 0) return pid;
       }
     } else {
       const out = execSync(`lsof -ti :${port}`, { encoding: "utf8", timeout: 2000 });
@@ -1028,6 +1033,26 @@ function findPortPid(port: number = 5678): number | null {
     // not found or error
   }
   return null;
+}
+
+// isLikelyN8nProcess checks the command line of a PID we did NOT start
+// ourselves before we are allowed to signal it. Without this, "stop" could
+// kill an unrelated process that merely happens to listen on port 5678.
+function isLikelyN8nProcess(pid: number): boolean {
+  try {
+    if (process.platform === "win32") {
+      const out = execSync(
+        `powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter 'ProcessId=${pid}').CommandLine"`,
+        { encoding: "utf8", timeout: 4000 }
+      );
+      return /n8n/i.test(out);
+    }
+    const out = execSync(`ps -p ${pid} -o command=`, { encoding: "utf8", timeout: 2000 });
+    return /n8n/i.test(out);
+  } catch {
+    // Cannot verify -> do not touch the process.
+    return false;
+  }
 }
 
 async function startLocalN8nProcess(): Promise<{ ok: boolean; message: string; pid?: number }> {
@@ -1178,7 +1203,16 @@ async function stopLocalN8nProcess(): Promise<{ ok: boolean; message: string }> 
   if (child && child.pid && child.exitCode === null) {
     targetPid = child.pid;
   } else {
-    targetPid = findPortPid(5678);
+    const portPid = findPortPid(5678);
+    if (portPid) {
+      // This PID belongs to a process we did not spawn (user-started n8n,
+      // or an unrelated listener). Only signal it when it really is n8n.
+      if (isLikelyN8nProcess(portPid)) {
+        targetPid = portPid;
+      } else {
+        appendServerLog(`Порт 5678 занят процессом PID ${portPid}, но это не n8n - оставляем его в покое`);
+      }
+    }
   }
 
   if (!targetPid) {
@@ -1259,8 +1293,16 @@ function cleanupLocalN8n() {
 }
 
 process.on("exit", cleanupLocalN8n);
-process.on("SIGINT", cleanupLocalN8n);
-process.on("SIGTERM", cleanupLocalN8n);
+// Registering a SIGINT/SIGTERM listener suppresses Node's default exit, so
+// without process.exit the host would survive Ctrl-C/SIGTERM entirely.
+process.on("SIGINT", () => {
+  cleanupLocalN8n();
+  process.exit(130);
+});
+process.on("SIGTERM", () => {
+  cleanupLocalN8n();
+  process.exit(143);
+});
 
 function getCanonicalBase(url: string): string {
   const clean = url.trim().replace(/\/+$/, "");
@@ -2254,6 +2296,7 @@ export default function (bb: BbPluginApi) {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
             redirect: "manual",
+            signal: AbortSignal.timeout(15000),
           });
           if (res.status >= 300 && res.status < 400) {
             return { exitCode: 1, stderr: "HTTP перенаправления запрещены для вебхуков" };

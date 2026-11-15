@@ -112,6 +112,10 @@ export const rpcContract = defineRpcContract({
 
 class RadarEngine {
   private brainBaseDir: string;
+  // The UI polls getStatus every 1.5s per mounted view; re-reading and
+  // re-splitting a whole (potentially huge) transcript each poll is the
+  // plugin's main CPU/memory cost, so cache by file mtime+size.
+  private transcriptCache: { file: string; mtimeMs: number; size: number; rawLines: any[] } | null = null;
   private settings: RadarSettings = {
     soundEnabled: true,
     volume: 0.35,
@@ -168,6 +172,11 @@ class RadarEngine {
     rawLines: any[];
     mtime: number;
   } {
+    // conversationId comes from RPC input: reject anything but a plain
+    // directory name so it cannot escape brainBaseDir via "../" segments.
+    if (conversationId && !/^[\w-]+$/.test(conversationId)) {
+      return { convId: "", rawLines: [], mtime: 0 };
+    }
     const activeId = conversationId || this.findActiveConversationId();
     if (!activeId) {
       return { convId: "", rawLines: [], mtime: 0 };
@@ -180,6 +189,10 @@ class RadarEngine {
 
     try {
       const stat = fs.statSync(transcriptFile);
+      const cache = this.transcriptCache;
+      if (cache && cache.file === transcriptFile && cache.mtimeMs === stat.mtimeMs && cache.size === stat.size) {
+        return { convId: activeId, rawLines: cache.rawLines, mtime: stat.mtimeMs };
+      }
       const content = fs.readFileSync(transcriptFile, "utf-8");
       const lines = content
         .split("\n")
@@ -196,6 +209,7 @@ class RadarEngine {
           // ignore malformed line
         }
       }
+      this.transcriptCache = { file: transcriptFile, mtimeMs: stat.mtimeMs, size: stat.size, rawLines: parsed };
 
       return { convId: activeId, rawLines: parsed, mtime: stat.mtimeMs };
     } catch {
@@ -276,7 +290,8 @@ class RadarEngine {
     const last = rawLines[rawLines.length - 1];
     const lastStep = steps[steps.length - 1];
     const now = Date.now();
-    const lastTime = last.created_at ? new Date(last.created_at).getTime() : mtime;
+    let lastTime = last.created_at ? new Date(last.created_at).getTime() : mtime;
+    if (!Number.isFinite(lastTime)) lastTime = mtime; // garbage created_at in transcript
     const elapsedSeconds = Math.max(0, Math.floor((now - lastTime) / 1000));
     const recentActivitySilenceSeconds = Math.floor((now - mtime) / 1000);
 

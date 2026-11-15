@@ -1025,7 +1025,7 @@ export default function (bb: BbPluginApi) {
             case "evaluate": {
               if (!args.expression) return "Error: 'expression' required for evaluate";
               const res = await controller.evaluate(args.expression, args.tab_id);
-              return res.ok ? res.result : `Evaluate error: ${res.error}`;
+              return res.ok ? (res.result ?? "(empty result)") : `Evaluate error: ${res.error}`;
             }
 
             case "screenshot": {

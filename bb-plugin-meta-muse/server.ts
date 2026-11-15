@@ -511,9 +511,11 @@ export class MetaMuseController {
 
   private saveState(): void {
     try {
+      // Security: never persist sensitive apiKey to disk in state.json
+      const { apiKey, ...safeConfig } = this.config;
       const data = {
         currentMode: this.currentMode,
-        config: this.config,
+        config: safeConfig,
         conversations: Array.from(this.conversations.values()),
         messages: Object.fromEntries(this.messages.entries()),
         mediaJobs: Array.from(this.mediaJobs.values()),
@@ -649,14 +651,6 @@ export class MetaMuseController {
     return { success: true, isConfigured: Boolean(this.config.apiKey || this.config.endpointUrl) };
   }
 
-  public isolateVM(): VMStatus {
-    this.vmState.status = "isolated";
-    this.vmState.networkPolicy = "airgapped";
-    this.vmState.allowedDomains = [];
-    this.saveState();
-    return this.getVMStatus();
-  }
-
   public async sendMessage(params: {
     conversationId?: string;
     content: string;
@@ -691,6 +685,8 @@ export class MetaMuseController {
     const suggestions: string[] = [];
 
     if (this.config.apiKey || this.config.endpointUrl) {
+      const abortController = new AbortController();
+      const timeoutId = setTimeout(() => abortController.abort(), 30000);
       try {
         const rawEndpoint = (this.config.endpointUrl || "https://api.openai.com/v1").replace(/\/+$/, "");
         const url = rawEndpoint.endsWith("/chat/completions") ? rawEndpoint : `${rawEndpoint}/chat/completions`;
@@ -700,6 +696,7 @@ export class MetaMuseController {
         const response = await fetch(url, {
           method: "POST",
           headers,
+          signal: abortController.signal,
           body: JSON.stringify({
             model: mode === "creative" ? "gpt-4o" : "gpt-4o-mini",
             messages: [
@@ -718,7 +715,13 @@ export class MetaMuseController {
           reply = data?.choices?.[0]?.message?.content || "Пустой ответ от Meta Muse API.";
         }
       } catch (err: any) {
-        reply = `Ошибка сети при обращении к Meta Muse API: ${err?.message || String(err)}`;
+        if (err?.name === "AbortError") {
+          reply = "Ошибка: таймаут сетевого запроса к Meta Muse API (30с).";
+        } else {
+          reply = `Ошибка сети при обращении к Meta Muse API: ${err?.message || String(err)}`;
+        }
+      } finally {
+        clearTimeout(timeoutId);
       }
     } else {
       reply = "Meta Muse API не настроен. Укажите API ключ или эндпоинт в настройках.";
@@ -813,15 +816,22 @@ export class MetaMuseController {
       aspectRatio: params.aspectRatio || "16:9",
       status: "failed",
       progress: 0,
-      seed: params.seed ?? Math.floor(Math.random() * 999999),
-      steps: type === "video" ? 50 : 35,
       createdAt: now,
       completedAt: now,
       error: undefined,
     };
 
+    if (type === "video") {
+      job.error = "Генерация видео временно недоступна в подключенном API (поддерживаются только изображения).";
+      this.mediaJobs.set(id, job);
+      this.saveState();
+      return job;
+    }
+
     const endpoint = this.config.mediaEndpointUrl || this.config.endpointUrl;
     if (endpoint || this.config.apiKey) {
+      const abortController = new AbortController();
+      const timeoutId = setTimeout(() => abortController.abort(), 30000);
       try {
         const rawEndpoint = (endpoint || "https://api.openai.com/v1").replace(/\/+$/, "");
         const url = rawEndpoint.endsWith("/images/generations") ? rawEndpoint : `${rawEndpoint}/images/generations`;
@@ -831,6 +841,7 @@ export class MetaMuseController {
         const response = await fetch(url, {
           method: "POST",
           headers,
+          signal: abortController.signal,
           body: JSON.stringify({
             prompt: params.prompt,
             n: 1,
@@ -849,6 +860,8 @@ export class MetaMuseController {
             job.status = "completed";
             job.progress = 100;
             job.resultUrl = imgUrl;
+            job.seed = params.seed ?? Math.floor(Math.random() * 999999);
+            job.steps = 35;
           } else {
             job.status = "failed";
             job.error = "API вернул пустой результат медиа.";
@@ -856,7 +869,13 @@ export class MetaMuseController {
         }
       } catch (err: any) {
         job.status = "failed";
-        job.error = `Ошибка генерации медиа: ${err?.message || String(err)}`;
+        if (err?.name === "AbortError") {
+          job.error = "Ошибка: таймаут генерации медиа (30с).";
+        } else {
+          job.error = `Ошибка генерации медиа: ${err?.message || String(err)}`;
+        }
+      } finally {
+        clearTimeout(timeoutId);
       }
     } else {
       job.status = "failed";
@@ -1522,11 +1541,11 @@ export default function (bb: BbPluginApi) {
   // --------------------------------------------------------------------------
   bb.cli.register({
     name: "muse",
-    summary: "Interact with Meta Muse AI companion, studio, tasks, VM sandbox, and memory",
+    summary: "Interact with Meta Muse AI companion, studio, tasks, host process runtime, and memory",
     commands: [
       {
         name: "status",
-        summary: "Display complete Meta Muse telemetry, VM state, and queue statistics",
+        summary: "Display complete Meta Muse telemetry, host process state, and queue statistics",
         usage: "bb muse status",
       },
       {
@@ -1541,8 +1560,8 @@ export default function (bb: BbPluginApi) {
       },
       {
         name: "vm",
-        summary: "Inspect secure VM isolation sandbox metrics and network policies",
-        usage: "bb muse vm [status|isolate]",
+        summary: "Inspect host process runtime telemetry, Node memory RSS, uptime and execution status",
+        usage: "bb muse vm [status]",
       },
       {
         name: "memory",
@@ -1645,11 +1664,10 @@ export default function (bb: BbPluginApi) {
       // bb muse vm
       if (sub === "vm") {
         const action = argv[1] || "status";
-        if (action === "isolate") {
-          const vm = museController.isolateVM();
+        if (action !== "status") {
           return {
-            exitCode: 0,
-            stdout: `Изоляция песочницы активирована (сеть: airgapped):\n${JSON.stringify(vm, null, 2)}`,
+            exitCode: 1,
+            stdout: `Неизвестное действие: ${action}\nИспользование: bb muse vm [status]`,
           };
         }
         const vm = museController.getVMStatus(true);

@@ -54,9 +54,9 @@ Registered with Zod schemas through `bb.agents.registerTool`:
 - `muse_create_task`: Enqueues an automated periodic job.
 - `muse_get_task_status`: Inspects execution status and logs.
 - `muse_cancel_task`: Pauses, resumes, or removes a task.
-- `muse_search_memory`: Semantic lookup over saved facts and directives.
+- `muse_search_memory`: Keyword and tag search over saved facts and user preferences.
 - `muse_store_memory`: Stores user preferences or system facts.
-- `muse_get_vm_status`: Queries VM enclave security posture and resource usage.
+- `muse_get_vm_status`: Inspects host process runtime telemetry, Node memory RSS, uptime, and host environment execution status.
 - `muse_switch_mode`: Changes runtime mode between creative, analytical, proactive, and strict sandbox.
 - `muse_get_system_status`: Inspects plugin uptime, active queues, and host hardware.
 - `muse_export_chat`: Formats thread to downloadable Markdown or JSON.

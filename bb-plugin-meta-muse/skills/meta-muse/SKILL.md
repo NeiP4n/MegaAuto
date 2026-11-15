@@ -26,10 +26,9 @@ bb muse tasks create "Утренний дайджест" "0 9 * * *" "digest"
 bb muse tasks status <taskId>
 bb muse tasks cancel <taskId>
 
-# 4. Проверка состояния безопасной песочницы / процесса хоста
+# 4. Проверка состояния процесса хоста и памяти
 bb muse vm
 bb muse vm status
-bb muse vm isolate
 
 # 5. Поиск и сохранение долговременных воспоминаний
 bb muse memory list

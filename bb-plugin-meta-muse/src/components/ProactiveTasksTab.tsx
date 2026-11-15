@@ -112,7 +112,7 @@ export function ProactiveTasksTab({
               <span>Рекомендация по API</span>
             </div>
             <p className="text-[11px] text-slate-400 leading-relaxed">
-              Задачи типа «Дайджест» обращаются к AI модели. Убедитесь, что API ключ указан в настройках.
+              Планировщик выполняет задачи по расписанию. При подключении AI модели результаты могут собираться в дайджест.
             </p>
           </div>
         )}
@@ -170,7 +170,7 @@ export function ProactiveTasksTab({
                 <option value="reminder">Напоминание</option>
                 <option value="audit">Аудит безопасности</option>
                 <option value="web_poll">Опрос внешних API</option>
-                <option value="custom_script">Скрипт песочницы</option>
+                <option value="custom_script">Пользовательский скрипт</option>
               </select>
             </div>
 

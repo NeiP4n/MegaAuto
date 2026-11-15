@@ -84,8 +84,8 @@ export function MetaMuseView() {
       if (res) {
         setApiConfig(res);
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error("Failed to load API config:", err);
     }
   }, [rpc]);
 
@@ -101,8 +101,9 @@ export function MetaMuseView() {
         setLastChatError(null);
         setLastMediaError(null);
       }
-    } catch {
-      // ignore
+    } catch (err: any) {
+      console.error("Failed to update API config:", err);
+      setLastChatError(err?.message || "Не удалось сохранить конфигурацию API");
     }
   };
 
@@ -115,8 +116,8 @@ export function MetaMuseView() {
           setCurrentMode(res.currentMode);
         }
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error("Failed to load system status:", err);
     }
   }, [rpc, isModeChanging]);
 
@@ -129,8 +130,8 @@ export function MetaMuseView() {
           setSelectedConvId(res.conversations[0].id);
         }
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error("Failed to load conversations:", err);
     }
   }, [rpc, selectedConvId]);
 
@@ -141,8 +142,8 @@ export function MetaMuseView() {
       if (res) {
         setMessages(res.messages);
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error("Failed to load messages for conversation:", id, err);
     }
   }, [rpc]);
 
@@ -152,8 +153,8 @@ export function MetaMuseView() {
       if (res) {
         setMediaJobs(res.jobs);
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error("Failed to load media jobs:", err);
     }
   }, [rpc]);
 
@@ -163,8 +164,8 @@ export function MetaMuseView() {
       if (res) {
         setTasks(res.tasks);
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error("Failed to load proactive tasks:", err);
     }
   }, [rpc]);
 
@@ -174,8 +175,8 @@ export function MetaMuseView() {
       if (res) {
         setVmStatus(res);
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error("Failed to load host runtime status:", err);
     }
   }, [rpc]);
 
@@ -185,8 +186,8 @@ export function MetaMuseView() {
       if (res) {
         setMemories(res.memories);
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error("Failed to load memories:", err);
     }
   }, [rpc]);
 
@@ -229,8 +230,8 @@ export function MetaMuseView() {
         conversationId: selectedConvId || undefined,
       });
       loadSystemStatus();
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error("Failed to switch mode:", err);
     } finally {
       setIsModeChanging(false);
     }
@@ -247,8 +248,8 @@ export function MetaMuseView() {
         setSelectedConvId(res.id);
         setMessages([]);
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error("Failed to create conversation:", err);
     }
   };
 
@@ -267,8 +268,8 @@ export function MetaMuseView() {
           }
         }
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error("Failed to delete conversation:", err);
     }
   };
 
@@ -306,8 +307,8 @@ export function MetaMuseView() {
         const filename = `${res.title.replace(/[^a-zA-Z0-9_\u0400-\u04FF]/g, "_")}.${ext}`;
         downloadFile(filename, res.content, mime);
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error("Failed to export chat:", err);
     }
   };
 
@@ -345,8 +346,8 @@ export function MetaMuseView() {
       if (res && res.success) {
         setMediaJobs((prev) => prev.filter((j) => j.id !== jobId));
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error("Failed to delete media job:", err);
     }
   };
 
@@ -378,8 +379,8 @@ export function MetaMuseView() {
       if (res) {
         setTasks((prev) => prev.map((t) => (t.id === taskId ? res : t)));
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error("Failed to toggle task status:", err);
     }
   };
 
@@ -401,8 +402,8 @@ export function MetaMuseView() {
         setTasks((prev) => prev.filter((t) => t.id !== taskId));
         loadSystemStatus();
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error("Failed to cancel task:", err);
     }
   };
 
@@ -427,8 +428,8 @@ export function MetaMuseView() {
         setMemories((prev) => [res, ...prev.filter((m) => m.id !== res.id)]);
         loadSystemStatus();
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error("Failed to store memory:", err);
     }
   };
 
@@ -439,8 +440,8 @@ export function MetaMuseView() {
         setMemories((prev) => prev.filter((m) => m.id !== memoryId));
         loadSystemStatus();
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error("Failed to delete memory:", err);
     }
   };
 
@@ -457,8 +458,8 @@ export function MetaMuseView() {
       if (res && res.matches) {
         setMemories(res.matches);
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error("Failed to search memories:", err);
     }
   };
 

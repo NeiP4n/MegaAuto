@@ -149,6 +149,13 @@ export function MediaStudioTab({
           </div>
         </div>
 
+        {mediaType === "video" && (
+          <div className="bg-[#161C2B] rounded-xl border border-sky-900/50 p-2.5 text-xs text-slate-300">
+            <span className="text-sky-400 font-medium mr-1.5">ℹ️ Видео:</span>
+            <span>Генерация видео временно недоступна в подключенном API (поддерживаются только изображения).</span>
+          </div>
+        )}
+
         {/* Warning if API is not configured */}
         {!isApiConfigured && (
           <div className="bg-[#161C2B] rounded-xl border border-amber-900/50 p-3 space-y-1.5 text-xs">

@@ -37,9 +37,9 @@ const MODES: Array<{ mode: MuseMode; label: string; badgeColor: string; descript
   },
   {
     mode: "strict_sandbox",
-    label: "Strict VM",
+    label: "Strict Mode",
     badgeColor: "border-amber-500/60 bg-amber-500/15 text-amber-300",
-    description: "Строгий аудит сетевых коннекторов и процессов",
+    description: "Строгий локальный режим без исходящих сетевых запросов",
   },
 ];
 
@@ -53,7 +53,7 @@ export function HeaderBar({
   apiConfig,
   onOpenApiModal,
 }: HeaderBarProps) {
-  const isApiConfigured = Boolean(apiConfig.apiKey && apiConfig.apiKey.trim().length > 0);
+  const isApiConfigured = Boolean(apiConfig.isConfigured || (apiConfig.apiKey && apiConfig.apiKey.trim().length > 0));
 
   return (
     <header className="flex flex-col md:flex-row items-center justify-between px-5 py-3 border-b border-slate-800/80 bg-[#10141E]/95 backdrop-blur-md gap-3 z-20">

@@ -696,13 +696,15 @@ function isLocalPort5678(u: string): boolean {
 function sanitizeWebhookPath(rawPath: string): string | null {
   if (!rawPath || typeof rawPath !== "string") return null;
   const trimmed = rawPath.trim();
+  // Reject directory traversal or path manipulation before normalization
+  if (trimmed.includes("..") || trimmed.includes("\\")) return null;
   if (/^[a-z0-9+.-]+:\/\//i.test(trimmed)) return null;
   const normalized = path.posix.normalize("/" + trimmed.replace(/^[\/\\]+/, ""));
   if (normalized.includes("..")) return null;
   if (normalized.startsWith("/webhook/") || normalized.startsWith("/webhook-test/")) {
     return normalized;
   }
-  return `/webhook${normalized}`;
+  return `/webhook${normalized.startsWith("/") ? normalized : "/" + normalized}`;
 }
 
 function readLocalSqliteWorkflowsAndExecutions(): {
@@ -2080,7 +2082,19 @@ export default function (bb: BbPluginApi) {
       if (!acc) return JSON.stringify({ ok: false, error: "Account not found" });
       const safePath = sanitizeWebhookPath(args.path);
       if (!safePath) {
-        return JSON.stringify({ ok: false, error: "Недопустимый путь вебхука: путь должен находиться внутри /webhook/" });
+        return JSON.stringify({
+          ok: false,
+          error: "Недопустимый путь вебхука: путь содержит недопустимые символы (..) или выходит за пределы /webhook/",
+        });
+      }
+      // Security: Whitelist check for automated agent dispatches
+      const allowedPrefixes = ["/webhook/test", "/webhook-test/", "/webhook/api/projects/"];
+      const isWhitelisted = allowedPrefixes.some((p) => safePath.startsWith(p));
+      if (!isWhitelisted) {
+        return JSON.stringify({
+          ok: false,
+          error: `Доступ запрещён: путь '${safePath}' не входит в белый список для агентов (${allowedPrefixes.join(", ")}). Произвольные вебхуки запускаются только вручную оператором.`,
+        });
       }
       const cleanBase = acc.url.replace(/\/+$/, "");
       const targetUrl = `${cleanBase}${safePath}`;

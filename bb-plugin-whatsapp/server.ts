@@ -1880,7 +1880,7 @@ export default async function plugin(bb: BbPluginApi) {
     name: "whatsapp",
     summary: "Interact with WhatsApp multidevice bridge: check status, QR pairing, chats, and sending messages",
     commands: [
-      { name: "status", summary: "Check bridge connection and phone info", usage: "bb whatsapp status" },
+      { name: "status", summary: "Account connection, last message time, and 10m/daily send quotas (50/500)", usage: "bb whatsapp status [--session <id>]" },
       { name: "qr", summary: "Display current pairing QR code", usage: "bb whatsapp qr" },
       { name: "chats", summary: "List recent chats", usage: "bb whatsapp chats" },
       { name: "contacts", summary: "Search contacts", usage: "bb whatsapp contacts <query>" },
@@ -1913,6 +1913,7 @@ export default async function plugin(bb: BbPluginApi) {
             "  bb whatsapp messages \"Mom\" 20                             read a chat by name",
             "  bb whatsapp chats                                             list recent chats",
             "  bb whatsapp accounts                                          list accounts (id, name, phone, status)",
+            "  bb whatsapp status                                            one-line status & rate limits per account",
             "  bb whatsapp claim --account <name|phone> --holder my-agent    exclusive claim (TTL, default 10 min)",
             "  bb whatsapp release --account <name|phone> --holder my-agent  release your claim",
             "",
@@ -1944,6 +1945,7 @@ export default async function plugin(bb: BbPluginApi) {
           messages: 'bb whatsapp messages <chat name|jid> [limit] [--session <id>]\n  Example: bb whatsapp messages "Mom" 20',
           chats: "bb whatsapp chats [--session <id>]\n  Without --session lists chats of EVERY account, grouped by account.",
           accounts: "bb whatsapp accounts\n  Lists accounts: * = active, session id, name, phone, status, claim holder.",
+          status: "bb whatsapp status [--session <id>]\n  Outputs one line per account: name, connection state, last message time, sent in last 10m/day vs limits (50/500).",
           contacts: 'bb whatsapp contacts <query> [--session <id>]',
           "send-file": "bb whatsapp send-file <recipient> <path> [caption] [--session <id>]",
           claim: "bb whatsapp claim --account <name|phone> [--holder <name>] [--ttl <seconds>]\n  Exclusive agent claim; default TTL 10 min, auto-expires.",
@@ -2056,10 +2058,80 @@ export default async function plugin(bb: BbPluginApi) {
       }
 
       if (sub === "status") {
-        const s = await bridge.getStatus(cliSession);
+        const sessions = await bridge.getSessions();
+        const targets = cliSession ? sessions.filter((s) => s.id === cliSession) : sessions;
+        if (targets.length === 0) {
+          return { exitCode: 0, stdout: "No accounts configured." };
+        }
+
+        const lines: string[] = [];
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const nowMs = Date.now();
+        const bridgeDir = fs.existsSync(path.resolve(__dirname, "bridge"))
+          ? path.resolve(__dirname, "bridge")
+          : path.resolve(__dirname, "..", "bridge");
+
+        for (const s of targets) {
+          const accName = s.name || (s.phone ? `+${s.phone}` : s.id);
+          const connStr = s.connected ? "connected" : (s.status || "disconnected");
+
+          let lastMsgTime = "never";
+          try {
+            const chats = await bridge.getChats("", s.id);
+            if (chats && chats.length > 0) {
+              const times = chats.map((c) => c.last_message_time).filter(Boolean);
+              if (times.length > 0) {
+                times.sort().reverse();
+                lastMsgTime = times[0];
+              }
+            }
+          } catch {
+            lastMsgTime = "unknown";
+          }
+
+          let dailyCount = 0;
+          let sent10m = 0;
+
+          const quotaFile = s.id === "default"
+            ? path.join(bridgeDir, "store", "send_quota.json")
+            : path.join(bridgeDir, "store", "sessions", s.id, "send_quota.json");
+          try {
+            if (fs.existsSync(quotaFile)) {
+              const q = JSON.parse(fs.readFileSync(quotaFile, "utf-8"));
+              if (q.date === todayStr) {
+                dailyCount = Number(q.count) || 0;
+              }
+            }
+          } catch {
+            dailyCount = 0;
+          }
+
+          const dbPath = s.id === "default"
+            ? path.join(bridgeDir, "store", "messages.db")
+            : path.join(bridgeDir, "store", "sessions", s.id, "messages.db");
+          try {
+            if (fs.existsSync(dbPath)) {
+              const Database = (await import("better-sqlite3")).default;
+              const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+              const rows = db.prepare("SELECT timestamp FROM messages WHERE is_from_me = 1 ORDER BY timestamp DESC LIMIT 60").all() as { timestamp: string }[];
+              for (const r of rows) {
+                const t = new Date(r.timestamp.replace(" ", "T")).getTime();
+                if (!isNaN(t) && nowMs - t <= 10 * 60 * 1000) {
+                  sent10m++;
+                }
+              }
+              db.close();
+            }
+          } catch {
+            sent10m = 0;
+          }
+
+          lines.push(`• ${accName}: ${connStr} | last msg: ${lastMsgTime} | sent: ${sent10m}/50 (10m), ${dailyCount}/500 (day)`);
+        }
+
         return {
           exitCode: 0,
-          stdout: `WhatsApp Bridge Status:\n  State: ${s.status.toUpperCase()}\n  Connected: ${s.connected ? "YES" : "NO"}\n  Phone: ${s.phone || "Not paired"}\n  Running: ${s.running ? "YES" : "NO"}\n${s.error ? `  Error: ${s.error}\n` : ""}`,
+          stdout: lines.join("\n"),
         };
       }
 

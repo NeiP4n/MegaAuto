@@ -1,3 +1,4 @@
+import * as crypto from "node:crypto";
 import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import * as fs from "node:fs";
@@ -353,8 +354,57 @@ function getInitialStore(): StoreData {
   };
 }
 
+
+// Master key and encryption helpers for API keys at rest
+function getOrCreateMasterKey(storageDir: string): Buffer {
+  const keyFile = path.join(storageDir, ".project-hub.key");
+  try {
+    if (fs.existsSync(keyFile)) {
+      const raw = fs.readFileSync(keyFile);
+      if (raw.length === 32) return raw;
+    }
+    const newKey = crypto.randomBytes(32);
+    fs.writeFileSync(keyFile, newKey, { mode: 0o600 });
+    try { fs.chmodSync(keyFile, 0o600); } catch {}
+    return newKey;
+  } catch {
+    return crypto.createHash("sha256").update(process.env.USERPROFILE || process.env.HOME || "project-hub-salt").digest();
+  }
+}
+
+function encryptApiKey(plaintext: string, key: Buffer): string {
+  if (!plaintext || plaintext.startsWith("enc:v1:")) return plaintext;
+  try {
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+    const enc = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+    const tag = cipher.getAuthTag();
+    return `enc:v1:${iv.toString("hex")}:${tag.toString("hex")}:${enc.toString("hex")}`;
+  } catch {
+    return plaintext;
+  }
+}
+
+function decryptApiKey(ciphertext: string, key: Buffer): string {
+  if (!ciphertext || !ciphertext.startsWith("enc:v1:")) return ciphertext;
+  try {
+    const parts = ciphertext.split(":");
+    if (parts.length !== 5) return ciphertext;
+    const [, , ivHex, tagHex, dataHex] = parts;
+    const iv = Buffer.from(ivHex, "hex");
+    const tag = Buffer.from(tagHex, "hex");
+    const data = Buffer.from(dataHex, "hex");
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAuthTag(tag);
+    return decipher.update(data) + decipher.final("utf8");
+  } catch {
+    return ciphertext;
+  }
+}
+
 class HubStore {
   private storeFile: string;
+  private masterKey: Buffer;
   private data: StoreData;
 
   constructor(storageDir: string) {
@@ -365,6 +415,7 @@ class HubStore {
         // ignore
       }
     }
+    this.masterKey = getOrCreateMasterKey(storageDir);
     this.storeFile = path.join(storageDir, "project-hub-store.json");
     this.data = this.load();
   }
@@ -401,6 +452,15 @@ class HubStore {
             }
           }
         }
+        try { fs.chmodSync(this.storeFile, 0o600); } catch {}
+        if (parsed.accounts && Array.isArray(parsed.accounts)) {
+          for (const a of parsed.accounts) {
+            if (a.apiKey) a.apiKey = decryptApiKey(a.apiKey, this.masterKey);
+          }
+        }
+        if (parsed.config?.n8nApiKey) {
+          parsed.config.n8nApiKey = decryptApiKey(parsed.config.n8nApiKey, this.masterKey);
+        }
         this.save(parsed);
         return parsed;
       }
@@ -414,10 +474,23 @@ class HubStore {
 
   public save(data?: StoreData): void {
     try {
-      fs.writeFileSync(this.storeFile, JSON.stringify(data || this.data, null, 2), {
+      const source = data || this.data;
+      const encryptedData: StoreData = {
+        ...source,
+        accounts: source.accounts.map((a) => ({
+          ...a,
+          apiKey: a.apiKey ? encryptApiKey(a.apiKey, this.masterKey) : undefined,
+        })),
+        config: {
+          ...source.config,
+          n8nApiKey: source.config.n8nApiKey ? encryptApiKey(source.config.n8nApiKey, this.masterKey) : "",
+        },
+      };
+      fs.writeFileSync(this.storeFile, JSON.stringify(encryptedData, null, 2), {
         encoding: "utf-8",
         mode: 0o600,
       });
+      try { fs.chmodSync(this.storeFile, 0o600); } catch {}
     } catch {
       // ignore
     }
@@ -699,8 +772,6 @@ function isLocalPort5678(u: string): boolean {
 function buildSafeWebhookUrl(baseUrl: string, rawPath: string): string | null {
   if (!rawPath || typeof rawPath !== "string") return null;
   const trimmed = rawPath.trim();
-  // Reject directory traversal or path manipulation before normalization
-  if (trimmed.includes("..") || trimmed.includes("\\")) return null;
   if (/^[a-z0-9+.-]+:\/\//i.test(trimmed)) return null;
 
   try {
@@ -711,11 +782,27 @@ function buildSafeWebhookUrl(baseUrl: string, rawPath: string): string | null {
     const base = baseUrl.replace(/\/+$/, "") + "/";
     const parsed = new URL(cleanPath.replace(/^[\/\\]+/, ""), base);
     const baseParsed = new URL(base);
-    // Origin must strictly match instance base URL (no SSRF / redirects)
+    // Origin must strictly match instance base URL (prevent SSRF / cross-origin hijacking)
     if (parsed.origin !== baseParsed.origin) return null;
-    // Decode URL path to check for encoded traversal (%2e%2e, %5c, backslashes)
-    const decoded = decodeURIComponent(parsed.pathname);
-    if (decoded.includes("..") || decoded.includes("\\")) return null;
+
+    // Iterative URL decoding (up to 4 passes) to unwrap nested encoding like %252e%252e -> %2e%2e -> ..
+    let decoded = parsed.pathname;
+    let prev = "";
+    let passes = 0;
+    while (decoded !== prev && passes < 4) {
+      prev = decoded;
+      try {
+        decoded = decodeURIComponent(decoded);
+      } catch {
+        return null;
+      }
+      passes++;
+    }
+
+    if (decoded.includes("..") || decoded.includes("\\") || decoded.includes("//")) {
+      return null;
+    }
+
     if (!parsed.pathname.startsWith("/webhook/") && !parsed.pathname.startsWith("/webhook-test/")) {
       return null;
     }
@@ -818,8 +905,8 @@ const N8N_DEFAULT_ENV = {
 };
 
 let localN8nProcess: ChildProcess | null = null;
-let isStartingServer = false;
-let serverState: "stopped" | "starting" | "running" = "stopped";
+let serverState: "stopped" | "starting" | "running" | "stopping" | "error" = "stopped";
+let startLockPromise: Promise<{ ok: boolean; message: string; pid?: number }> | null = null;
 const serverLogs: string[] = [];
 
 function appendServerLog(msg: string) {
@@ -831,126 +918,129 @@ function appendServerLog(msg: string) {
 }
 
 async function startLocalN8nProcess(): Promise<{ ok: boolean; message: string; pid?: number }> {
-  healthCache.clear();
-  const health = await checkN8nHealth("http://127.0.0.1:5678", undefined, true);
-  if (health.connected) {
-    serverState = "running";
-    return {
-      ok: true,
-      message: "Сервер n8n уже работает",
-      pid: localN8nProcess?.pid,
-    };
+  // Synchronous lock: return existing in-flight start promise if one is already running
+  if (startLockPromise) {
+    return startLockPromise;
+  }
+  if (serverState === "starting") {
+    return { ok: true, message: "Сервер n8n уже запускается...", pid: localN8nProcess?.pid };
+  }
+  if (serverState === "running" && localN8nProcess && !localN8nProcess.killed) {
+    return { ok: true, message: "Сервер n8n уже работает", pid: localN8nProcess.pid };
   }
 
-  if (serverState === "starting" || isStartingServer || (localN8nProcess && !localN8nProcess.killed)) {
-    return {
-      ok: true,
-      message: "Сервер n8n уже запускается...",
-      pid: localN8nProcess?.pid,
-    };
-  }
-
-  serverState = "starting";
-  isStartingServer = true;
-  appendServerLog("Запуск локального сервера n8n (127.0.0.1:5678)...");
-  const isWin = process.platform === "win32";
-  let cmd = "n8n";
-  if (isWin) {
-    const npmPath = process.env.APPDATA ? path.join(process.env.APPDATA, "npm", "n8n.cmd") : "";
-    cmd = npmPath && fs.existsSync(npmPath) ? npmPath : "n8n.cmd";
-  }
-
-  try {
-    const child = spawn(cmd, ["start"], {
-      shell: isWin,
-      stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        ...N8N_DEFAULT_ENV,
-      },
-    });
-
-    localN8nProcess = child;
-
-    child.stdout?.on("data", (chunk: any) => {
-      const str = chunk.toString();
-      for (const line of str.split("\n")) {
-        if (line.trim()) appendServerLog(line);
-      }
-    });
-
-    child.stderr?.on("data", (chunk: any) => {
-      const str = chunk.toString();
-      for (const line of str.split("\n")) {
-        if (line.trim()) appendServerLog(line);
-      }
-    });
-
-    child.on("exit", (code: any) => {
-      appendServerLog(`Сервер n8n завершил работу (код ${code})`);
-      if (localN8nProcess === child) {
-        localN8nProcess = null;
-        serverState = "stopped";
-      }
-      isStartingServer = false;
+  startLockPromise = (async () => {
+    try {
       healthCache.clear();
-    });
-
-    child.on("error", (err: any) => {
-      appendServerLog(`Ошибка процесса n8n: ${err.message}`);
-      if (localN8nProcess === child) {
-        localN8nProcess = null;
-        serverState = "stopped";
-      }
-      isStartingServer = false;
-      healthCache.clear();
-    });
-
-    // Wait for health check readiness with deadline (up to 15s)
-    const deadline = Date.now() + 15000;
-    let ready = false;
-    while (Date.now() < deadline) {
-      if (localN8nProcess !== child || child.killed) {
-        serverState = "stopped";
-        isStartingServer = false;
+      const health = await checkN8nHealth("http://127.0.0.1:5678", true);
+      if (health.connected) {
+        serverState = "running";
         return {
-          ok: false,
-          message: "Процесс n8n неожиданно завершился при запуске",
+          ok: true,
+          message: "Сервер n8n уже работает",
+          pid: localN8nProcess?.pid,
         };
       }
-      const h = await checkN8nHealth("http://127.0.0.1:5678", undefined, true);
-      if (h.connected) {
-        ready = true;
-        break;
+
+      serverState = "starting";
+      appendServerLog("Запуск локального сервера n8n (127.0.0.1:5678)...");
+      const isWin = process.platform === "win32";
+      let cmd = "n8n";
+      if (isWin) {
+        const npmPath = process.env.APPDATA ? path.join(process.env.APPDATA, "npm", "n8n.cmd") : "";
+        cmd = npmPath && fs.existsSync(npmPath) ? npmPath : "n8n.cmd";
       }
-      await new Promise((r) => setTimeout(r, 600));
-    }
 
-    isStartingServer = false;
-    serverState = "running";
+      const child = spawn(cmd, ["start"], {
+        shell: isWin,
+        stdio: ["ignore", "pipe", "pipe"],
+        env: {
+          ...process.env,
+          ...N8N_DEFAULT_ENV,
+        },
+      });
 
-    if (ready) {
+      localN8nProcess = child;
+
+      child.stdout?.on("data", (chunk: any) => {
+        const str = chunk.toString();
+        for (const line of str.split("\n")) {
+          if (line.trim()) appendServerLog(line);
+        }
+      });
+
+      child.stderr?.on("data", (chunk: any) => {
+        const str = chunk.toString();
+        for (const line of str.split("\n")) {
+          if (line.trim()) appendServerLog(line);
+        }
+      });
+
+      child.on("exit", (code: any) => {
+        appendServerLog(`Сервер n8n завершил работу (код ${code})`);
+        if (localN8nProcess === child) {
+          localN8nProcess = null;
+          serverState = "stopped";
+        }
+        healthCache.clear();
+      });
+
+      child.on("error", (err: any) => {
+        appendServerLog(`Ошибка процесса n8n: ${err.message}`);
+        if (localN8nProcess === child) {
+          localN8nProcess = null;
+          serverState = "error";
+        }
+        healthCache.clear();
+      });
+
+      // Poll readiness health check up to 15 seconds
+      const deadline = Date.now() + 15000;
+      let ready = false;
+      while (Date.now() < deadline) {
+        if (localN8nProcess !== child || child.killed) {
+          serverState = "error";
+          return {
+            ok: false,
+            message: "Процесс n8n неожиданно завершился при запуске",
+          };
+        }
+        const h = await checkN8nHealth("http://127.0.0.1:5678", true);
+        if (h.connected) {
+          ready = true;
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 600));
+      }
+
+      if (!ready) {
+        serverState = "error";
+        return {
+          ok: false,
+          message: `Таймаут запуска: n8n не перешёл в состояние готовности за 15 секунд (PID ${child.pid})`,
+          pid: child.pid,
+        };
+      }
+
+      serverState = "running";
       return {
         ok: true,
         message: "Сервер n8n успешно запущен и готов к работе",
         pid: child.pid,
       };
-    } else {
+    } catch (err: any) {
+      serverState = "error";
+      appendServerLog(`Не удалось запустить n8n: ${err?.message}`);
       return {
-        ok: true,
-        message: `Сервер n8n запущен (PID ${child.pid}), ожидает завершения инициализации...`,
-        pid: child.pid,
+        ok: false,
+        message: err?.message || "Ошибка запуска n8n",
       };
+    } finally {
+      startLockPromise = null;
     }
-  } catch (err: any) {
-    serverState = "stopped";
-    isStartingServer = false;
-    appendServerLog(`Не удалось запустить n8n: ${err?.message}`);
-    return {
-      ok: false,
-      message: err?.message || "Ошибка запуска n8n",
-    };
-  }
+  })();
+
+  return startLockPromise;
 }
 
 function stopLocalN8nProcess(): { ok: boolean; message: string } {
@@ -959,23 +1049,20 @@ function stopLocalN8nProcess(): { ok: boolean; message: string } {
 
   const child = localN8nProcess;
   if (child && child.pid) {
+    serverState = "stopping";
     const pid = child.pid;
     try {
       if (process.platform === "win32") {
-        spawn("taskkill", ["/pid", String(pid), "/f", "/t"]);
+        spawn("taskkill", ["/pid", String(pid), "/t"]);
       } else {
         child.kill("SIGTERM");
         setTimeout(() => {
           if (!child.killed) {
-            try {
-              child.kill("SIGKILL");
-            } catch {
-              // ignore
-            }
+            try { child.kill("SIGKILL"); } catch {}
           }
         }, 3000);
       }
-      appendServerLog(`Сервер n8n остановлен (PID ${pid})`);
+      appendServerLog(`Сервер n8n останавливается (PID ${pid})`);
     } catch (e: any) {
       appendServerLog(`Ошибка при остановке процесса: ${e?.message}`);
     }
@@ -983,7 +1070,6 @@ function stopLocalN8nProcess(): { ok: boolean; message: string } {
       localN8nProcess = null;
     }
     serverState = "stopped";
-    isStartingServer = false;
     return { ok: true, message: `Сервер n8n остановлен (PID ${pid})` };
   }
 
@@ -996,16 +1082,18 @@ function stopLocalN8nProcess(): { ok: boolean; message: string } {
 // Ensure cleanup on plugin/process shutdown
 function cleanupLocalN8n() {
   if (localN8nProcess && localN8nProcess.pid) {
+    serverState = "stopping";
     try {
       if (process.platform === "win32") {
-        spawn("taskkill", ["/pid", String(localN8nProcess.pid), "/f", "/t"]);
+        spawn("taskkill", ["/pid", String(localN8nProcess.pid), "/t"]);
       } else {
-        localN8nProcess.kill("SIGKILL");
+        localN8nProcess.kill("SIGTERM");
       }
     } catch {
       // ignore
     }
     localN8nProcess = null;
+    serverState = "stopped";
   }
 }
 
@@ -1024,62 +1112,56 @@ function getCanonicalBase(url: string): string {
 // Single-pass n8n probe: tries health/version endpoints in parallel, first OK wins.
 // Never falls back to 127.0.0.1 for a remote baseUrl - a remote instance must not
 // report "connected" (or receive commands) because a local n8n happens to answer.
-async function probeN8n(
-  baseUrl: string,
-  apiKey?: string
-): Promise<{ connected: boolean; version: string }> {
+async function probeN8n(baseUrl: string): Promise<{ connected: boolean; version: string }> {
   const cleanBase = baseUrl.replace(/\/+$/, "");
-  const headers: Record<string, string> = {};
-  if (apiKey) headers["X-N8N-API-KEY"] = apiKey;
-
   const bases = new Set<string>([cleanBase]);
   if (isLocalUrl(cleanBase)) {
     bases.add(cleanBase.replace("localhost", "127.0.0.1"));
     bases.add(cleanBase.replace("127.0.0.1", "localhost"));
   }
 
-  const urls: string[] = [];
-  for (const b of bases) {
-    urls.push(`${b}/healthz/readiness`, `${b}/healthz`, `${b}/api/v1/version`, `${b}/rest/settings`);
-  }
-
-  const probeOne = async (url: string): Promise<{ version: string } | null> => {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 3500);
+  const probeOne = async (b: string): Promise<{ version: string } | null> => {
+    // 1. Probe /rest/settings - uniquely returns n8n configuration structures
     try {
-      const res = await fetch(url, { signal: controller.signal, headers });
-      if (!res.ok) return null;
-      let version = res.headers.get("x-n8n-version") || res.headers.get("x-version") || "";
-      let isN8n = Boolean(version);
-      try {
-        const data = (await res.json()) as any;
-        if (data?.version) {
-          version = String(data.version);
-          isN8n = true;
-        } else if (data?.n8nVersion) {
-          version = String(data.n8nVersion);
-          isN8n = true;
-        } else if (data?.status === "ok") {
-          isN8n = true;
-          version = version || "online";
-        } else if (data?.versionCli || data?.instanceId) {
-          isN8n = true;
-          version = version || data?.versionCli || "online";
+      const res = await fetch(`${b}/rest/settings`, {
+        signal: AbortSignal.timeout(3000),
+        redirect: "manual",
+      });
+      if (res.ok) {
+        const versionHeader = res.headers.get("x-n8n-version") || res.headers.get("x-version");
+        const data = (await res.json().catch(() => null)) as any;
+        const hasN8nSignature =
+          Boolean(versionHeader) ||
+          data?.data?.settingsMode !== undefined ||
+          data?.data?.userManagement !== undefined ||
+          data?.data?.communityNodesEnabled !== undefined ||
+          data?.versionCli !== undefined;
+        if (hasN8nSignature) {
+          const v = versionHeader || data?.versionCli || data?.data?.versionCli || "online";
+          return { version: String(v) };
         }
-      } catch {
-        // not json - only valid if header confirmed it's n8n
       }
-      if (!isN8n) return null;
-      return { version: version || "online" };
-    } catch {
-      return null;
-    } finally {
-      clearTimeout(timeout);
-    }
+    } catch {}
+
+    // 2. Probe / - check for n8n frontend meta tag or title
+    try {
+      const res = await fetch(`${b}/`, {
+        signal: AbortSignal.timeout(3000),
+        redirect: "manual",
+      });
+      if (res.ok) {
+        const versionHeader = res.headers.get("x-n8n-version");
+        const html = await res.text().catch(() => "");
+        if (versionHeader || html.includes("n8n:config:") || html.includes('content="cmVzdA=="') || html.includes("<title>n8n")) {
+          return { version: versionHeader || "online" };
+        }
+      }
+    } catch {}
+
+    return null;
   };
 
-  const results = await Promise.all(urls.map(probeOne));
-  // prefer a hit that actually carries a specific version over bare "online"
+  const results = await Promise.all(Array.from(bases).map(probeOne));
   const hit = results.find((r) => r && r.version !== "online" && r.version !== "unknown") || results.find((r) => r !== null);
   return hit ? { connected: true, version: hit.version } : { connected: false, version: "unknown" };
 }
@@ -1090,11 +1172,12 @@ const healthCache = new Map<string, { connected: boolean; version: string; at: n
 
 async function checkN8nHealth(
   baseUrl: string,
-  apiKey?: string,
-  forceFresh: boolean = false
+  forceFreshOrApiKey?: boolean | string,
+  forceFreshArg?: boolean
 ): Promise<{ connected: boolean; version: string }> {
+  const forceFresh = typeof forceFreshOrApiKey === "boolean" ? forceFreshOrApiKey : Boolean(forceFreshArg);
   const canonical = getCanonicalBase(baseUrl);
-  const key = `${canonical}|${apiKey || ""}`;
+  const key = canonical;
   if (!forceFresh) {
     const cached = healthCache.get(key);
     const ttl = cached?.connected ? HEALTH_TTL_MS : 1000;
@@ -1102,12 +1185,12 @@ async function checkN8nHealth(
       return { connected: cached.connected, version: cached.version };
     }
   }
-  const result = await probeN8n(baseUrl, apiKey);
+
+  const result = await probeN8n(baseUrl);
   healthCache.set(key, { ...result, at: Date.now() });
   return result;
 }
 
-// Fetch workflows and executions from n8n REST API or local SQLite fallback
 async function fetchN8nWorkflowsAndExecutions(
   baseUrl: string,
   apiKey?: string
@@ -1120,23 +1203,26 @@ async function fetchN8nWorkflowsAndExecutions(
   error?: string;
 }> {
   const cleanBase = baseUrl.replace(/\/+$/, "");
-  const headers: Record<string, string> = {
-    Accept: "application/json",
-  };
-  if (apiKey) {
-    headers["X-N8N-API-KEY"] = apiKey;
-  }
 
   // 1. If apiKey is provided, attempt official REST API first
   if (apiKey) {
     try {
-      const wfController = new AbortController();
-      const wfTimeout = setTimeout(() => wfController.abort(), 4000);
-      const wfRes = await fetch(`${cleanBase}/api/v1/workflows`, {
+      const baseObj = new URL(cleanBase);
+      const targetWfUrl = new URL("/api/v1/workflows", baseObj);
+      if (targetWfUrl.origin !== baseObj.origin) {
+        return { ok: false, workflows: [], executions: [], error: "Origin mismatch" };
+      }
+
+      const headers: Record<string, string> = {
+        Accept: "application/json",
+        "X-N8N-API-KEY": apiKey,
+      };
+
+      const wfRes = await fetch(targetWfUrl.toString(), {
         headers,
-        signal: wfController.signal,
+        signal: AbortSignal.timeout(4000),
+        redirect: "manual",
       });
-      clearTimeout(wfTimeout);
 
       if (wfRes.ok) {
         const wfData = (await wfRes.json()) as any;
@@ -1148,13 +1234,12 @@ async function fetchN8nWorkflowsAndExecutions(
 
         let executions: any[] = [];
         try {
-          const exController = new AbortController();
-          const exTimeout = setTimeout(() => exController.abort(), 4000);
-          const exRes = await fetch(`${cleanBase}/api/v1/executions?limit=20`, {
+          const targetExUrl = new URL("/api/v1/executions?limit=20", baseObj);
+          const exRes = await fetch(targetExUrl.toString(), {
             headers,
-            signal: exController.signal,
+            signal: AbortSignal.timeout(4000),
+            redirect: "manual",
           });
-          clearTimeout(exTimeout);
 
           if (exRes.ok) {
             const exData = (await exRes.json()) as any;
@@ -1205,7 +1290,6 @@ async function fetchN8nWorkflowsAndExecutions(
   };
 }
 
-// Forward command or trigger to n8n webhook, telegram or webhook channel
 async function forwardToN8n(
   store: HubStore,
   projectId: string,
@@ -1217,15 +1301,12 @@ async function forwardToN8n(
   const cfg = store.getConfig();
 
   const channel = project?.channel || account?.channel || "n8n";
-  const apiKey = account?.apiKey || cfg.n8nApiKey;
 
   if (channel === "webhook") {
     const targetUrl = account?.url || cfg.n8nBaseUrl;
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 4000);
       const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (apiKey) headers["X-N8N-API-KEY"] = apiKey;
+      // Security: never forward administrative X-N8N-API-KEY to external webhooks!
 
       const res = await fetch(targetUrl, {
         method: "POST",
@@ -1236,9 +1317,12 @@ async function forwardToN8n(
           mode,
           timestamp: new Date().toISOString(),
         }),
-        signal: controller.signal,
+        signal: AbortSignal.timeout(4000),
+        redirect: "manual",
       });
-      clearTimeout(timeout);
+      if (res.status >= 300 && res.status < 400) {
+        return { ok: false, error: "HTTP перенаправления запрещены для вебхуков" };
+      }
       if (res.ok) {
         const data = (await res.json().catch(() => ({}))) as any;
         return {
@@ -1257,10 +1341,8 @@ async function forwardToN8n(
       ? account.url
       : `${(cfg.n8nBaseUrl || "http://localhost:5678").replace(/\/+$/, "")}/webhook/telegram`;
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 4000);
       const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (apiKey) headers["X-N8N-API-KEY"] = apiKey;
+      // Security: never forward administrative X-N8N-API-KEY to external telegram bots!
 
       const res = await fetch(targetUrl, {
         method: "POST",
@@ -1273,9 +1355,12 @@ async function forwardToN8n(
           mode,
           timestamp: new Date().toISOString(),
         }),
-        signal: controller.signal,
+        signal: AbortSignal.timeout(4000),
+        redirect: "manual",
       });
-      clearTimeout(timeout);
+      if (res.status >= 300 && res.status < 400) {
+        return { ok: false, error: "HTTP перенаправления запрещены для шлюзов" };
+      }
       if (res.ok) {
         const data = (await res.json().catch(() => ({}))) as any;
         return {
@@ -1295,7 +1380,6 @@ async function forwardToN8n(
   const webhookPath = `/webhook/api/projects/${projectId}/send`;
   const endpoints = [`${cleanBase}${webhookPath}`];
   if (isLocalUrl(cleanBase)) {
-    // local convenience only: try the other loopback spelling too
     const alt = cleanBase.includes("localhost")
       ? cleanBase.replace("localhost", "127.0.0.1")
       : cleanBase.replace("127.0.0.1", "localhost");
@@ -1303,12 +1387,10 @@ async function forwardToN8n(
   }
 
   const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (apiKey) headers["X-N8N-API-KEY"] = apiKey;
+  // Security: webhooks don't receive X-N8N-API-KEY; redirect: "manual" prevents cross-origin redirection
 
   for (const ep of endpoints) {
     try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 3500);
       const res = await fetch(ep, {
         method: "POST",
         headers,
@@ -1318,9 +1400,9 @@ async function forwardToN8n(
           mode,
           timestamp: new Date().toISOString(),
         }),
-        signal: controller.signal,
+        signal: AbortSignal.timeout(3500),
+        redirect: "manual",
       });
-      clearTimeout(timeout);
 
       if (res.ok) {
         const data = (await res.json().catch(() => ({}))) as any;
@@ -1705,8 +1787,12 @@ export default function (bb: BbPluginApi) {
           headers,
           body: method === "POST" ? JSON.stringify(payload || {}) : undefined,
           signal: AbortSignal.timeout(10000),
+          redirect: "manual",
         });
         const durationMs = Date.now() - start;
+        if (res.status >= 300 && res.status < 400) {
+          return { ok: false, statusCode: res.status, durationMs, error: "HTTP перенаправления запрещены для вебхуков" };
+        }
         const responseData = await res.json().catch(() => ({ statusText: res.statusText }));
         return {
           ok: res.ok,
@@ -1793,7 +1879,8 @@ export default function (bb: BbPluginApi) {
 
       if (sub === "status") {
         const cfg = store.getConfig();
-        const health = await checkN8nHealth(cfg.n8nBaseUrl, cfg.n8nApiKey);
+        const health = await checkN8nHealth(cfg.n8nBaseUrl);
+        const localHealth = await checkN8nHealth("http://127.0.0.1:5678", true);
         const projects = store.getProjects();
         const accounts = store.getAccounts();
         const isManaged = Boolean(localN8nProcess !== null && !localN8nProcess.killed);
@@ -1801,9 +1888,11 @@ export default function (bb: BbPluginApi) {
           exitCode: 0,
           stdout: JSON.stringify(
             {
+              // Compatibility fields
               connectedAccounts: accounts.filter((a) => a.status === "online").length,
               projects: projects.length,
               messagesTotal: store.getTotalMessagesCount(),
+              // Detailed status fields
               n8nConnected: health.connected,
               n8nBaseUrl: cfg.n8nBaseUrl,
               n8nVersion: health.version,
@@ -1811,7 +1900,7 @@ export default function (bb: BbPluginApi) {
               totalAccountsCount: accounts.length,
               activeProjectsCount: projects.length,
               totalMessagesCount: store.getTotalMessagesCount(),
-              localServerRunning: isManaged || health.connected,
+              localServerRunning: isManaged || localHealth.connected,
               localServerPid: localN8nProcess?.pid || null,
             },
             null,
@@ -1873,7 +1962,11 @@ export default function (bb: BbPluginApi) {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload),
+            redirect: "manual",
           });
+          if (res.status >= 300 && res.status < 400) {
+            return { exitCode: 1, stderr: "HTTP перенаправления запрещены для вебхуков" };
+          }
           const text = await res.text();
           return { exitCode: res.ok ? 0 : 1, stdout: `HTTP ${res.status}: ${text}` };
         } catch (err: any) {
@@ -2110,7 +2203,7 @@ export default function (bb: BbPluginApi) {
 
   bb.agents.registerTool({
     name: "project_hub_dispatch_webhook",
-    description: "Triggers a webhook endpoint on an n8n instance with optional JSON payload.",
+    description: "Triggers an n8n webhook workflow with a JSON payload (POST/GET). Restricted to whitelisted test/project prefixes.",
     parameters: {
       type: "object",
       properties: {
@@ -2133,9 +2226,11 @@ export default function (bb: BbPluginApi) {
         });
       }
       const parsedUrl = new URL(targetUrl);
-      // Security: Whitelist check for automated agent dispatches
-      const allowedPrefixes = ["/webhook/test", "/webhook-test/", "/webhook/api/projects/"];
-      const isWhitelisted = allowedPrefixes.some((p) => parsedUrl.pathname.startsWith(p));
+      // Security: Whitelist check with strict boundary checks
+      const allowedPrefixes = ["/webhook/test/", "/webhook/test", "/webhook-test/", "/webhook/api/projects/"];
+      const isWhitelisted = allowedPrefixes.some((p) =>
+        parsedUrl.pathname === p || parsedUrl.pathname.startsWith(p.endsWith("/") ? p : p + "/")
+      );
       if (!isWhitelisted) {
         return JSON.stringify({
           ok: false,
@@ -2151,8 +2246,12 @@ export default function (bb: BbPluginApi) {
           headers,
           body: method === "POST" ? JSON.stringify(args.payload || {}) : undefined,
           signal: AbortSignal.timeout(10000),
+          redirect: "manual",
         });
         const durationMs = Date.now() - start;
+        if (res.status >= 300 && res.status < 400) {
+          return JSON.stringify({ ok: false, statusCode: res.status, durationMs, error: "HTTP перенаправления запрещены для вебхуков" }, null, 2);
+        }
         const data = await res.json().catch(() => ({ statusText: res.statusText }));
         return JSON.stringify({ ok: res.ok, statusCode: res.status, durationMs, response: data }, null, 2);
       } catch (err: any) {

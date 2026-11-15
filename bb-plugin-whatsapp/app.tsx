@@ -28,7 +28,61 @@ import {
   SvgImage,
   SvgUser,
   SvgLock,
+  SvgChevronLeft,
+  SvgChevronRight,
 } from "./components/icons";
+
+// Inline preview for an incoming image message: lazily pulls the bytes
+// through the bridge (cached on disk after the first fetch) and opens a
+// lightbox on click. On failure the download chip below stays as the
+// fallback, so a missing preview never breaks the bubble.
+function MediaImagePreview({
+  msg,
+  onOpen,
+}: {
+  msg: WhatsAppMessage;
+  onOpen: (url: string) => void;
+}) {
+  const rpc = useRpc<typeof rpcContract>();
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await rpc.call("get_media_preview", {
+          message_id: msg.id,
+          chat_jid: msg.chat_jid,
+        });
+        if (cancelled) return;
+        if (res.success && res.data_url) setDataUrl(res.data_url);
+        else setFailed(true);
+      } catch {
+        if (!cancelled) setFailed(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [msg.id, msg.chat_jid]);
+
+  if (failed) return null;
+  if (!dataUrl) {
+    return (
+      <div className="mx-1 mt-1.5 w-[280px] h-[180px] rounded-md bg-[rgba(0,0,0,0.15)] flex items-center justify-center">
+        <SvgRefresh className="w-5 h-5 animate-spin text-[var(--wa-icon)]" />
+      </div>
+    );
+  }
+  return (
+    <img
+      src={dataUrl}
+      alt={msg.filename || "photo"}
+      onClick={() => onOpen(dataUrl)}
+      className="rounded-md max-w-[280px] max-h-[320px] object-cover mx-1 mt-1.5 cursor-zoom-in"
+    />
+  );
+}
 
 interface AgentActivityEntry {
   ts: string;
@@ -180,6 +234,8 @@ export function WhatsAppView() {
   const [selectedChat, setSelectedChat] = useState<WhatsAppChat | null>(null);
   // Narrow layout (<700px): show either the list or the open chat, never
   // both squeezed together, with a back button to return to the list.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const [isNarrow, setIsNarrow] = useState<boolean>(
     typeof window !== "undefined" ? window.innerWidth < 700 : false
   );
@@ -900,6 +956,27 @@ export function WhatsAppView() {
     <div className="wa-root flex flex-col h-full bg-[var(--wa-app-bg)] text-[var(--wa-text)] font-sans antialiased overflow-hidden">
       <style>{WA_STYLES}</style>
 
+      {/* Photo lightbox: click anywhere to close */}
+      {lightboxUrl && (
+        <div
+          className="fixed inset-0 z-50 bg-[rgba(0,0,0,0.88)] flex items-center justify-center p-6 cursor-zoom-out"
+          onClick={() => setLightboxUrl(null)}
+        >
+          <img
+            src={lightboxUrl}
+            alt="photo"
+            className="max-w-full max-h-full rounded-md object-contain shadow-2xl"
+          />
+          <button
+            onClick={() => setLightboxUrl(null)}
+            title="Close"
+            className="absolute top-4 right-4 p-2 rounded-full text-white/80 hover:bg-white/10 transition-colors"
+          >
+            <SvgX className="w-5 h-5" />
+          </button>
+        </div>
+      )}
+
       {/* ==================== ACCOUNT SESSION BAR ==================== */}
       <div className="h-11 bg-[var(--wa-header)] border-b border-[var(--wa-border)] flex items-center px-2 gap-1 overflow-x-auto shrink-0 no-scrollbar">
         {sessions.map((sess) => {
@@ -1403,9 +1480,11 @@ export function WhatsAppView() {
           /* ---------- CHAT CLIENT ---------- */
           <>
             {/* Chat list column */}
-            <div className={isNarrow ? (selectedChat ? "hidden" : "flex-1 bg-[var(--wa-panel)] border-r border-[var(--wa-border)] flex flex-col min-w-0") : "w-[340px] max-w-[40%] bg-[var(--wa-panel)] border-r border-[var(--wa-border)] flex flex-col shrink-0"}>
+            <div className={isNarrow ? (selectedChat ? "hidden" : "flex-1 bg-[var(--wa-panel)] border-r border-[var(--wa-border)] flex flex-col min-w-0") : sidebarCollapsed ? "w-[56px] bg-[var(--wa-panel)] border-r border-[var(--wa-border)] flex flex-col shrink-0" : "w-[340px] max-w-[40%] bg-[var(--wa-panel)] border-r border-[var(--wa-border)] flex flex-col shrink-0"}>
               {/* List header: title + tabs + new chat */}
-              <div className="h-[60px] px-4 bg-[var(--wa-header)] flex items-center justify-between shrink-0">
+              <div className={`h-[60px] bg-[var(--wa-header)] flex items-center shrink-0 ${sidebarCollapsed ? "justify-center px-0" : "justify-between px-4"}`}>
+                {!sidebarCollapsed && (
+                <>
                 <div className="flex bg-[var(--wa-input)] p-0.5 rounded-full text-[13px]">
                   <button
                     onClick={() => setActiveTab("chats")}
@@ -1435,9 +1514,19 @@ export function WhatsAppView() {
                 >
                   <SvgPlus className="w-5 h-5" />
                 </button>
+                </>
+                )}
+                <button
+                  onClick={() => setSidebarCollapsed((v) => !v)}
+                  title={sidebarCollapsed ? "Show chat list" : "Hide chat list"}
+                  className="p-2 rounded-full text-[var(--wa-icon)] hover:bg-[var(--wa-hover)] transition-colors"
+                >
+                  {sidebarCollapsed ? <SvgChevronRight className="w-4 h-4" /> : <SvgChevronLeft className="w-4 h-4" />}
+                </button>
               </div>
 
               {/* Search */}
+              {!sidebarCollapsed && (
               <div className="px-3 py-2 shrink-0">
                 <div className="relative flex items-center">
                   <SvgSearch className="w-4 h-4 absolute left-3 text-[var(--wa-text-secondary)]" />
@@ -1451,7 +1540,9 @@ export function WhatsAppView() {
                 </div>
               </div>
 
+              )}
               {/* Chat items */}
+              {!sidebarCollapsed && (
               <div className="flex-1 overflow-y-auto">
                 {filteredChats.length === 0 ? (
                   <div className="p-8 text-center text-[13px] text-[var(--wa-text-secondary)] flex flex-col items-center gap-2">
@@ -1500,6 +1591,7 @@ export function WhatsAppView() {
                   })
                 )}
               </div>
+              )}
             </div>
 
             {/* Conversation column */}
@@ -1612,9 +1704,14 @@ export function WhatsAppView() {
                                 <img
                                   src={msg.url}
                                   alt={msg.filename || "photo"}
-                                  className="rounded-md max-w-[280px] max-h-[320px] object-cover mx-1 mt-1.5"
+                                  onClick={() => setLightboxUrl(msg.url)}
+                                  className="rounded-md max-w-[280px] max-h-[320px] object-cover mx-1 mt-1.5 cursor-zoom-in"
                                 />
-                              ) : msg.media_type && (
+                              ) : msg.media_type ? (
+                                <>
+                                {msg.media_type.includes("image") && (
+                                  <MediaImagePreview msg={msg} onOpen={setLightboxUrl} />
+                                )}
                                 <div className="mx-1 mt-1.5">
                                   <div className="flex items-center justify-between gap-3 bg-[rgba(0,0,0,0.15)] rounded-md p-2">
                                     <div className="flex items-center gap-2 min-w-0">
@@ -1662,7 +1759,8 @@ export function WhatsAppView() {
                                     </div>
                                   )}
                                 </div>
-                              )}
+                                </>
+                              ) : null}
 
                               {/* Time + ticks (+ agent badge for tool-sent messages) */}
                               <span className="float-right flex items-center gap-1 text-[11px] mt-1 ml-2 mr-1 text-[var(--wa-text-secondary)]">

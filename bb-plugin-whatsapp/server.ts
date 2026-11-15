@@ -288,6 +288,18 @@ export const rpcContract = defineRpcContract({
       path: z.string().optional(),
     }),
   },
+  get_media_preview: {
+    input: z.object({
+      message_id: z.string().min(1),
+      chat_jid: z.string().min(1),
+      session_id: z.string().optional(),
+    }),
+    output: z.object({
+      success: z.boolean(),
+      message: z.string().optional(),
+      data_url: z.string().optional(),
+    }),
+  },
   search_contacts: {
     input: z.object({ query: z.string(), session_id: z.string().optional() }),
     output: z.array(
@@ -750,12 +762,13 @@ export class WhatsAppBridgeController {
         signal: AbortSignal.timeout(8000),
       });
       const data = (await res.json()) as Record<string, unknown>;
-      return {
+      const out: { success: boolean; message?: string; holder?: string; expires_at?: string } = {
         success: Boolean(data.success),
-        message: typeof data.message === "string" ? data.message : undefined,
-        holder: typeof data.holder === "string" ? data.holder : undefined,
-        expires_at: typeof data.expires_at === "string" ? data.expires_at : undefined,
       };
+      if (typeof data.message === "string") out.message = data.message;
+      if (typeof data.holder === "string") out.holder = data.holder;
+      if (typeof data.expires_at === "string") out.expires_at = data.expires_at;
+      return out;
     } catch (e) {
       return { success: false, message: e instanceof Error ? e.message : String(e) };
     }
@@ -775,10 +788,9 @@ export class WhatsAppBridgeController {
         signal: AbortSignal.timeout(8000),
       });
       const data = (await res.json()) as Record<string, unknown>;
-      return {
-        success: Boolean(data.success),
-        message: typeof data.message === "string" ? data.message : undefined,
-      };
+      const out: { success: boolean; message?: string } = { success: Boolean(data.success) };
+      if (typeof data.message === "string") out.message = data.message;
+      return out;
     } catch (e) {
       return { success: false, message: e instanceof Error ? e.message : String(e) };
     }
@@ -829,11 +841,12 @@ export class WhatsAppBridgeController {
         signal: AbortSignal.timeout(30000),
       });
       const data = (await res.json()) as Record<string, unknown>;
-      return {
+      const out: { success: boolean; message: string; path?: string } = {
         success: Boolean(data.success),
         message: typeof data.message === "string" ? data.message : "",
-        path: typeof data.path === "string" ? data.path : undefined,
       };
+      if (typeof data.path === "string") out.path = data.path;
+      return out;
     } catch (e: unknown) {
       return { success: false, message: e instanceof Error ? e.message : String(e) };
     }
@@ -943,7 +956,7 @@ export class WhatsAppBridgeController {
           pairing: Boolean(data.pairing),
           syncing: Boolean(data.syncing),
           appearOffline: Boolean(data.appear_offline),
-          sessions: Array.isArray(data.sessions) ? (data.sessions as WhatsAppSessionInfo[]) : undefined,
+          ...(Array.isArray(data.sessions) ? { sessions: data.sessions as WhatsAppSessionInfo[] } : {}),
         };
       }
     } catch {
@@ -1073,15 +1086,16 @@ export class WhatsAppBridgeController {
       });
 
       const data = (await res.json()) as Record<string, unknown>;
-      return {
+      const out: { success: boolean; message: string; id?: string; timestamp?: string; chat_jid?: string } = {
         success: Boolean(data.success),
         message: typeof data.message === "string"
           ? data.message
           : (data.success ? "Message sent" : "Failed to send message"),
-        id: typeof data.id === "string" ? data.id : undefined,
-        timestamp: typeof data.timestamp === "string" ? data.timestamp : undefined,
-        chat_jid: typeof data.chat_jid === "string" ? data.chat_jid : undefined,
       };
+      if (typeof data.id === "string") out.id = data.id;
+      if (typeof data.timestamp === "string") out.timestamp = data.timestamp;
+      if (typeof data.chat_jid === "string") out.chat_jid = data.chat_jid;
+      return out;
     } catch (e: unknown) {
       return { success: false, message: e instanceof Error ? e.message : String(e) };
     }
@@ -1115,15 +1129,44 @@ export class WhatsAppBridgeController {
       });
 
       const data = (await res.json()) as Record<string, unknown>;
-      return {
+      const out: { success: boolean; message: string; id?: string; timestamp?: string; chat_jid?: string } = {
         success: Boolean(data.success),
         message: typeof data.message === "string"
           ? data.message
           : (data.success ? "Media sent" : "Failed to send media"),
-        id: typeof data.id === "string" ? data.id : undefined,
-        timestamp: typeof data.timestamp === "string" ? data.timestamp : undefined,
-        chat_jid: typeof data.chat_jid === "string" ? data.chat_jid : undefined,
       };
+      if (typeof data.id === "string") out.id = data.id;
+      if (typeof data.timestamp === "string") out.timestamp = data.timestamp;
+      if (typeof data.chat_jid === "string") out.chat_jid = data.chat_jid;
+      return out;
+    } catch (e: unknown) {
+      return { success: false, message: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  public async getMediaDataUrl(
+    messageId: string,
+    chatJid: string,
+    sessionId?: string
+  ): Promise<{ success: boolean; message?: string; data_url?: string }> {
+    await this.ensureRunning();
+    try {
+      let url = `http://127.0.0.1:${this.bridgePort}/api/media/raw?message_id=${encodeURIComponent(messageId)}&chat_jid=${encodeURIComponent(chatJid)}`;
+      if (sessionId) {
+        url += `&session=${encodeURIComponent(sessionId)}`;
+      }
+      const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
+      if (!res.ok) {
+        let msg = `media unavailable (HTTP ${res.status})`;
+        try {
+          const data = (await res.json()) as Record<string, unknown>;
+          if (typeof data.message === "string") msg = data.message;
+        } catch { /* keep default */ }
+        return { success: false, message: msg };
+      }
+      const mime = res.headers.get("content-type") || "image/jpeg";
+      const buf = Buffer.from(await res.arrayBuffer());
+      return { success: true, data_url: `data:${mime};base64,${buf.toString("base64")}` };
     } catch (e: unknown) {
       return { success: false, message: e instanceof Error ? e.message : String(e) };
     }
@@ -1148,12 +1191,15 @@ export class WhatsAppBridgeController {
       });
 
       const data = (await res.json()) as Record<string, unknown>;
-      return {
+      // Never return {key: undefined}: the RPC runtime rejects undefined
+      // values ("not a JSON value") - omit missing optional keys entirely.
+      const out: { success: boolean; message: string; filename?: string; path?: string } = {
         success: Boolean(data.success),
         message: typeof data.message === "string" ? data.message : "",
-        filename: typeof data.filename === "string" ? data.filename : undefined,
-        path: typeof data.path === "string" ? data.path : undefined,
       };
+      if (typeof data.filename === "string") out.filename = data.filename;
+      if (typeof data.path === "string") out.path = data.path;
+      return out;
     } catch (e: unknown) {
       return { success: false, message: e instanceof Error ? e.message : String(e) };
     }
@@ -1443,6 +1489,9 @@ export default async function plugin(bb: BbPluginApi) {
     },
     async download_media(input) {
       return await bridge.downloadMedia(input.message_id, input.chat_jid, input.session_id);
+    },
+    async get_media_preview(input) {
+      return await bridge.getMediaDataUrl(input.message_id, input.chat_jid, input.session_id);
     },
     async search_contacts(input) {
       return await bridge.searchContacts(input.query, input.session_id);

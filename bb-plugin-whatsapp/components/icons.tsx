@@ -351,6 +351,40 @@ export function SvgUser({ className = "w-3.5 h-3.5", ...props }: SVGProps<SVGSVG
   );
 }
 
+export function SvgChevronLeft({ className = "w-4 h-4", ...props }: SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      {...props}
+    >
+      <polyline points="15 18 9 12 15 6" />
+    </svg>
+  );
+}
+
+export function SvgChevronRight({ className = "w-4 h-4", ...props }: SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      {...props}
+    >
+      <polyline points="9 18 15 12 9 6" />
+    </svg>
+  );
+}
+
 export function SvgLock({ className = "w-3.5 h-3.5", ...props }: SVGProps<SVGSVGElement>) {
   return (
     <svg

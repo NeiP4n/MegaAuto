@@ -518,7 +518,7 @@ export class MetaMuseController {
     }
   }
 
-  private saveState(): void {
+  private saveState(): boolean {
     try {
       // Security: never persist sensitive apiKey to disk in state.json
       const { apiKey, ...safeConfig } = this.config;
@@ -532,8 +532,10 @@ export class MetaMuseController {
         memories: Array.from(this.memories.values()),
       };
       fs.writeFileSync(this.storageFile, JSON.stringify(data, null, 2), "utf-8");
+      return true;
     } catch (err) {
       console.error("[meta-muse] Failed to persist state to disk:", err);
+      return false;
     }
   }
 
@@ -664,8 +666,8 @@ export class MetaMuseController {
     }
     if (patch.endpointUrl !== undefined) this.config.endpointUrl = patch.endpointUrl.trim() || undefined;
     if (patch.mediaEndpointUrl !== undefined) this.config.mediaEndpointUrl = patch.mediaEndpointUrl.trim() || undefined;
-    this.saveState();
-    return { success: true, isConfigured: Boolean(this.config.apiKey || this.config.endpointUrl) };
+    const saved = this.saveState();
+    return { success: saved, isConfigured: Boolean(this.config.apiKey || this.config.endpointUrl) };
   }
 
   public async sendMessage(params: {
@@ -707,7 +709,7 @@ export class MetaMuseController {
     const suggestions: string[] = [];
 
     if (isStrictMode) {
-      reply = "Strict Mode активен: исходящие сетевые запросы API модели заблокированы политикой режима. Ответ сформирован локально без сетевых вызовов.";
+      reply = "Strict Mode активен: исходящие API-запросы модели заблокированы политикой режима.";
       suggestions.push("Проверить локальную память", "Телеметрия хост-процесса", "Список активных задач");
     } else if (this.config.apiKey || this.config.endpointUrl) {
       const abortController = new AbortController();
@@ -847,7 +849,7 @@ export class MetaMuseController {
     };
 
     if (this.currentMode === "strict_sandbox") {
-      job.error = "Strict Mode активен: генерация медиа отклонена, исходящие сетевые запросы заблокированы политикой режима.";
+      job.error = "Strict Mode активен: генерация отклонена (исходящие API-запросы плагина заблокированы).";
       this.mediaJobs.set(id, job);
       this.saveState();
       return job;
@@ -1058,8 +1060,8 @@ export class MetaMuseController {
       const c = this.conversations.get(conversationId)!;
       c.mode = mode;
       c.updatedAt = new Date().toISOString();
-    } else if (mode === "strict_sandbox") {
-      // Global switch to Strict Mode propagates to all existing conversations
+    } else {
+      // Global switch without conversationId updates all existing conversations
       for (const c of this.conversations.values()) {
         c.mode = mode;
       }
@@ -1070,7 +1072,7 @@ export class MetaMuseController {
       creative: "Режим генерации идей, медиа-концептов и иридисцентного дизайна активирован.",
       analytical: "Режим строгого логического анализа, таблиц и системного аудита активирован.",
       proactive: "Режим фонового мониторинга, автономных задач и дайджестов активирован.",
-      strict_sandbox: "Строгий локальный режим: исходящие сетевые запросы заблокированы.",
+      strict_sandbox: "Строгий режим: исходящие API-запросы модели и медиа заблокированы.",
     };
 
     return {

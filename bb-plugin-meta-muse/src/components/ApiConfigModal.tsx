@@ -186,7 +186,7 @@ export function ApiConfigModal({
 
           <div>
             <label className="text-[11px] text-slate-300 font-medium block mb-1">
-              Media Endpoint URL (Опционально, для генерации картинок / видео):
+              Media Endpoint URL (Опционально, для генерации изображений; видео API не поддерживает):
             </label>
             <input
               type="text"

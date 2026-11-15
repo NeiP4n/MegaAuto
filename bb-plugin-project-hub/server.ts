@@ -355,34 +355,28 @@ function getInitialStore(): StoreData {
 }
 
 
-// Master key and encryption helpers for API keys at rest
+// Master key and encryption helpers for API keys at rest (Fail-Closed)
 function getOrCreateMasterKey(storageDir: string): Buffer {
   const keyFile = path.join(storageDir, ".project-hub.key");
-  try {
-    if (fs.existsSync(keyFile)) {
-      const raw = fs.readFileSync(keyFile);
-      if (raw.length === 32) return raw;
-    }
-    const newKey = crypto.randomBytes(32);
-    fs.writeFileSync(keyFile, newKey, { mode: 0o600 });
-    try { fs.chmodSync(keyFile, 0o600); } catch {}
-    return newKey;
-  } catch {
-    return crypto.createHash("sha256").update(process.env.USERPROFILE || process.env.HOME || "project-hub-salt").digest();
+  if (fs.existsSync(keyFile)) {
+    const raw = fs.readFileSync(keyFile);
+    if (raw.length === 32) return raw;
+    throw new Error(`Invalid master key in ${keyFile}: expected 32 bytes`);
   }
+  const newKey = crypto.randomBytes(32);
+  fs.writeFileSync(keyFile, newKey, { mode: 0o600 });
+  try { fs.chmodSync(keyFile, 0o600); } catch {}
+  return newKey;
 }
 
 function encryptApiKey(plaintext: string, key: Buffer): string {
-  if (!plaintext || plaintext.startsWith("enc:v1:")) return plaintext;
-  try {
-    const iv = crypto.randomBytes(12);
-    const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
-    const enc = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
-    const tag = cipher.getAuthTag();
-    return `enc:v1:${iv.toString("hex")}:${tag.toString("hex")}:${enc.toString("hex")}`;
-  } catch {
-    return plaintext;
-  }
+  if (!plaintext) return "";
+  if (plaintext.startsWith("enc:v1:")) return plaintext;
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const enc = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `enc:v1:${iv.toString("hex")}:${tag.toString("hex")}:${enc.toString("hex")}`;
 }
 
 function decryptApiKey(ciphertext: string, key: Buffer): string {
@@ -402,6 +396,19 @@ function decryptApiKey(ciphertext: string, key: Buffer): string {
   }
 }
 
+// Subpath URL resolution helper (preserves base path e.g. /n8n/api/v1/...)
+function resolveInstanceUrl(baseUrl: string, relativePath: string): string {
+  const base = new URL(baseUrl);
+  const basePath = base.pathname.replace(/\/+$/, "");
+  const [subWithoutQuery, query] = relativePath.split("?");
+  const cleanSub = subWithoutQuery.replace(/^[\/\\]+/, "");
+  const combined = basePath ? `${basePath}/${cleanSub}` : `/${cleanSub}`;
+  const target = new URL(combined, base.origin);
+  if (query) {
+    target.search = query;
+  }
+  return target.toString();
+}
 class HubStore {
   private storeFile: string;
   private masterKey: Buffer;
@@ -779,13 +786,17 @@ function buildSafeWebhookUrl(baseUrl: string, rawPath: string): string | null {
     if (!cleanPath.startsWith("/") && !cleanPath.startsWith("webhook/") && !cleanPath.startsWith("webhook-test/")) {
       cleanPath = "webhook/" + cleanPath;
     }
-    const base = baseUrl.replace(/\/+$/, "") + "/";
-    const parsed = new URL(cleanPath.replace(/^[\/\\]+/, ""), base);
-    const baseParsed = new URL(base);
-    // Origin must strictly match instance base URL (prevent SSRF / cross-origin hijacking)
-    if (parsed.origin !== baseParsed.origin) return null;
+    const base = new URL(baseUrl);
+    const basePath = base.pathname.replace(/\/+$/, "");
+    const sub = cleanPath.replace(/^[\/\\]+/, "");
+    // Support deployments under URL prefix (/n8n/webhook/...)
+    const combinedPath = basePath ? `${basePath}/${sub}` : `/${sub}`;
+    const parsed = new URL(combinedPath, base.origin);
 
-    // Iterative URL decoding (up to 4 passes) to unwrap nested encoding like %252e%252e -> %2e%2e -> ..
+    // Origin must strictly match instance base URL
+    if (parsed.origin !== base.origin) return null;
+
+    // Iterative URL decoding (up to 4 passes)
     let decoded = parsed.pathname;
     let prev = "";
     let passes = 0;
@@ -799,11 +810,13 @@ function buildSafeWebhookUrl(baseUrl: string, rawPath: string): string | null {
       passes++;
     }
 
-    if (decoded.includes("..") || decoded.includes("\\") || decoded.includes("//")) {
+    // Defense-in-depth: if any % remains after decoding or traversal detected, reject!
+    if (decoded.includes("%") || decoded.includes("..") || decoded.includes("\\") || decoded.includes("//")) {
       return null;
     }
 
-    if (!parsed.pathname.startsWith("/webhook/") && !parsed.pathname.startsWith("/webhook-test/")) {
+    const effectivePath = basePath ? parsed.pathname.slice(basePath.length) : parsed.pathname;
+    if (!effectivePath.startsWith("/webhook/") && !effectivePath.startsWith("/webhook-test/")) {
       return null;
     }
     return parsed.toString();
@@ -918,15 +931,18 @@ function appendServerLog(msg: string) {
 }
 
 async function startLocalN8nProcess(): Promise<{ ok: boolean; message: string; pid?: number }> {
-  // Synchronous lock: return existing in-flight start promise if one is already running
+  // 1. Guard against alive child process regardless of current state
+  if (localN8nProcess && localN8nProcess.exitCode === null) {
+    return {
+      ok: true,
+      message: `Процесс n8n уже запущен (PID ${localN8nProcess.pid})`,
+      pid: localN8nProcess.pid,
+    };
+  }
+
+  // 2. Synchronous lock: if another start is in-flight, return the exact active promise
   if (startLockPromise) {
     return startLockPromise;
-  }
-  if (serverState === "starting") {
-    return { ok: true, message: "Сервер n8n уже запускается...", pid: localN8nProcess?.pid };
-  }
-  if (serverState === "running" && localN8nProcess && !localN8nProcess.killed) {
-    return { ok: true, message: "Сервер n8n уже работает", pid: localN8nProcess.pid };
   }
 
   startLockPromise = (async () => {
@@ -998,7 +1014,7 @@ async function startLocalN8nProcess(): Promise<{ ok: boolean; message: string; p
       const deadline = Date.now() + 15000;
       let ready = false;
       while (Date.now() < deadline) {
-        if (localN8nProcess !== child || child.killed) {
+        if (localN8nProcess !== child || child.exitCode !== null) {
           serverState = "error";
           return {
             ok: false,
@@ -1043,55 +1059,78 @@ async function startLocalN8nProcess(): Promise<{ ok: boolean; message: string; p
   return startLockPromise;
 }
 
-function stopLocalN8nProcess(): { ok: boolean; message: string } {
+async function stopLocalN8nProcess(): Promise<{ ok: boolean; message: string }> {
   appendServerLog("Остановка локального сервера n8n...");
   healthCache.clear();
 
   const child = localN8nProcess;
-  if (child && child.pid) {
-    serverState = "stopping";
-    const pid = child.pid;
-    try {
-      if (process.platform === "win32") {
-        spawn("taskkill", ["/pid", String(pid), "/t"]);
-      } else {
-        child.kill("SIGTERM");
-        setTimeout(() => {
-          if (!child.killed) {
-            try { child.kill("SIGKILL"); } catch {}
-          }
-        }, 3000);
-      }
-      appendServerLog(`Сервер n8n останавливается (PID ${pid})`);
-    } catch (e: any) {
-      appendServerLog(`Ошибка при остановке процесса: ${e?.message}`);
-    }
-    if (localN8nProcess === child) {
-      localN8nProcess = null;
-    }
+  if (!child || child.exitCode !== null) {
+    localN8nProcess = null;
     serverState = "stopped";
-    return { ok: true, message: `Сервер n8n остановлен (PID ${pid})` };
+    return {
+      ok: false,
+      message: "Сервер запущен внешне, плагин управляет только собственным процессом",
+    };
   }
 
-  return {
-    ok: false,
-    message: "Сервер запущен внешне, плагин управляет только собственным процессом",
-  };
+  serverState = "stopping";
+  const pid = child.pid;
+
+  try {
+    if (process.platform === "win32") {
+      spawn("taskkill", ["/pid", String(pid), "/t"]);
+    } else {
+      child.kill("SIGTERM");
+    }
+    appendServerLog(`Сигнал остановки отправлен процессу n8n (PID ${pid})...`);
+  } catch (e: any) {
+    appendServerLog(`Ошибка при отправке сигнала остановки: ${e?.message}`);
+  }
+
+  // Wait for true process exit, escalate to SIGKILL if exit not received within 3s
+  await new Promise<void>((resolve) => {
+    if (child.exitCode !== null) return resolve();
+    let timer: NodeJS.Timeout;
+    const onExit = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    child.once("exit", onExit);
+    timer = setTimeout(() => {
+      child.off("exit", onExit);
+      if (child.exitCode === null) {
+        appendServerLog(`Процесс n8n (PID ${pid}) не завершился за 3с, эскалация SIGKILL...`);
+        try {
+          if (process.platform === "win32") {
+            spawn("taskkill", ["/pid", String(pid), "/f", "/t"]);
+          } else {
+            child.kill("SIGKILL");
+          }
+        } catch {}
+      }
+      resolve();
+    }, 3000);
+  });
+
+  if (localN8nProcess === child) {
+    localN8nProcess = null;
+  }
+  serverState = "stopped";
+  return { ok: true, message: `Сервер n8n остановлен (PID ${pid})` };
 }
 
 // Ensure cleanup on plugin/process shutdown
 function cleanupLocalN8n() {
-  if (localN8nProcess && localN8nProcess.pid) {
+  const child = localN8nProcess;
+  if (child && child.pid && child.exitCode === null) {
     serverState = "stopping";
     try {
       if (process.platform === "win32") {
-        spawn("taskkill", ["/pid", String(localN8nProcess.pid), "/t"]);
+        spawn("taskkill", ["/pid", String(child.pid), "/f", "/t"]);
       } else {
-        localN8nProcess.kill("SIGTERM");
+        child.kill("SIGKILL");
       }
-    } catch {
-      // ignore
-    }
+    } catch {}
     localN8nProcess = null;
     serverState = "stopped";
   }
@@ -1121,39 +1160,70 @@ async function probeN8n(baseUrl: string): Promise<{ connected: boolean; version:
   }
 
   const probeOne = async (b: string): Promise<{ version: string } | null> => {
-    // 1. Probe /rest/settings - uniquely returns n8n configuration structures
+    // 1. Check readiness endpoint: /healthz/readiness or /healthz must return 200 {"status":"ok"}
+    let readinessPassed = false;
+    let versionHeader = "";
     try {
-      const res = await fetch(`${b}/rest/settings`, {
-        signal: AbortSignal.timeout(3000),
+      const res = await fetch(resolveInstanceUrl(b, "/healthz/readiness"), {
+        signal: AbortSignal.timeout(2500),
         redirect: "manual",
       });
       if (res.ok) {
-        const versionHeader = res.headers.get("x-n8n-version") || res.headers.get("x-version");
+        versionHeader = res.headers.get("x-n8n-version") || res.headers.get("x-version") || "";
+        const data = (await res.json().catch(() => null)) as any;
+        if (data?.status === "ok") readinessPassed = true;
+      }
+    } catch {}
+
+    if (!readinessPassed) {
+      try {
+        const res = await fetch(resolveInstanceUrl(b, "/healthz"), {
+          signal: AbortSignal.timeout(2500),
+          redirect: "manual",
+        });
+        if (res.ok) {
+          versionHeader = versionHeader || res.headers.get("x-n8n-version") || res.headers.get("x-version") || "";
+          const data = (await res.json().catch(() => null)) as any;
+          if (data?.status === "ok") readinessPassed = true;
+        }
+      } catch {}
+    }
+
+    if (!readinessPassed) return null;
+
+    // 2. Validate genuine n8n fingerprint (header OR /rest/settings OR frontend meta tag)
+    if (versionHeader) {
+      return { version: versionHeader };
+    }
+
+    try {
+      const res = await fetch(resolveInstanceUrl(b, "/rest/settings"), {
+        signal: AbortSignal.timeout(2500),
+        redirect: "manual",
+      });
+      if (res.ok) {
         const data = (await res.json().catch(() => null)) as any;
         const hasN8nSignature =
-          Boolean(versionHeader) ||
           data?.data?.settingsMode !== undefined ||
           data?.data?.userManagement !== undefined ||
           data?.data?.communityNodesEnabled !== undefined ||
           data?.versionCli !== undefined;
         if (hasN8nSignature) {
-          const v = versionHeader || data?.versionCli || data?.data?.versionCli || "online";
+          const v = data?.versionCli || data?.data?.versionCli || "online";
           return { version: String(v) };
         }
       }
     } catch {}
 
-    // 2. Probe / - check for n8n frontend meta tag or title
     try {
-      const res = await fetch(`${b}/`, {
-        signal: AbortSignal.timeout(3000),
+      const res = await fetch(resolveInstanceUrl(b, "/"), {
+        signal: AbortSignal.timeout(2500),
         redirect: "manual",
       });
       if (res.ok) {
-        const versionHeader = res.headers.get("x-n8n-version");
         const html = await res.text().catch(() => "");
-        if (versionHeader || html.includes("n8n:config:") || html.includes('content="cmVzdA=="') || html.includes("<title>n8n")) {
-          return { version: versionHeader || "online" };
+        if (html.includes("n8n:config:") || html.includes('content="cmVzdA=="') || html.includes("<title>n8n")) {
+          return { version: "online" };
         }
       }
     } catch {}
@@ -1207,9 +1277,10 @@ async function fetchN8nWorkflowsAndExecutions(
   // 1. If apiKey is provided, attempt official REST API first
   if (apiKey) {
     try {
+      const targetWfUrl = resolveInstanceUrl(cleanBase, "/api/v1/workflows");
       const baseObj = new URL(cleanBase);
-      const targetWfUrl = new URL("/api/v1/workflows", baseObj);
-      if (targetWfUrl.origin !== baseObj.origin) {
+      const parsedTarget = new URL(targetWfUrl);
+      if (parsedTarget.origin !== baseObj.origin) {
         return { ok: false, workflows: [], executions: [], error: "Origin mismatch" };
       }
 
@@ -1218,7 +1289,7 @@ async function fetchN8nWorkflowsAndExecutions(
         "X-N8N-API-KEY": apiKey,
       };
 
-      const wfRes = await fetch(targetWfUrl.toString(), {
+      const wfRes = await fetch(targetWfUrl, {
         headers,
         signal: AbortSignal.timeout(4000),
         redirect: "manual",
@@ -1234,8 +1305,8 @@ async function fetchN8nWorkflowsAndExecutions(
 
         let executions: any[] = [];
         try {
-          const targetExUrl = new URL("/api/v1/executions?limit=20", baseObj);
-          const exRes = await fetch(targetExUrl.toString(), {
+          const targetExUrl = resolveInstanceUrl(cleanBase, "/api/v1/executions?limit=20");
+          const exRes = await fetch(targetExUrl, {
             headers,
             signal: AbortSignal.timeout(4000),
             redirect: "manual",
@@ -1811,7 +1882,7 @@ export default function (bb: BbPluginApi) {
     },
 
     stop_local_server: async () => {
-      return stopLocalN8nProcess();
+      return await stopLocalN8nProcess();
     },
 
     get_local_server_status: async () => {
@@ -1924,7 +1995,7 @@ export default function (bb: BbPluginApi) {
           return { exitCode: res.ok ? 0 : 1, stdout: res.message, stderr: res.ok ? undefined : res.message };
         }
         if (action === "stop") {
-          const res = stopLocalN8nProcess();
+          const res = await stopLocalN8nProcess();
           return { exitCode: res.ok ? 0 : 1, stdout: res.message, stderr: res.ok ? undefined : res.message };
         }
         return { exitCode: 1, stderr: "Usage: bb project-hub server [status|start|stop]" };

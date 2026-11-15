@@ -89,21 +89,44 @@ export function BrowserView() {
   const omniboxRef = useRef<HTMLInputElement>(null);
 
   // Poll status periodically or on mount
+  const shotRevRef = useRef<number>(-1);
   const refreshStatus = useCallback(async () => {
+    if (typeof document !== "undefined" && document.hidden) return;
     try {
       const s = await rpc.call("get_status");
-      setStatus(s);
+      const rev: number | undefined = (s as any).shotRev;
+      setStatus((prev) => {
+        const next = { ...s, screenshot: s.screenshot ?? prev.screenshot };
+        // skip re-render when nothing visible changed
+        const same =
+          prev.running === next.running &&
+          prev.activeTabId === next.activeTabId &&
+          prev.currentUrl === next.currentUrl &&
+          prev.currentTitle === next.currentTitle &&
+          prev.stealth === next.stealth &&
+          prev.canGoBack === next.canGoBack &&
+          prev.canGoForward === next.canGoForward &&
+          prev.error === next.error &&
+          prev.version === next.version &&
+          JSON.stringify(prev.tabs) === JSON.stringify(next.tabs);
+        return same ? prev : next;
+      });
       if (s.currentUrl && s.currentUrl !== "about:blank" && document.activeElement !== omniboxRef.current) {
         setUrlInput(s.currentUrl);
       }
+      if (rev !== undefined && rev !== shotRevRef.current) {
+        shotRevRef.current = rev;
+        const shot = await rpc.call("get_screenshot");
+        if (shot.screenshot) setStatus((prev) => (prev.screenshot === shot.screenshot ? prev : { ...prev, screenshot: shot.screenshot }));
+      }
     } catch (e: any) {
-      setStatus((prev) => ({ ...prev, error: String(e) }));
+      setStatus((prev) => (prev.error === String(e) ? prev : { ...prev, error: String(e) }));
     }
   }, [rpc]);
 
   useEffect(() => {
     refreshStatus();
-    const interval = setInterval(refreshStatus, 2500);
+    const interval = setInterval(refreshStatus, 5000);
     return () => clearInterval(interval);
   }, [refreshStatus]);
 

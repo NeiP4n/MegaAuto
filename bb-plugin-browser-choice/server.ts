@@ -60,6 +60,7 @@ const statusSchema = z.object({
   currentUrl: z.string(),
   currentTitle: z.string(),
   screenshot: z.string().nullable(),
+  shotRev: z.number().optional(),
   stealth: z.boolean(),
   canGoBack: z.boolean(),
   canGoForward: z.boolean(),
@@ -153,6 +154,7 @@ const actionOutputSchema = z.object({
 
 export const rpcContract = defineRpcContract({
   get_status: { input: z.null(), output: statusSchema },
+  get_screenshot: { input: z.null(), output: z.object({ rev: z.number(), screenshot: z.string().nullable() }) },
   navigate: { input: navigateInputSchema, output: actionOutputSchema },
   new_tab: { input: z.object({ url: z.string().optional() }), output: actionOutputSchema },
   switch_tab: { input: switchTabInputSchema, output: actionOutputSchema },
@@ -193,6 +195,7 @@ class BrowserController {
   public stealth = true;
   public lastError: string | null = null;
   private isStarting = false;
+  private shotRev = 0;
 
   private tabs: Map<string, TabState> = new Map();
   private activeTabId = "";
@@ -364,6 +367,7 @@ class BrowserController {
     try {
       const buf = await tab.page.screenshot({ type: "jpeg", quality: 80 });
       tab.screenshot = `data:image/jpeg;base64,${buf.toString("base64")}`;
+      this.shotRev++;
       tab.title = (await tab.page.title()) || "New Tab";
       tab.url = tab.page.url();
     } catch (e: any) {
@@ -689,7 +693,13 @@ class BrowserController {
     };
   }
 
-  public getStatus() {
+  public getScreenshot() {
+    const tab = this.getTab();
+    return { rev: this.shotRev, screenshot: tab?.screenshot || null };
+  }
+
+  // light=true omits the (large) base64 screenshot; clients fetch it via get_screenshot when shotRev changes
+  public getStatus(light = false) {
     const tab = this.getTab();
     return {
       running: this.browser !== null && this.context !== null,
@@ -700,7 +710,8 @@ class BrowserController {
       tabs: this.getTabsSummary(),
       currentUrl: tab?.url || "about:blank",
       currentTitle: tab?.title || "New Tab",
-      screenshot: tab?.screenshot || null,
+      screenshot: light ? null : tab?.screenshot || null,
+      shotRev: this.shotRev,
       stealth: this.stealth,
       canGoBack: tab ? tab.historyIndex > 0 : false,
       canGoForward: tab ? tab.historyIndex < tab.history.length - 1 : false,
@@ -732,7 +743,8 @@ export default function (bb: BbPluginApi) {
 
   // Implement RPCs for the frontend
   bb.rpc.register(rpcContract, {
-    get_status: async () => controller.getStatus(),
+    get_status: async () => controller.getStatus(true),
+    get_screenshot: async () => controller.getScreenshot(),
     navigate: async (input) => controller.navigate(input.url, input.tabId, input.stealth),
     new_tab: async (input) => {
       await controller.createTab(input.url || "https://web.whatsapp.com");

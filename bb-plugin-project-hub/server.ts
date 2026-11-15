@@ -17,6 +17,7 @@ const accountSchema = z.object({
   url: z.string(),
   apiKey: z.string().optional(),
   status: z.enum(["online", "syncing", "offline"]),
+  manualOffline: z.boolean().optional(),
   workflowsCount: z.number(),
   executionsCount: z.number(),
   unreadTotal: z.number(),
@@ -346,6 +347,7 @@ class HubStore {
     const acc = this.data.accounts.find((a) => a.id === accountId);
     if (acc) {
       acc.status = targetStatus || (acc.status === "online" ? "offline" : "online");
+      acc.manualOffline = acc.status === "offline";
       acc.lastSync = new Date().toISOString();
       this.save();
       return acc;
@@ -574,69 +576,77 @@ class HubStore {
   }
 }
 
-// Detect n8n version dynamically
-async function detectN8nVersion(baseUrl: string): Promise<string> {
-  const versionUrls = [
-    `${baseUrl}/api/v1/version`,
-    `${baseUrl}/rest/settings`,
-    `${baseUrl}/healthz`,
-  ];
-
-  for (const url of versionUrls) {
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 1500);
-      const res = await fetch(url, { signal: controller.signal });
-      clearTimeout(timeout);
-      if (res.ok) {
-        try {
-          const data = (await res.json()) as any;
-          if (data.version) return String(data.version);
-          if (data.n8nVersion) return String(data.n8nVersion);
-        } catch {
-          // try header
-        }
-        const headerVer = res.headers.get("x-n8n-version") || res.headers.get("x-version");
-        if (headerVer) return headerVer;
-      }
-    } catch {
-      // try next
-    }
-  }
-  return "unknown";
+function isLocalUrl(u: string): boolean {
+  return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(u.trim());
 }
 
-// Check n8n connectivity
+// Single-pass n8n probe: tries health/version endpoints in parallel, first OK wins.
+// Never falls back to 127.0.0.1 for a remote baseUrl - a remote instance must not
+// report "connected" (or receive commands) because a local n8n happens to answer.
+async function probeN8n(
+  baseUrl: string,
+  apiKey?: string
+): Promise<{ connected: boolean; version: string }> {
+  const cleanBase = baseUrl.replace(/\/+$/, "");
+  const headers: Record<string, string> = {};
+  if (apiKey) headers["X-N8N-API-KEY"] = apiKey;
+
+  const bases = new Set<string>([cleanBase]);
+  if (isLocalUrl(cleanBase)) {
+    bases.add(cleanBase.replace("localhost", "127.0.0.1"));
+    bases.add(cleanBase.replace("127.0.0.1", "localhost"));
+  }
+
+  const urls: string[] = [];
+  for (const b of bases) {
+    urls.push(`${b}/healthz`, `${b}/api/v1/version`, `${b}/rest/settings`, b);
+  }
+
+  const probeOne = async (url: string): Promise<{ version: string } | null> => {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2000);
+    try {
+      const res = await fetch(url, { signal: controller.signal, headers });
+      if (!res.ok) return null;
+      let version = res.headers.get("x-n8n-version") || res.headers.get("x-version") || "";
+      try {
+        const data = (await res.json()) as any;
+        if (data?.version) version = String(data.version);
+        else if (data?.n8nVersion) version = String(data.n8nVersion);
+      } catch {
+        // not json - header version or "unknown" is fine
+      }
+      return { version: version || "unknown" };
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timeout);
+    }
+  };
+
+  const results = await Promise.all(urls.map(probeOne));
+  // prefer a hit that actually carries a version over a bare /healthz OK
+  const hit = results.find((r) => r && r.version !== "unknown") || results.find((r) => r !== null);
+  return hit ? { connected: true, version: hit.version } : { connected: false, version: "unknown" };
+}
+
+// Cached health check: the UI polls get_status every few seconds, probing must not
+// block the poll or hammer the instance. TTL keeps answers fresh without overlap.
+const HEALTH_TTL_MS = 15000;
+const healthCache = new Map<string, { connected: boolean; version: string; at: number }>();
+
 async function checkN8nHealth(
   baseUrl: string,
   apiKey?: string
 ): Promise<{ connected: boolean; version: string }> {
-  const headers: Record<string, string> = {};
-  if (apiKey) headers["X-N8N-API-KEY"] = apiKey;
-
-  const urlsToTry = [
-    `${baseUrl}/healthz`,
-    `${baseUrl}/api/v1/version`,
-    `http://127.0.0.1:5678/healthz`,
-    baseUrl,
-    `http://127.0.0.1:5678`,
-  ];
-
-  for (const url of urlsToTry) {
-    try {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 1200);
-      const res = await fetch(url, { signal: controller.signal, headers });
-      clearTimeout(timeout);
-      if (res.ok) {
-        const version = await detectN8nVersion(baseUrl).catch(() => "unknown");
-        return { connected: true, version };
-      }
-    } catch {
-      // try next
-    }
+  const key = `${baseUrl}|${apiKey || ""}`;
+  const cached = healthCache.get(key);
+  if (cached && Date.now() - cached.at < HEALTH_TTL_MS) {
+    return { connected: cached.connected, version: cached.version };
   }
-  return { connected: false, version: "unknown" };
+  const result = await probeN8n(baseUrl, apiKey);
+  healthCache.set(key, { ...result, at: Date.now() });
+  return result;
 }
 
 // Fetch workflows and executions from n8n REST API
@@ -798,10 +808,15 @@ async function forwardToN8n(
   // Default: n8n channel
   const baseUrl = account?.url || cfg.n8nBaseUrl;
   const cleanBase = baseUrl.replace(/\/+$/, "");
-  const endpoints = [
-    `${cleanBase}/webhook/api/projects/${projectId}/send`,
-    `http://127.0.0.1:5678/webhook/api/projects/${projectId}/send`,
-  ];
+  const webhookPath = `/webhook/api/projects/${projectId}/send`;
+  const endpoints = [`${cleanBase}${webhookPath}`];
+  if (isLocalUrl(cleanBase)) {
+    // local convenience only: try the other loopback spelling too
+    const alt = cleanBase.includes("localhost")
+      ? cleanBase.replace("localhost", "127.0.0.1")
+      : cleanBase.replace("127.0.0.1", "localhost");
+    if (alt !== cleanBase) endpoints.push(`${alt}${webhookPath}`);
+  }
 
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (apiKey) headers["X-N8N-API-KEY"] = apiKey;
@@ -939,9 +954,43 @@ export default function (bb: BbPluginApi) {
 
     get_status: async () => {
       const cfg = store.getConfig();
-      const health = await checkN8nHealth(cfg.n8nBaseUrl, cfg.n8nApiKey);
       const projects = store.getProjects();
       const accounts = store.getAccounts();
+
+      // Live per-instance health for n8n accounts (parallel + cached, so the UI
+      // poll stays fast even when an instance is down). Instances the user
+      // switched off by hand (manualOffline) are left alone.
+      const n8nAccounts = accounts.filter((a) => a.channel === "n8n" && !a.manualOffline);
+      const healths = await Promise.all(n8nAccounts.map((a) => checkN8nHealth(a.url, a.apiKey)));
+      let anyConnected = false;
+      let firstVersion = "unknown";
+      let firstUrl = "";
+      let changed = false;
+      n8nAccounts.forEach((acc, i) => {
+        const h = healths[i];
+        if (h.connected) {
+          anyConnected = true;
+          if (!firstUrl) {
+            firstUrl = acc.url;
+            firstVersion = h.version;
+          }
+        }
+        const newStatus = h.connected ? "online" : "offline";
+        if (acc.status !== newStatus) {
+          acc.status = newStatus;
+          changed = true;
+        }
+      });
+      if (changed) store.save();
+
+      // No n8n accounts registered yet: fall back to the configured default URL.
+      if (accounts.filter((a) => a.channel === "n8n").length === 0) {
+        const health = await checkN8nHealth(cfg.n8nBaseUrl, cfg.n8nApiKey);
+        anyConnected = health.connected;
+        firstVersion = health.version;
+        firstUrl = cfg.n8nBaseUrl;
+      }
+
       const activeCount = projects.filter((p) => p.status === "online").length;
       const connectedAccCount = accounts.filter((a) => a.status === "online").length;
 
@@ -954,9 +1003,9 @@ export default function (bb: BbPluginApi) {
       }
 
       return {
-        n8nConnected: health.connected,
-        n8nBaseUrl: cfg.n8nBaseUrl,
-        n8nVersion: health.version,
+        n8nConnected: anyConnected,
+        n8nBaseUrl: firstUrl || cfg.n8nBaseUrl,
+        n8nVersion: firstVersion,
         activeProjectsCount: activeCount,
         totalMessagesCount: store.getTotalMessagesCount(),
         connectedAccountsCount: connectedAccCount,
@@ -982,7 +1031,7 @@ export default function (bb: BbPluginApi) {
           };
         }
       } else {
-        accountsToSync = store.getAccounts().filter((a) => a.channel === "n8n");
+        accountsToSync = store.getAccounts().filter((a) => a.channel === "n8n" && !a.manualOffline);
         if (accountsToSync.length === 0) {
           const targetUrl = input?.n8nBaseUrl || cfg.n8nBaseUrl;
           const apiKey = input?.apiKey || cfg.n8nApiKey;
@@ -1215,11 +1264,11 @@ export default function (bb: BbPluginApi) {
 
   bb.agents.registerTool({
     name: "project_hub_get_messages",
-    description: "Returns recent messages and workflow log context for a given project ID (e.g. 'instinct-pipeline').",
+    description: "Returns recent messages and workflow log context for a given project ID.",
     parameters: {
       type: "object",
       properties: {
-        projectId: { type: "string", description: "ID of the project, e.g. 'instinct-pipeline'" },
+        projectId: { type: "string", description: "ID of the project, from project_hub_list_projects" },
       },
       required: ["projectId"],
     },

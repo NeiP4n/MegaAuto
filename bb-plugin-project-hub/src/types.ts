@@ -13,6 +13,8 @@ export interface Account {
   url: string;
   apiKey?: string;
   status: "online" | "syncing" | "offline";
+  /** true when the user switched the instance off by hand - live health checks must not flip it back on */
+  manualOffline?: boolean;
   workflowsCount: number;
   executionsCount: number;
   unreadTotal: number;

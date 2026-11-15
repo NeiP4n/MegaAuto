@@ -3,7 +3,7 @@ import { z } from "zod";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, execSync, type ChildProcess } from "node:child_process";
 import type { Account, Project, ChatMessage, HubStatus } from "./src/types";
 
 // ESM has no __dirname - the plugin server crashes on load without this shim
@@ -687,6 +687,75 @@ function isLocalUrl(u: string): boolean {
   return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(u.trim());
 }
 
+function findPidOnPort(port: number): number | null {
+  try {
+    if (process.platform === "win32") {
+      const out = execSync(`netstat -ano -p tcp | findstr :${port}`, { encoding: "utf-8" });
+      const lines = out.split("\n");
+      for (const line of lines) {
+        if (line.includes("LISTENING")) {
+          const parts = line.trim().split(/\s+/);
+          const pid = parseInt(parts[parts.length - 1], 10);
+          if (!isNaN(pid) && pid > 0) return pid;
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function readLocalSqliteWorkflowsAndExecutions(): { ok: boolean; workflows: any[]; executions: any[] } {
+  try {
+    const sqlitePath = path.join(
+      process.env.USERPROFILE || process.env.HOME || "",
+      ".n8n",
+      "database.sqlite"
+    );
+    if (!fs.existsSync(sqlitePath)) {
+      return { ok: false, workflows: [], executions: [] };
+    }
+    const { DatabaseSync } = require("node:sqlite");
+    const db = new DatabaseSync(sqlitePath, { readOnly: true });
+
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as any[];
+    const tableNames = new Set(tables.map((t: any) => t.name));
+
+    let workflows: any[] = [];
+    if (tableNames.has("workflow_entity")) {
+      const rows = db.prepare("SELECT id, name, active, createdAt, updatedAt FROM workflow_entity ORDER BY updatedAt DESC").all() as any[];
+      workflows = rows.map((r: any) => ({
+        id: String(r.id),
+        name: r.name || `Workflow ${r.id}`,
+        active: Boolean(r.active),
+        tags: [],
+        createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : undefined,
+        updatedAt: r.updatedAt ? new Date(r.updatedAt).toISOString() : undefined,
+      }));
+    }
+
+    let executions: any[] = [];
+    if (tableNames.has("execution_entity")) {
+      const rows = db.prepare("SELECT id, workflowId, mode, startedAt, stoppedAt, status, finished FROM execution_entity ORDER BY startedAt DESC LIMIT 30").all() as any[];
+      executions = rows.map((r: any) => ({
+        id: String(r.id),
+        workflowId: String(r.workflowId),
+        mode: r.mode || "manual",
+        startedAt: r.startedAt ? new Date(r.startedAt).toISOString() : new Date().toISOString(),
+        stoppedAt: r.stoppedAt ? new Date(r.stoppedAt).toISOString() : undefined,
+        status: r.status === "error" ? "error" : r.finished ? "success" : "running",
+      }));
+    }
+
+    db.close();
+    return { ok: true, workflows, executions };
+  } catch (err: any) {
+    appendServerLog(`Предупреждение SQLite: ${err?.message || err}`);
+    return { ok: false, workflows: [], executions: [] };
+  }
+}
+
 // --- LOCAL N8N SERVER PROCESS MANAGEMENT ---
 let localN8nProcess: ChildProcess | null = null;
 const serverLogs: string[] = [];
@@ -801,11 +870,12 @@ async function checkN8nHealth(
   return result;
 }
 
-// Fetch workflows and executions from n8n REST API
+// Fetch workflows and executions from n8n REST API or local SQLite fallback
 async function fetchN8nWorkflowsAndExecutions(
   baseUrl: string,
   apiKey?: string
 ): Promise<{ ok: boolean; workflows: any[]; executions: any[]; error?: string }> {
+  const cleanBase = baseUrl.replace(/\/+$/, "");
   const headers: Record<string, string> = {
     Accept: "application/json",
   };
@@ -813,64 +883,68 @@ async function fetchN8nWorkflowsAndExecutions(
     headers["X-N8N-API-KEY"] = apiKey;
   }
 
-  const cleanBase = baseUrl.replace(/\/+$/, "");
-
-  try {
-    const wfController = new AbortController();
-    const wfTimeout = setTimeout(() => wfController.abort(), 4000);
-    const wfRes = await fetch(`${cleanBase}/api/v1/workflows`, {
-      headers,
-      signal: wfController.signal,
-    });
-    clearTimeout(wfTimeout);
-
-    if (!wfRes.ok) {
-      return {
-        ok: false,
-        workflows: [],
-        executions: [],
-        error: `HTTP ${wfRes.status} from ${cleanBase}/api/v1/workflows`,
-      };
-    }
-
-    const wfData = (await wfRes.json()) as any;
-    const workflows = Array.isArray(wfData?.data)
-      ? wfData.data
-      : Array.isArray(wfData)
-      ? wfData
-      : [];
-
-    let executions: any[] = [];
+  // 1. If apiKey is provided or configured, try REST API first
+  if (apiKey) {
     try {
-      const exController = new AbortController();
-      const exTimeout = setTimeout(() => exController.abort(), 4000);
-      const exRes = await fetch(`${cleanBase}/api/v1/executions?limit=20`, {
+      const wfController = new AbortController();
+      const wfTimeout = setTimeout(() => wfController.abort(), 4000);
+      const wfRes = await fetch(`${cleanBase}/api/v1/workflows`, {
         headers,
-        signal: exController.signal,
+        signal: wfController.signal,
       });
-      clearTimeout(exTimeout);
+      clearTimeout(wfTimeout);
 
-      if (exRes.ok) {
-        const exData = (await exRes.json()) as any;
-        executions = Array.isArray(exData?.data)
-          ? exData.data
-          : Array.isArray(exData)
-          ? exData
+      if (wfRes.ok) {
+        const wfData = (await wfRes.json()) as any;
+        const workflows = Array.isArray(wfData?.data)
+          ? wfData.data
+          : Array.isArray(wfData)
+          ? wfData
           : [];
+
+        let executions: any[] = [];
+        try {
+          const exController = new AbortController();
+          const exTimeout = setTimeout(() => exController.abort(), 4000);
+          const exRes = await fetch(`${cleanBase}/api/v1/executions?limit=20`, {
+            headers,
+            signal: exController.signal,
+          });
+          clearTimeout(exTimeout);
+
+          if (exRes.ok) {
+            const exData = (await exRes.json()) as any;
+            executions = Array.isArray(exData?.data)
+              ? exData.data
+              : Array.isArray(exData)
+              ? exData
+              : [];
+          }
+        } catch {
+          // executions fetch is optional, ignore error
+        }
+
+        return { ok: true, workflows, executions };
       }
     } catch {
-      // executions fetch is optional, ignore error
+      // fallback to sqlite if local
     }
-
-    return { ok: true, workflows, executions };
-  } catch (err: any) {
-    return {
-      ok: false,
-      workflows: [],
-      executions: [],
-      error: err?.message || `Failed to connect to ${cleanBase}`,
-    };
   }
+
+  // 2. If instance is local, read directly and safely from SQLite store
+  if (isLocalUrl(cleanBase)) {
+    const sqliteRes = readLocalSqliteWorkflowsAndExecutions();
+    if (sqliteRes.ok) {
+      return { ok: true, workflows: sqliteRes.workflows, executions: sqliteRes.executions };
+    }
+  }
+
+  return {
+    ok: false,
+    workflows: [],
+    executions: [],
+    error: apiKey ? "Не удалось получить воркфлоу через REST API" : "Для удалённого n8n требуется X-N8N-API-KEY",
+  };
 }
 
 // Forward command or trigger to n8n webhook, telegram or webhook channel
@@ -1214,7 +1288,8 @@ export default function (bb: BbPluginApi) {
           );
           totalSyncedProjects += count;
         } else {
-          acc.status = "offline";
+          const health = await checkN8nHealth(targetUrl, apiKey);
+          acc.status = health.connected ? "online" : "offline";
           acc.lastSync = new Date().toISOString();
           store.save();
           errors.push(`[${acc.name}] ${result.error || "Недоступен"}`);
@@ -1378,11 +1453,12 @@ export default function (bb: BbPluginApi) {
     start_local_server: async () => {
       healthCache.clear();
       const health = await checkN8nHealth("http://127.0.0.1:5678", undefined, true);
+      const existingPid = localN8nProcess?.pid || findPidOnPort(5678);
       if (health.connected) {
         return {
           ok: true,
           message: "Сервер n8n уже работает",
-          pid: localN8nProcess?.pid,
+          pid: existingPid || undefined,
         };
       }
 
@@ -1417,6 +1493,10 @@ export default function (bb: BbPluginApi) {
             N8N_PROTOCOL: "http",
             N8N_RUNNERS_ENABLED: "false",
             N8N_DIAGNOSTICS_ENABLED: "false",
+            N8N_UNVERIFIED_PACKAGES_ENABLED: "true",
+            N8N_RUNNERS_TASK_TIMEOUT: "300",
+            N8N_COMPRESSION_NODE_MAX_DECOMPRESSED_SIZE_BYTES: "2147483648",
+            N8N_COMPRESSION_NODE_MAX_ZIP_ENTRIES: "5000",
           },
         });
 
@@ -1463,29 +1543,32 @@ export default function (bb: BbPluginApi) {
     stop_local_server: async () => {
       appendServerLog("Остановка локального сервера n8n...");
       healthCache.clear();
-      if (localN8nProcess) {
-        const pid = localN8nProcess.pid;
-        if (pid) {
-          try {
-            if (process.platform === "win32") {
-              spawn("taskkill", ["/pid", String(pid), "/f", "/t"]);
-            } else {
-              localN8nProcess.kill("SIGKILL");
-            }
-          } catch (e: any) {
-            appendServerLog(`Ошибка при остановке процесса: ${e?.message}`);
+
+      let pidToKill: number | null = localN8nProcess?.pid || null;
+      if (!pidToKill) {
+        pidToKill = findPidOnPort(5678);
+      }
+
+      if (pidToKill) {
+        try {
+          if (process.platform === "win32") {
+            spawn("taskkill", ["/pid", String(pidToKill), "/f", "/t"]);
+          } else {
+            process.kill(pidToKill, "SIGTERM");
           }
+          appendServerLog(`Сервер n8n остановлен (PID ${pidToKill})`);
+        } catch (e: any) {
+          appendServerLog(`Ошибка при остановке процесса: ${e?.message}`);
         }
         localN8nProcess = null;
-        appendServerLog("Сервер n8n остановлен");
-        return { ok: true, message: "Сервер n8n остановлен" };
+        return { ok: true, message: `Сервер n8n остановлен (PID ${pidToKill})` };
       }
 
       const health = await checkN8nHealth("http://127.0.0.1:5678", undefined, true);
       if (health.connected) {
         return {
           ok: false,
-          message: "Сервер запущен внешне, плагин управляет только собственным процессом",
+          message: "Сервер работает, но PID не найден для завершения",
         };
       }
 
@@ -1494,12 +1577,14 @@ export default function (bb: BbPluginApi) {
 
     get_local_server_status: async () => {
       const health = await checkN8nHealth("http://127.0.0.1:5678", undefined, true);
-      const isManaged = localN8nProcess !== null && !localN8nProcess.killed;
+      const externalPid = findPidOnPort(5678);
+      const pid = localN8nProcess?.pid || (health.connected ? externalPid : null) || undefined;
+      const isManaged = Boolean(localN8nProcess !== null && !localN8nProcess.killed) || Boolean(health.connected && externalPid);
       return {
         ok: true,
         running: health.connected,
         managedByPlugin: isManaged,
-        pid: localN8nProcess?.pid,
+        pid,
         logs: serverLogs.slice(-50),
       };
     },
@@ -1512,13 +1597,33 @@ export default function (bb: BbPluginApi) {
     commands: [
       {
         name: "status",
-        summary: "Display n8n hub health and active accounts",
+        summary: "Display n8n hub health, local server, and active accounts",
         usage: "bb project-hub status",
+      },
+      {
+        name: "server",
+        summary: "Manage local n8n server process (status, start, stop)",
+        usage: "bb project-hub server [status|start|stop]",
       },
       {
         name: "accounts",
         summary: "List all connected n8n instances and gateways",
         usage: "bb project-hub accounts",
+      },
+      {
+        name: "workflows",
+        summary: "List workflows for an instance",
+        usage: "bb project-hub workflows [accountId]",
+      },
+      {
+        name: "webhook",
+        summary: "Dispatch a webhook payload to n8n",
+        usage: "bb project-hub webhook <path> [jsonPayload]",
+      },
+      {
+        name: "sync",
+        summary: "Trigger a workflow sync from n8n",
+        usage: "bb project-hub sync [accountId]",
       },
       {
         name: "list",
@@ -1537,17 +1642,23 @@ export default function (bb: BbPluginApi) {
 
       if (sub === "status") {
         const cfg = store.getConfig();
-        const health = await checkN8nHealth(cfg.n8nBaseUrl, cfg.n8nApiKey);
+        const health = await checkN8nHealth("http://127.0.0.1:5678");
+        const pid = localN8nProcess?.pid || findPidOnPort(5678);
         const projects = store.getProjects();
         const accounts = store.getAccounts();
         return {
           exitCode: 0,
           stdout: JSON.stringify(
             {
-              n8nConnected: health.connected,
-              n8nBaseUrl: cfg.n8nBaseUrl,
+              localServer: {
+                running: health.connected,
+                pid: health.connected ? pid : null,
+                url: "http://127.0.0.1:5678",
+                managedByPlugin: Boolean(localN8nProcess !== null && !localN8nProcess.killed) || Boolean(health.connected && pid),
+              },
               n8nVersion: health.version,
-              connectedAccounts: accounts.length,
+              connectedAccounts: accounts.filter((a) => a.status === "online").length,
+              totalAccounts: accounts.length,
               projects: projects.length,
               messagesTotal: store.getTotalMessagesCount(),
             },
@@ -1555,6 +1666,111 @@ export default function (bb: BbPluginApi) {
             2
           ),
         };
+      }
+
+      if (sub === "server") {
+        const action = args[0] || "status";
+        if (action === "status") {
+          const health = await checkN8nHealth("http://127.0.0.1:5678", undefined, true);
+          const pid = localN8nProcess?.pid || findPidOnPort(5678);
+          return {
+            exitCode: 0,
+            stdout: `Локальный n8n: ${health.connected ? "В СЕТИ (PID: " + pid + ")" : "ОСТАНОВЛЕН"} | http://127.0.0.1:5678`,
+          };
+        }
+        if (action === "start") {
+          const health = await checkN8nHealth("http://127.0.0.1:5678", undefined, true);
+          if (health.connected) {
+            return { exitCode: 0, stdout: "Сервер n8n уже запущен (http://127.0.0.1:5678)" };
+          }
+          appendServerLog("Запуск локального сервера n8n (CLI)...");
+          const isWin = process.platform === "win32";
+          const npmPath = process.env.APPDATA ? path.join(process.env.APPDATA, "npm", "n8n.cmd") : "";
+          const cmd = isWin && npmPath && fs.existsSync(npmPath) ? npmPath : isWin ? "n8n.cmd" : "n8n";
+          localN8nProcess = spawn(cmd, ["start"], {
+            shell: isWin,
+            stdio: ["ignore", "pipe", "pipe"],
+            env: {
+              ...process.env,
+              N8N_PORT: "5678",
+              N8N_HOST: "127.0.0.1",
+              N8N_PROTOCOL: "http",
+              N8N_RUNNERS_ENABLED: "false",
+              N8N_DIAGNOSTICS_ENABLED: "false",
+              N8N_UNVERIFIED_PACKAGES_ENABLED: "true",
+              N8N_RUNNERS_TASK_TIMEOUT: "300",
+              N8N_COMPRESSION_NODE_MAX_DECOMPRESSED_SIZE_BYTES: "2147483648",
+              N8N_COMPRESSION_NODE_MAX_ZIP_ENTRIES: "5000",
+            },
+          });
+          return { exitCode: 0, stdout: `Команда запуска n8n передана (PID: ${localN8nProcess.pid})` };
+        }
+        if (action === "stop") {
+          appendServerLog("Остановка локального сервера n8n (CLI)...");
+          const pidToKill = localN8nProcess?.pid || findPidOnPort(5678);
+          if (pidToKill) {
+            if (process.platform === "win32") {
+              spawn("taskkill", ["/pid", String(pidToKill), "/f", "/t"]);
+            } else {
+              process.kill(pidToKill, "SIGTERM");
+            }
+            localN8nProcess = null;
+            return { exitCode: 0, stdout: `Сервер n8n остановлен (PID: ${pidToKill})` };
+          }
+          return { exitCode: 0, stdout: "Сервер n8n не был запущен" };
+        }
+        return { exitCode: 1, stderr: "Usage: bb project-hub server [status|start|stop]" };
+      }
+
+      if (sub === "workflows") {
+        const accountId = args[0] || store.getAccounts()[0]?.id;
+        const acc = store.getAccountById(accountId);
+        if (!acc) return { exitCode: 1, stderr: `Аккаунт '${accountId}' не найден` };
+        const res = await fetchN8nWorkflowsAndExecutions(acc.url, acc.apiKey);
+        if (!res.ok) return { exitCode: 1, stderr: res.error || "Не удалось загрузить воркфлоу" };
+        const lines = res.workflows.map((w: any) => `[${w.id}] ${w.name} (${w.active ? "АКТИВЕН" : "ПАУЗА"})`);
+        return { exitCode: 0, stdout: lines.length > 0 ? lines.join("\n") : "Воркфлоу не найдены" };
+      }
+
+      if (sub === "webhook") {
+        const webhookPath = args[0];
+        const payloadStr = args.slice(1).join(" ").trim();
+        if (!webhookPath) return { exitCode: 1, stderr: "Usage: bb project-hub webhook <path> [jsonPayload]" };
+        let payload = {};
+        if (payloadStr) {
+          try {
+            payload = JSON.parse(payloadStr);
+          } catch {
+            payload = { text: payloadStr };
+          }
+        }
+        const acc = store.getAccounts()[0];
+        const cleanBase = acc.url.replace(/\/+$/, "");
+        const cleanPath = webhookPath.startsWith("/") ? webhookPath : "/" + webhookPath;
+        const targetUrl = `${cleanBase}${cleanPath.startsWith("/webhook") ? cleanPath : "/webhook" + cleanPath}`;
+        try {
+          const res = await fetch(targetUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+          });
+          const text = await res.text();
+          return { exitCode: res.ok ? 0 : 1, stdout: `HTTP ${res.status}: ${text}` };
+        } catch (err: any) {
+          return { exitCode: 1, stderr: `Ошибка вызова вебхука: ${err?.message}` };
+        }
+      }
+
+      if (sub === "sync") {
+        const accId = args[0] || store.getAccounts()[0]?.id;
+        const acc = store.getAccountById(accId);
+        if (!acc) return { exitCode: 1, stderr: `Аккаунт '${accId}' не найден` };
+        const res = await fetchN8nWorkflowsAndExecutions(acc.url, acc.apiKey);
+        if (res.ok) {
+          const count = store.syncWorkflows(acc, res.workflows, res.executions.length, res.executions);
+          return { exitCode: 0, stdout: `Синхронизировано: ${count} воркфлоу, ${res.executions.length} запусков` };
+        }
+        return { exitCode: 1, stderr: res.error || "Ошибка синхронизации" };
       }
 
       if (sub === "accounts") {
@@ -1726,13 +1942,200 @@ export default function (bb: BbPluginApi) {
     },
   });
 
+  bb.agents.registerTool({
+    name: "project_hub_get_workflows",
+    description: "Returns list of workflows for an n8n account (id, name, active status, last execution).",
+    parameters: {
+      type: "object",
+      properties: {
+        accountId: { type: "string", description: "Optional n8n account ID. Defaults to master local n8n." },
+      },
+    },
+    execute: async (args: any) => {
+      const accId = args?.accountId || store.getAccounts()[0]?.id;
+      const acc = store.getAccountById(accId);
+      if (!acc) return JSON.stringify({ ok: false, error: "Account not found" });
+      const res = await fetchN8nWorkflowsAndExecutions(acc.url, acc.apiKey);
+      return JSON.stringify(res, null, 2);
+    },
+  });
+
+  bb.agents.registerTool({
+    name: "project_hub_get_executions",
+    description: "Returns execution history and logs for an n8n account or specific workflow.",
+    parameters: {
+      type: "object",
+      properties: {
+        accountId: { type: "string", description: "Optional n8n account ID." },
+        workflowId: { type: "string", description: "Optional workflow ID to filter executions." },
+      },
+    },
+    execute: async (args: any) => {
+      const accId = args?.accountId || store.getAccounts()[0]?.id;
+      const acc = store.getAccountById(accId);
+      if (!acc) return JSON.stringify({ ok: false, error: "Account not found" });
+      const res = await fetchN8nWorkflowsAndExecutions(acc.url, acc.apiKey);
+      if (!res.ok) return JSON.stringify(res, null, 2);
+      let execs = res.executions;
+      if (args?.workflowId) {
+        execs = execs.filter((e: any) => String(e.workflowId) === String(args.workflowId));
+      }
+      return JSON.stringify({ ok: true, executions: execs }, null, 2);
+    },
+  });
+
+  bb.agents.registerTool({
+    name: "project_hub_dispatch_webhook",
+    description: "Triggers a webhook endpoint on an n8n instance with optional JSON payload.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Webhook path (e.g. 'test-webhook' or '/webhook/test-webhook')" },
+        payload: { type: "object", description: "JSON payload dictionary to send in POST request body" },
+        method: { type: "string", enum: ["POST", "GET"], description: "HTTP method" },
+        accountId: { type: "string", description: "Optional n8n account ID" },
+      },
+      required: ["path"],
+    },
+    execute: async (args: any) => {
+      const accId = args?.accountId || store.getAccounts()[0]?.id;
+      const acc = store.getAccountById(accId);
+      if (!acc) return JSON.stringify({ ok: false, error: "Account not found" });
+      const cleanBase = acc.url.replace(/\/+$/, "");
+      const cleanPath = args.path.startsWith("/") ? args.path : "/" + args.path;
+      const targetUrl = `${cleanBase}${cleanPath.startsWith("/webhook") ? cleanPath : "/webhook" + cleanPath}`;
+      const method = args.method || "POST";
+      const start = Date.now();
+      try {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (acc.apiKey) headers["X-N8N-API-KEY"] = acc.apiKey;
+        const res = await fetch(targetUrl, {
+          method,
+          headers,
+          body: method === "POST" ? JSON.stringify(args.payload || {}) : undefined,
+          signal: AbortSignal.timeout(10000),
+        });
+        const durationMs = Date.now() - start;
+        const data = await res.json().catch(() => ({ statusText: res.statusText }));
+        return JSON.stringify({ ok: res.ok, statusCode: res.status, durationMs, response: data }, null, 2);
+      } catch (err: any) {
+        return JSON.stringify({ ok: false, durationMs: Date.now() - start, error: err?.message }, null, 2);
+      }
+    },
+  });
+
+  bb.agents.registerTool({
+    name: "project_hub_server_status",
+    description: "Returns the status (running/offline), PID, and recent logs of the local n8n server.",
+    parameters: {
+      type: "object",
+      properties: {},
+    },
+    execute: async () => {
+      const health = await checkN8nHealth("http://127.0.0.1:5678", undefined, true);
+      const pid = localN8nProcess?.pid || findPidOnPort(5678);
+      return JSON.stringify(
+        {
+          running: health.connected,
+          pid: health.connected ? pid : null,
+          url: "http://127.0.0.1:5678",
+          recentLogs: serverLogs.slice(-20),
+        },
+        null,
+        2
+      );
+    },
+  });
+
+  bb.agents.registerTool({
+    name: "project_hub_manage_server",
+    description: "Starts or stops the local n8n server process.",
+    parameters: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["start", "stop"], description: "Action to perform ('start' or 'stop')" },
+      },
+      required: ["action"],
+    },
+    execute: async (args: any) => {
+      if (args.action === "start") {
+        const health = await checkN8nHealth("http://127.0.0.1:5678", undefined, true);
+        if (health.connected) return "Сервер n8n уже запущен (http://127.0.0.1:5678)";
+        appendServerLog("Запуск локального сервера n8n (Agent Tool)...");
+        const isWin = process.platform === "win32";
+        const npmPath = process.env.APPDATA ? path.join(process.env.APPDATA, "npm", "n8n.cmd") : "";
+        const cmd = isWin && npmPath && fs.existsSync(npmPath) ? npmPath : isWin ? "n8n.cmd" : "n8n";
+        localN8nProcess = spawn(cmd, ["start"], {
+          shell: isWin,
+          stdio: ["ignore", "pipe", "pipe"],
+          env: {
+            ...process.env,
+            N8N_PORT: "5678",
+            N8N_HOST: "127.0.0.1",
+            N8N_PROTOCOL: "http",
+            N8N_RUNNERS_ENABLED: "false",
+            N8N_DIAGNOSTICS_ENABLED: "false",
+            N8N_UNVERIFIED_PACKAGES_ENABLED: "true",
+            N8N_RUNNERS_TASK_TIMEOUT: "300",
+            N8N_COMPRESSION_NODE_MAX_DECOMPRESSED_SIZE_BYTES: "2147483648",
+            N8N_COMPRESSION_NODE_MAX_ZIP_ENTRIES: "5000",
+          },
+        });
+        return `Команда запуска n8n передана (PID: ${localN8nProcess.pid})`;
+      } else {
+        appendServerLog("Остановка локального сервера n8n (Agent Tool)...");
+        const pidToKill = localN8nProcess?.pid || findPidOnPort(5678);
+        if (pidToKill) {
+          if (process.platform === "win32") {
+            spawn("taskkill", ["/pid", String(pidToKill), "/f", "/t"]);
+          } else {
+            process.kill(pidToKill, "SIGTERM");
+          }
+          localN8nProcess = null;
+          return `Сервер n8n остановлен (PID: ${pidToKill})`;
+        }
+        return "Сервер n8n не был запущен";
+      }
+    },
+  });
+
+  bb.agents.registerTool({
+    name: "project_hub_sync",
+    description: "Triggers a full sync of workflows and executions from n8n instances into Project Hub.",
+    parameters: {
+      type: "object",
+      properties: {
+        accountId: { type: "string", description: "Optional n8n account ID to sync." },
+      },
+    },
+    execute: async (args: any) => {
+      const accId = args?.accountId || store.getAccounts()[0]?.id;
+      const acc = store.getAccountById(accId);
+      if (!acc) return JSON.stringify({ ok: false, error: "Account not found" });
+      const res = await fetchN8nWorkflowsAndExecutions(acc.url, acc.apiKey);
+      if (res.ok) {
+        const count = store.syncWorkflows(acc, res.workflows, res.executions.length, res.executions);
+        return JSON.stringify({ ok: true, syncedWorkflows: count, totalExecutions: res.executions.length }, null, 2);
+      }
+      return JSON.stringify({ ok: false, error: res.error }, null, 2);
+    },
+  });
+
   bb.agents.configure((_context) => ({
     tools: [
       "project_hub_list_accounts",
       "project_hub_list_projects",
       "project_hub_get_messages",
       "project_hub_send_message",
+      "project_hub_get_workflows",
+      "project_hub_get_executions",
+      "project_hub_dispatch_webhook",
+      "project_hub_server_status",
+      "project_hub_manage_server",
+      "project_hub_sync",
     ],
-    skills: [],
+    skills: ["n8n"],
+    instructions:
+      "n8n automation & workflow tools are available. Use `project_hub_list_accounts` to inspect instances, `project_hub_get_workflows` to list workflows, `project_hub_dispatch_webhook` to trigger webhooks, and `project_hub_manage_server` to start or stop the local n8n server.",
   }));
 }

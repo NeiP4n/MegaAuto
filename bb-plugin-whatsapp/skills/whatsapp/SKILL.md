@@ -7,6 +7,13 @@ description: "Send WhatsApp messages, read and search chat history, look up cont
 
 Connects one or more WhatsApp accounts via the official multi-device protocol (`whatsmeow` bridge). Everything goes through the registered agent tools below or the `bb whatsapp` CLI.
 
+## Rules for agents (follow first, save yourself 10 calls)
+
+1. Do NOT check status first (`bb status`, `bb whatsapp status`) - just send; a failure message tells you if anything is wrong.
+2. Do NOT read files, logs, the SQLite stores, or run Get-ChildItem/Select-String - everything is in `bb whatsapp` and the tools below.
+3. Do NOT run `--help` on subcommands to "check" them - every subcommand prints its usage on any error, and `bb whatsapp --help` has the full cheat sheet.
+4. Do NOT list accounts/chats before sending: `bb whatsapp send --to "Name" "text"` resolves the chat AND the account in one call; if the name matches several chats it returns a pick list.
+
 ## Cheat sheet (covers ~90% of requests - no other reading needed)
 
 ```bash

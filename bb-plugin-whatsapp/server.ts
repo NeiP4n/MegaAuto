@@ -1902,6 +1902,8 @@ export default async function plugin(bb: BbPluginApi) {
         return {
           exitCode: 0,
           stdout: [
+            "Не нужны: bb status, plugins list, чтение файлов/логов, sqlite, Get-ChildItem. Всё через bb whatsapp.",
+            "",
             "WhatsApp CLI - cheat sheet (no session_id / JID needed, names resolve):",
             "",
             "  bb whatsapp send --to \"Mom\" \"привет\"                        send to a chat BY NAME",
@@ -1932,6 +1934,23 @@ export default async function plugin(bb: BbPluginApi) {
         return { sessionId, rest };
       };
       const { sessionId: cliSession, rest: restArgs } = takeSessionFlag(argv.slice(1));
+
+      // `bb whatsapp <sub> --help` prints that subcommand's usage (the local
+      // agent probes these; they must not fall through to weird behavior).
+      if (restArgs.includes("--help") || restArgs.includes("-h")) {
+        const usages: Record<string, string> = {
+          send: 'bb whatsapp send [--account <name|phone>] [--to <chat name>] <recipient> <message>\n  Examples:\n  bb whatsapp send --to "Mom" "привет"\n  bb whatsapp send --account 16838505031 --to "Mom" "текст"\n  bb whatsapp send +12025551234 "hi"',
+          say: 'bb whatsapp say --all [--groups] [--account <name|phone>] [--limit N] [--dry-run] [--yes] <message>\n  Broadcast to existing chats only. --dry-run lists recipients; >5 needs --yes.',
+          messages: 'bb whatsapp messages <chat name|jid> [limit] [--session <id>]\n  Example: bb whatsapp messages "Mom" 20',
+          chats: "bb whatsapp chats [--session <id>]\n  Without --session lists chats of EVERY account, grouped by account.",
+          accounts: "bb whatsapp accounts\n  Lists accounts: * = active, session id, name, phone, status, claim holder.",
+          contacts: 'bb whatsapp contacts <query> [--session <id>]',
+          "send-file": "bb whatsapp send-file <recipient> <path> [caption] [--session <id>]",
+          claim: "bb whatsapp claim --account <name|phone> [--holder <name>] [--ttl <seconds>]\n  Exclusive agent claim; default TTL 10 min, auto-expires.",
+          release: "bb whatsapp release --account <name|phone> [--holder <name>]",
+        };
+        return { exitCode: 0, stdout: usages[sub] || "Run: bb whatsapp --help" };
+      }
 
       // Generic --flag <value> extractor (flags are removed from the rest).
       const takeFlag = (args: string[], name: string): { value?: string; rest: string[] } => {
@@ -1978,6 +1997,47 @@ export default async function plugin(bb: BbPluginApi) {
         return { jid: chosen.jid, name: chosen.name || chosen.jid };
       };
 
+      // Resolve a chat across ALL accounts: with one match the agent never
+      // needs --account at all; with several, it gets a ready-to-run pick
+      // list instead of having to list accounts/chats per session.
+      const resolveChatAnywhere = async (
+        query: string,
+        sessionId?: string
+      ): Promise<{ jid?: string; name?: string; sessionId?: string; error?: string }> => {
+        if (query.includes("@")) return { jid: query, name: query, sessionId };
+        if (/^\+?[0-9]{5,}$/.test(query.replace(/[\s-]/g, ""))) return { jid: query, name: query, sessionId };
+        if (sessionId) {
+          const one = await resolveChat(query, sessionId);
+          return { ...one, sessionId };
+        }
+        const sessions = await bridge.getSessions();
+        const hits: { jid: string; name: string; sessionId: string; accountLabel: string }[] = [];
+        for (const s of sessions) {
+          const chats = await bridge.getChats(query, s.id);
+          for (const c of chats) {
+            hits.push({
+              jid: c.jid,
+              name: c.name || c.jid,
+              sessionId: s.id,
+              accountLabel: s.phone ? `+${s.phone}` : s.name || s.id,
+            });
+          }
+        }
+        const lower = query.toLowerCase();
+        const exact = hits.filter((h) => h.name.toLowerCase() === lower);
+        const pool = exact.length ? exact : hits;
+        if (pool.length === 0) {
+          return { error: `No chat matches "${query}" on any account. List them: bb whatsapp chats` };
+        }
+        if (pool.length === 1) {
+          return pool[0];
+        }
+        const list = pool
+          .map((h) => `  "${h.name}" on ${h.accountLabel}  ->  bb whatsapp send --account "${h.accountLabel}" --to "${h.name}" "<text>"`)
+          .join("\n");
+        return { error: `"${query}" matches ${pool.length} chats - pick one and rerun:\n${list}` };
+      };
+
       if (sub === "accounts") {
         const sessions = await bridge.getSessions();
         if (sessions.length === 0) {
@@ -1986,11 +2046,12 @@ export default async function plugin(bb: BbPluginApi) {
         const lines = sessions.map((sess) => {
           const mark = sess.is_active ? "*" : " ";
           const phone = sess.phone ? `+${sess.phone}` : "(not paired)";
-          return `${mark} ${sess.id}  ${sess.name}  ${phone}  [${sess.status}]${sess.connected ? " CONNECTED" : ""}`;
+          const claim = sess.claim_holder ? `  claim: ${sess.claim_holder}` : "";
+          return `${mark} ${sess.id}  ${sess.name}  ${phone}  [${sess.status}]${sess.connected ? " CONNECTED" : ""}${claim}`;
         });
         return {
           exitCode: 0,
-          stdout: `WhatsApp Accounts (* = active):\n\n${lines.join("\n")}\n\nTarget a specific account with: bb whatsapp <command> ... --session <id>`,
+          stdout: `WhatsApp Accounts (* = active):\n\n${lines.join("\n")}\n\nNo need to pick: bb whatsapp send --to "Chat Name" "text" resolves the account by chat name across all accounts. Manual targeting: --account <name|phone> or --session <id>.`,
         };
       }
 
@@ -2017,12 +2078,21 @@ export default async function plugin(bb: BbPluginApi) {
       }
 
       if (sub === "chats") {
-        const chats = await bridge.getChats("", cliSession);
-        if (chats.length === 0) {
+        const sessions = await bridge.getSessions();
+        const targets = cliSession ? sessions.filter((s) => s.id === cliSession) : sessions;
+        const sections: string[] = [];
+        let total = 0;
+        for (const s of targets.length ? targets : sessions.slice(0, 1)) {
+          const chats = await bridge.getChats("", s.id);
+          total += chats.length;
+          const label = s.phone ? `+${s.phone}${s.name ? ` (${s.name})` : ""}` : s.name || s.id;
+          const lines = chats.map((c) => `• ${c.name} (${c.jid})\n  Last: ${c.last_message || "—"} [${c.last_message_time || ""}]`);
+          sections.push(`== ${label} ==\n${lines.join("\n\n") || "(no chats yet)"}`);
+        }
+        if (total === 0) {
           return { exitCode: 0, stdout: "No chats found or bridge not synced yet." };
         }
-        const lines = chats.map((c) => `• ${c.name} (${c.jid})\n  Last: ${c.last_message || "—"} [${c.last_message_time || ""}]`);
-        return { exitCode: 0, stdout: `Recent WhatsApp Chats (${chats.length}):\n\n${lines.join("\n\n")}` };
+        return { exitCode: 0, stdout: `Recent WhatsApp Chats (${total}):\n\n${sections.join("\n\n")}\n\nSend to any chat by name: bb whatsapp send --to "Name" "text"` };
       }
 
       if (sub === "contacts") {
@@ -2086,17 +2156,19 @@ export default async function plugin(bb: BbPluginApi) {
         let recipient: string;
         let message: string;
         if (toF.value) {
-          const chat = await resolveChat(toF.value, sessionId);
+          const chat = await resolveChatAnywhere(toF.value, sessionId);
           if (!chat.jid) return { exitCode: 1, stderr: chat.error };
           recipient = chat.jid;
+          sessionId = chat.sessionId || sessionId;
           message = args.join(" ");
         } else {
           const raw = args[0];
           if (raw && !raw.includes("@") && !/^\+?[0-9]{5,}$/.test(raw.replace(/[\s-]/g, ""))) {
             // Positional recipient that is not a number/JID: treat as a chat name.
-            const chat = await resolveChat(raw, sessionId);
+            const chat = await resolveChatAnywhere(raw, sessionId);
             if (!chat.jid) return { exitCode: 1, stderr: chat.error };
             recipient = chat.jid;
+            sessionId = chat.sessionId || sessionId;
           } else {
             recipient = raw;
           }

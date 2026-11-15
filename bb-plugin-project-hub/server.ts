@@ -19,15 +19,26 @@ const accountSchema = z.object({
   name: z.string(),
   channel: z.enum(["n8n", "telegram", "webhook"]),
   url: z.string(),
-  apiKey: z.string().optional(),
+  apiKey: z.string().nullable().optional(),
   status: z.enum(["online", "syncing", "offline"]),
-  manualOffline: z.boolean().optional(),
+  manualOffline: z.boolean().nullable().optional(),
   workflowsCount: z.number(),
   executionsCount: z.number(),
   unreadTotal: z.number(),
   lastSync: z.string(),
   createdAt: z.string(),
+  latencyMs: z.number().nullable().optional(),
 });
+
+function maskAccount(acc: Account): Account {
+  const copy: any = { ...acc };
+  if (copy.apiKey) {
+    copy.apiKey = "••••••••";
+  } else {
+    delete copy.apiKey;
+  }
+  return JSON.parse(JSON.stringify(copy));
+}
 
 const projectSchema = z.object({
   id: z.string(),
@@ -1242,7 +1253,7 @@ const healthCache = new Map<string, { connected: boolean; version: string; at: n
 
 async function checkN8nHealth(
   baseUrl: string,
-  forceFreshOrApiKey?: boolean | string,
+  forceFreshOrApiKey?: boolean | string | null,
   forceFreshArg?: boolean
 ): Promise<{ connected: boolean; version: string }> {
   const forceFresh = typeof forceFreshOrApiKey === "boolean" ? forceFreshOrApiKey : Boolean(forceFreshArg);
@@ -1263,7 +1274,7 @@ async function checkN8nHealth(
 
 async function fetchN8nWorkflowsAndExecutions(
   baseUrl: string,
-  apiKey?: string
+  apiKey?: string | null
 ): Promise<{
   ok: boolean;
   workflows: any[];
@@ -1497,10 +1508,7 @@ export default function (bb: BbPluginApi) {
   // 1. REGISTER RPC IMPLEMENTATIONS
   bb.rpc.register(rpcContract, {
     get_accounts: async () => {
-      const masked = store.getAccounts().map((a) => ({
-        ...a,
-        apiKey: a.apiKey ? "••••••••" : undefined,
-      }));
+      const masked = store.getAccounts().map(maskAccount);
       return {
         ok: true,
         accounts: masked,
@@ -1516,10 +1524,7 @@ export default function (bb: BbPluginApi) {
       });
       return {
         ok: true,
-        account: {
-          ...acc,
-          apiKey: acc.apiKey ? "••••••••" : undefined,
-        },
+        account: maskAccount(acc),
       };
     },
 
@@ -1527,12 +1532,7 @@ export default function (bb: BbPluginApi) {
       const acc = store.disconnectAccount(input.accountId);
       return {
         ok: !!acc,
-        account: acc
-          ? {
-              ...acc,
-              apiKey: acc.apiKey ? "••••••••" : undefined,
-            }
-          : undefined,
+        account: acc ? maskAccount(acc) : undefined,
       };
     },
 
@@ -2146,10 +2146,7 @@ export default function (bb: BbPluginApi) {
       properties: {},
     },
     execute: async () => {
-      const masked = store.getAccounts().map((a) => ({
-        ...a,
-        apiKey: a.apiKey ? "••••••••" : undefined,
-      }));
+      const masked = store.getAccounts().map(maskAccount);
       return JSON.stringify(masked, null, 2);
     },
   });

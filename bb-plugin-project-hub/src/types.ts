@@ -7,15 +7,15 @@ export interface Account {
   name: string;
   channel: "n8n" | "telegram" | "webhook";
   url: string;
-  apiKey?: string;
+  apiKey?: string | null;
   status: "online" | "syncing" | "offline";
-  manualOffline?: boolean;
+  manualOffline?: boolean | null;
   workflowsCount: number;
   executionsCount: number;
   unreadTotal: number;
   lastSync: string;
   createdAt: string;
-  latencyMs?: number;
+  latencyMs?: number | null;
 }
 
 export interface Project {

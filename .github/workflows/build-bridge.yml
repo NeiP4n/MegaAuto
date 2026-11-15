@@ -47,16 +47,17 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # Rebase first: a parallel or previous run may have pushed meanwhile.
-          git fetch origin main
-          git rebase origin/main
           git add bb-plugin-whatsapp/bridge/whatsapp-bridge.exe
           if git diff --cached --quiet; then
             echo "exe unchanged, nothing to commit"
             exit 0
           fi
+          # Commit first (checkout is detached), then rebase onto the latest
+          # main in case another run pushed meanwhile, and push onto main.
           git commit -m "chore(bridge): rebuild whatsapp-bridge.exe [skip ci]"
-          git push
+          git fetch origin main
+          git rebase origin/main
+          git push origin HEAD:main
 
       # Rolling release the plugin polls on start to self-update the exe.
       - name: Publish rolling bridge-latest release

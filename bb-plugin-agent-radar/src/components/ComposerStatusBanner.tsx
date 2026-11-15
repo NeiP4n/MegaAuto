@@ -11,17 +11,20 @@ export function ComposerStatusBanner({ status }: ComposerStatusBannerProps) {
   const [localSeconds, setLocalSeconds] = useState(0);
 
   useEffect(() => {
-    if (status) {
+    if (!status?.elapsedSeconds) {
+      setLocalSeconds(0);
+    } else {
       setLocalSeconds(status.elapsedSeconds);
     }
-  }, [status?.elapsedSeconds]);
+  }, [status?.elapsedSeconds, status?.canWrite]);
 
   useEffect(() => {
+    if (!status || status.canWrite) return;
     const timer = setInterval(() => {
       setLocalSeconds((s) => s + 1);
     }, 1000);
     return () => clearInterval(timer);
-  }, []);
+  }, [status?.canWrite]);
 
   if (composer.scope.kind !== "thread") return null;
   if (!status) return null;

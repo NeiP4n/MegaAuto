@@ -254,7 +254,13 @@ export function WhatsAppView() {
   const [selectedChat, setSelectedChat] = useState<WhatsAppChat | null>(null);
   // Narrow layout (<700px): show either the list or the open chat, never
   // both squeezed together, with a back button to return to the list.
-  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("bb_whatsapp_sidebar_collapsed") === "1";
+    } catch {
+      return false;
+    }
+  });
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
   const [isNarrow, setIsNarrow] = useState<boolean>(
     typeof window !== "undefined" ? window.innerWidth < 700 : false
@@ -1536,7 +1542,15 @@ export function WhatsAppView() {
                 </>
                 )}
                 <button
-                  onClick={() => setSidebarCollapsed((v) => !v)}
+                  onClick={() =>
+                    setSidebarCollapsed((v) => {
+                      const next = !v;
+                      try {
+                        localStorage.setItem("bb_whatsapp_sidebar_collapsed", next ? "1" : "0");
+                      } catch { /* storage unavailable - keep in-memory only */ }
+                      return next;
+                    })
+                  }
                   title={sidebarCollapsed ? "Show chat list" : "Hide chat list"}
                   className="p-2 rounded-full text-[var(--wa-icon)] hover:bg-[var(--wa-hover)] transition-colors"
                 >

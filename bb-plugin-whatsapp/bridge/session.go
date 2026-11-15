@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.mau.fi/whatsmeow"
@@ -24,10 +25,11 @@ type SessionInfo struct {
 	ID        string `json:"id"`
 	Name      string `json:"name"`
 	Phone     string `json:"phone"`
-	Status    string `json:"status"` // "connected" | "needs_scan" | "connecting" | "disconnected"
+	Status    string `json:"status"` // "connected" | "needs_scan" | "connecting" | "disconnected" | "logged_out"
 	Connected bool   `json:"connected"`
 	QR        string `json:"qr"`
 	IsActive  bool   `json:"is_active"`
+	Error     string `json:"error"`
 }
 
 type SessionMeta struct {
@@ -55,6 +57,20 @@ type Session struct {
 
 	nameRefreshMu   sync.Mutex
 	lastNameRefresh time.Time
+
+	loggedOut atomic.Bool
+	lastErr   atomic.Value // string
+}
+
+func (s *Session) setErr(msg string) {
+	s.lastErr.Store(msg)
+}
+
+func (s *Session) Err() string {
+	if v := s.lastErr.Load(); v != nil {
+		return v.(string)
+	}
+	return ""
 }
 
 // maybeRefreshChatNames resolves missing chat names in the background, at most
@@ -92,7 +108,9 @@ func (s *Session) GetInfo(isActive bool) SessionInfo {
 	if isAuth {
 		phone = s.Client.Store.ID.User
 	}
-	if isAuth && s.Client.IsConnected() {
+	if s.loggedOut.Load() {
+		status = "logged_out"
+	} else if isAuth && s.Client.IsConnected() {
 		status = "connected"
 	} else if s.GetQR() != "" {
 		status = "needs_scan"
@@ -115,6 +133,7 @@ func (s *Session) GetInfo(isActive bool) SessionInfo {
 		Connected: isAuth && s.Client.IsConnected(),
 		QR:        s.GetQR(),
 		IsActive:  isActive,
+		Error:     s.Err(),
 	}
 }
 
@@ -282,8 +301,25 @@ func (sm *SessionManager) startSession(s *Session) {
 			go s.MessageStore.RefreshChatNames(s.Client, s.logger)
 			sm.saveMeta()
 		case *events.LoggedOut:
-			s.logger.Warnf("Session %s logged out, scan required", s.ID)
+			s.logger.Warnf("Session %s logged out (on_connect=%v reason=%v), re-pairing required", s.ID, v.OnConnect, v.Reason)
 			s.SetQR("")
+			s.loggedOut.Store(true)
+			s.setErr("WhatsApp logged this account out. Re-pair it with a fresh QR code.")
+			// Drop the dead device credentials so a session restart goes
+			// straight to pairing instead of reconnecting into another 401.
+			if s.Client.Store != nil && s.Client.Store.ID != nil {
+				if err := s.Client.Store.Delete(context.Background()); err != nil {
+					s.logger.Errorf("Session %s: failed to clear logged-out device: %v", s.ID, err)
+				}
+			}
+			s.Client.Disconnect()
+		case *events.StreamReplaced:
+			// Another process connected with this session's device keys - a
+			// second bridge instance. Step back instead of fighting over the
+			// stream, which ends in WhatsApp force-logging the account out.
+			s.logger.Errorf("Session %s: stream replaced by another bridge instance; disconnecting this copy", s.ID)
+			s.setErr("Another bridge instance is using this account. Close the other one and press retry.")
+			s.Client.Disconnect()
 		}
 	})
 
@@ -291,29 +327,46 @@ func (sm *SessionManager) startSession(s *Session) {
 	go func() {
 		ctx := context.Background()
 		if s.Client.Store.ID == nil {
-			// Needs pairing
+			// Needs pairing. If Connect fails before any QR arrives the
+			// channel is dead; clear state so the UI can offer a retry
+			// (RestartSession) instead of spinning "Requesting QR" forever.
 			qrChan, _ := s.Client.GetQRChannel(ctx)
 			err := s.Client.Connect()
 			if err != nil {
+				s.SetQR("")
 				s.logger.Errorf("Session %s connect error: %v", s.ID, err)
 				return
 			}
 			for evt := range qrChan {
-				if evt.Event == "code" {
+				switch evt.Event {
+				case "code":
 					s.SetQR(evt.Code)
 					s.logger.Infof("Session %s pairing QR code generated", s.ID)
-				} else if evt.Event == "success" {
+				case "success":
 					s.SetQR("")
 					s.logger.Infof("Session %s paired successfully!", s.ID)
-					break
+				case "timeout", "err":
+					// QR codes expired unscanned; require an explicit retry so
+					// the UI never displays a dead QR or spins forever.
+					s.SetQR("")
+					s.logger.Warnf("Session %s QR channel ended (%s), retry required", s.ID, evt.Event)
 				}
 			}
 		} else {
-			// Already paired
-			err := s.Client.Connect()
-			if err != nil {
-				s.logger.Errorf("Session %s reconnect error: %v", s.ID, err)
-				return
+			// Already paired: retry the initial Connect with backoff. A
+			// single failed attempt must not leave the account offline until
+			// the next bridge restart.
+			backoff := 2 * time.Second
+			for attempt := 1; ; attempt++ {
+				err := s.Client.Connect()
+				if err == nil {
+					break
+				}
+				s.logger.Errorf("Session %s reconnect error (attempt %d): %v", s.ID, attempt, err)
+				time.Sleep(backoff)
+				if backoff < 30*time.Second {
+					backoff *= 2
+				}
 			}
 			s.SetQR("")
 			s.logger.Infof("Session %s restored existing WhatsApp connection", s.ID)
@@ -415,11 +468,49 @@ func (sm *SessionManager) CreateSession(name string) (SessionInfo, error) {
 	}
 
 	sm.sessions[id] = sess
-	sm.activeID = id
+	// Do NOT switch the active account here: creating a session must never
+	// disturb the account the user is currently looking at. Clients switch
+	// explicitly via /api/sessions/switch.
 	sm.startSession(sess)
 	sm.saveMeta()
 
-	return sess.GetInfo(true), nil
+	return sess.GetInfo(sess.ID == sm.activeID), nil
+}
+
+// RestartSession tears down and re-creates a session's client in place, used
+// to retry pairing after the QR channel timed out or to recover a stuck
+// connection. Store directories and the session id are preserved, so an
+// already-paired account keeps its credentials.
+func (sm *SessionManager) RestartSession(id string) (SessionInfo, error) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	sess, ok := sm.sessions[id]
+	if !ok {
+		return SessionInfo{}, fmt.Errorf("session not found: %s", id)
+	}
+
+	sess.loggedOut.Store(false)
+	sess.setErr("")
+	if sess.Client != nil {
+		sess.Client.Disconnect()
+	}
+	if sess.Container != nil {
+		sess.Container.Close()
+	}
+	if sess.MessageStore != nil {
+		sess.MessageStore.Close()
+	}
+
+	fresh, err := sm.initSession(sess.ID, sess.Name)
+	if err != nil {
+		delete(sm.sessions, id)
+		return SessionInfo{}, err
+	}
+	sm.sessions[id] = fresh
+	sm.startSession(fresh)
+	sm.saveMeta()
+	return fresh.GetInfo(id == sm.activeID), nil
 }
 
 func (sm *SessionManager) DeleteSession(id string) error {

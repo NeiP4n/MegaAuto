@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -1008,7 +1009,11 @@ const msgColumns = `id, chat_jid, sender, content, timestamp, is_from_me,
 	COALESCE(media_type, ''), COALESCE(filename, ''), COALESCE(url, ''), COALESCE(file_length, 0)`
 
 // Start a REST API server with Multi-Account / Multi-Session support
-func startRESTServer(sm *SessionManager, port int) {
+// The listener must be bound by the caller BEFORE any session connects:
+// the port doubles as the single-instance lock. Two bridge processes with the
+// same store dirs fight over the same WhatsApp device keys (StreamReplaced)
+// until WhatsApp force-logs the account out.
+func startRESTServer(sm *SessionManager, listener net.Listener) {
 	// Helper to extract requested session or active session
 	getSession := func(r *http.Request) *Session {
 		sid := r.URL.Query().Get("session")
@@ -1090,6 +1095,36 @@ func startRESTServer(sm *SessionManager, port int) {
 		})
 	})
 
+	// 3b. Restart a session's client in place (retry pairing, recover stuck)
+	mux.HandleFunc("/api/sessions/restart", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			SessionID string `json:"session_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.SessionID == "" {
+			http.Error(w, "session_id is required", http.StatusBadRequest)
+			return
+		}
+
+		info, err := sm.RestartSession(req.SessionID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+			"session": info,
+		})
+	})
+
 	// 4. Delete session endpoint
 	mux.HandleFunc("/api/sessions/delete", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1144,6 +1179,7 @@ func startRESTServer(sm *SessionManager, port int) {
 			"connected":   info.Connected,
 			"phone":       info.Phone,
 			"qr":          info.QR,
+			"error":       info.Error,
 			"server_time": time.Now().Format(time.RFC3339),
 			"sessions":    sm.ListSessions(),
 		})
@@ -1768,12 +1804,9 @@ func startRESTServer(sm *SessionManager, port int) {
 		})
 	})
 
-	// Bind to loopback only: this API is unauthenticated and can read chats
-	// and send messages, so it must never be reachable from the network.
-	serverAddr := fmt.Sprintf("127.0.0.1:%d", port)
-	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
+	fmt.Printf("Starting REST API server on %s...\n", listener.Addr())
 	go func() {
-		if err := http.ListenAndServe(serverAddr, corsMiddleware(mux)); err != nil {
+		if err := http.Serve(listener, corsMiddleware(mux)); err != nil {
 			fmt.Printf("REST API server error: %v\n", err)
 		}
 	}()
@@ -1785,15 +1818,11 @@ func main() {
 
 	dbLog := waLog.Stdout("Database", "ERROR", true)
 
-	sm, err := NewSessionManager(logger, dbLog)
-	if err != nil {
-		logger.Errorf("Failed to initialize session manager: %v", err)
-		return
-	}
-	defer sm.CloseAll()
-
-	// Start REST API server with session manager. The port can be overridden
-	// when 8080 is already taken by another local service.
+	// Bind the REST port FIRST, before touching any session: the port is the
+	// single-instance lock. A second bridge with the same store dirs would
+	// connect the same WhatsApp devices twice and get accounts logged out.
+	// Bind to loopback only: this API is unauthenticated and can read chats
+	// and send messages, so it must never be reachable from the network.
 	port := 8080
 	if envPort := os.Getenv("WHATSAPP_BRIDGE_PORT"); envPort != "" {
 		if n, parseErr := fmt.Sscanf(envPort, "%d", &port); n != 1 || parseErr != nil || port <= 0 || port > 65535 {
@@ -1801,7 +1830,20 @@ func main() {
 			port = 8080
 		}
 	}
-	startRESTServer(sm, port)
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		logger.Errorf("Cannot bind 127.0.0.1:%d (%v). Is another bridge instance already running? Refusing to start to protect WhatsApp sessions.", port, err)
+		os.Exit(1)
+	}
+
+	sm, err := NewSessionManager(logger, dbLog)
+	if err != nil {
+		logger.Errorf("Failed to initialize session manager: %v", err)
+		return
+	}
+	defer sm.CloseAll()
+
+	startRESTServer(sm, listener)
 
 	// Keep alive until termination signal
 	exitChan := make(chan os.Signal, 1)

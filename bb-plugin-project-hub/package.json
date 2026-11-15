@@ -1,0 +1,31 @@
+{
+  "name": "bb-plugin-project-hub",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "bb": ">=0.49",
+    "bbPluginSdk": ">=0.6.132"
+  },
+  "bb": {
+    "name": "Project Hub (n8n Workflow Hub)",
+    "description": "Multi-project workflow monitoring, n8n multi-instance dashboard and manual intervention hub.",
+    "branding": {
+      "icon": "MessagesSquare"
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx",
+    "skills": []
+  },
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.6.132",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^3.7.0",
+    "typescript": "^5.7.0"
+  }
+}

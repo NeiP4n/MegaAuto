@@ -1,0 +1,26 @@
+# Dependencies
+**/node_modules/
+.pnpm-store/
+
+# Build outputs
+**/dist/
+*.tsbuildinfo
+
+# Local WhatsApp credentials & private databases (DO NOT COMMIT SECRETS)
+**/bridge/store/*.db
+**/bridge/store/*.db-wal
+**/bridge/store/*.db-shm
+**/bridge/store/sessions/
+
+# Temporary and backup files
+*.tmp
+*.bak
+*~
+*.exe~
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log

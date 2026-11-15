@@ -1,0 +1,23 @@
+{
+  "config": {
+    "n8nBaseUrl": "http://localhost:5678",
+    "n8nApiKey": "",
+    "sqlitePath": ""
+  },
+  "accounts": [
+    {
+      "id": "acc-n8n-local",
+      "name": "Локальный n8n (Master)",
+      "channel": "n8n",
+      "url": "http://localhost:5678",
+      "status": "online",
+      "workflowsCount": 0,
+      "executionsCount": 0,
+      "unreadTotal": 0,
+      "lastSync": "2026-11-15T12:33:13.789Z",
+      "createdAt": "2026-11-15T12:00:00.000Z"
+    }
+  ],
+  "projects": [],
+  "messages": []
+}

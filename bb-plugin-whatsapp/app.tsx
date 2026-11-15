@@ -18,6 +18,8 @@ import {
   SvgPhone,
   SvgTerminal,
   SvgPower,
+  SvgEye,
+  SvgEyeOff,
   SvgFile,
   SvgAlertTriangle,
   SvgDownload,
@@ -925,6 +927,19 @@ export function WhatsAppView() {
           />
           {connectionLabel}
         </span>
+        <button
+          onClick={async () => {
+            const next = !status.appearOffline;
+            await rpc.call("set_appear_offline", { session_id: activeSessionId, appear_offline: next });
+            fetchStatus(activeSessionId);
+          }}
+          title={status.appearOffline
+            ? "Appear offline is ON - contacts can't see when you're online. Click to show your presence again."
+            : "Appear offline is OFF. Click to hide your online status (reading here never sends read receipts either)."}
+          className={`p-1.5 rounded-full transition-colors shrink-0 ${status.appearOffline ? "text-[var(--wa-accent)] bg-[rgba(0,168,132,0.12)]" : "text-[var(--wa-icon)] hover:bg-[var(--wa-hover)]"}`}
+        >
+          {status.appearOffline ? <SvgEyeOff className="w-4 h-4" /> : <SvgEye className="w-4 h-4" />}
+        </button>
         <button
           onClick={() => {
             fetchStatus();

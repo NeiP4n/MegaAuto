@@ -35,6 +35,7 @@ export interface WhatsAppStatus {
   error: string | null;
   pairing?: boolean;
   syncing?: boolean;
+  appearOffline?: boolean;
   sessions?: WhatsAppSessionInfo[];
 }
 
@@ -138,6 +139,16 @@ export const rpcContract = defineRpcContract({
   },
   delete_session: {
     input: z.object({ session_id: z.string() }),
+    output: z.object({
+      success: z.boolean(),
+      message: z.string().optional(),
+    }),
+  },
+  set_appear_offline: {
+    input: z.object({
+      session_id: z.string(),
+      appear_offline: z.boolean(),
+    }),
     output: z.object({
       success: z.boolean(),
       message: z.string().optional(),
@@ -683,6 +694,22 @@ export class WhatsAppBridgeController {
     }
   }
 
+  public async setAppearOffline(sessionId: string, appearOffline: boolean): Promise<{ success: boolean; message?: string }> {
+    await this.ensureRunning();
+    try {
+      const res = await fetch(`http://127.0.0.1:${this.bridgePort}/api/session/privacy`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, appear_offline: appearOffline }),
+        signal: AbortSignal.timeout(8000),
+      });
+      const data = (await res.json()) as { success?: boolean };
+      return { success: Boolean(data.success) };
+    } catch (e) {
+      return { success: false, message: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
   public async restartSession(sessionId: string): Promise<{ success: boolean; message?: string }> {
     await this.ensureRunning();
     try {
@@ -825,6 +852,7 @@ export class WhatsAppBridgeController {
               : this.lastError,
           pairing: Boolean(data.pairing),
           syncing: Boolean(data.syncing),
+          appearOffline: Boolean(data.appear_offline),
           sessions: Array.isArray(data.sessions) ? (data.sessions as WhatsAppSessionInfo[]) : undefined,
         };
       }
@@ -1267,6 +1295,9 @@ export default async function plugin(bb: BbPluginApi) {
     },
     async restore_session(input) {
       return await bridge.restoreSession(input.session_id, input.file);
+    },
+    async set_appear_offline(input) {
+      return await bridge.setAppearOffline(input.session_id, input.appear_offline);
     },
     async restart_session(input) {
       return await bridge.restartSession(input.session_id);

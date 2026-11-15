@@ -23,16 +23,17 @@ import (
 
 // SessionInfo represents a public snapshot of a WhatsApp session/account
 type SessionInfo struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Phone     string `json:"phone"`
-	Status    string `json:"status"` // "connected" | "needs_scan" | "connecting" | "disconnected" | "logged_out"
-	Connected bool   `json:"connected"`
-	QR        string `json:"qr"`
-	IsActive  bool   `json:"is_active"`
-	Error     string `json:"error"`
-	Pairing   bool   `json:"pairing"`
-	Syncing   bool   `json:"syncing"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Phone         string `json:"phone"`
+	Status        string `json:"status"` // "connected" | "needs_scan" | "connecting" | "disconnected" | "logged_out"
+	Connected     bool   `json:"connected"`
+	QR            string `json:"qr"`
+	IsActive      bool   `json:"is_active"`
+	Error         string `json:"error"`
+	Pairing       bool   `json:"pairing"`
+	Syncing       bool   `json:"syncing"`
+	AppearOffline bool   `json:"appear_offline"`
 }
 
 type SessionMeta struct {
@@ -71,6 +72,9 @@ type Session struct {
 	// reports the device as logged out.
 	pairing atomic.Bool
 	syncing atomic.Bool
+	// appearOffline mirrors privacy.json: after every connect the client
+	// announces PresenceUnavailable, so contacts don't see online/last seen.
+	appearOffline atomic.Bool
 	// connGen cancels stale connect-retry goroutines when the client is
 	// torn down (restart/stop/delete) so an old loop cannot resurrect a
 	// dead client.
@@ -143,16 +147,17 @@ func (s *Session) GetInfo(isActive bool) SessionInfo {
 	}
 
 	return SessionInfo{
-		ID:        s.ID,
-		Name:      name,
-		Phone:     phone,
-		Status:    status,
-		Connected: isAuth && s.Client.IsConnected(),
-		QR:        s.GetQR(),
-		Pairing:   s.pairing.Load(),
-		Syncing:   s.syncing.Load(),
-		IsActive:  isActive,
-		Error:     s.Err(),
+		ID:            s.ID,
+		Name:          name,
+		Phone:         phone,
+		Status:        status,
+		Connected:     isAuth && s.Client.IsConnected(),
+		QR:            s.GetQR(),
+		Pairing:       s.pairing.Load(),
+		Syncing:       s.syncing.Load(),
+		AppearOffline: s.appearOffline.Load(),
+		IsActive:      isActive,
+		Error:         s.Err(),
 	}
 }
 
@@ -296,6 +301,8 @@ func (sm *SessionManager) initSession(id, name string) (*Session, error) {
 	clientLogger := waLog.Stdout(fmt.Sprintf("Client-%s", id), "INFO", true)
 	client := whatsmeow.NewClient(deviceStore, clientLogger)
 
+	privacy := loadPrivacy(storeDir)
+
 	sess := &Session{
 		ID:           id,
 		Name:         name,
@@ -307,6 +314,7 @@ func (sm *SessionManager) initSession(id, name string) (*Session, error) {
 		logger:       clientLogger,
 		dbLog:        sm.dbLog,
 	}
+	sess.appearOffline.Store(privacy.AppearOffline)
 
 	return sess, nil
 }
@@ -347,6 +355,9 @@ func (sm *SessionManager) startSession(s *Session) {
 				}()
 			}
 			go s.MessageStore.RefreshChatNames(s.Client, s.logger)
+			if s.appearOffline.Load() {
+				go s.applyPresence()
+			}
 			sm.saveMeta()
 		case *events.LoggedOut:
 			s.logger.Warnf("Session %s logged out (on_connect=%v reason=%v), re-pairing required", s.ID, v.OnConnect, v.Reason)

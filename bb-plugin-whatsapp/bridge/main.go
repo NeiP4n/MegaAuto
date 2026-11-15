@@ -1277,18 +1277,19 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 
 		info := sess.GetInfo(sess.ID == sm.activeID)
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"session_id":  sess.ID,
-			"name":        info.Name,
-			"status":      info.Status,
-			"connected":   info.Connected,
-			"phone":       info.Phone,
-			"qr":          info.QR,
-			"error":       info.Error,
-			"pairing":     info.Pairing,
-			"syncing":     info.Syncing,
-			"build":       BuildSHA,
-			"server_time": time.Now().Format(time.RFC3339),
-			"sessions":    sm.ListSessions(),
+			"session_id":     sess.ID,
+			"name":           info.Name,
+			"status":         info.Status,
+			"connected":      info.Connected,
+			"phone":          info.Phone,
+			"qr":             info.QR,
+			"error":          info.Error,
+			"pairing":        info.Pairing,
+			"syncing":        info.Syncing,
+			"appear_offline": info.AppearOffline,
+			"build":          BuildSHA,
+			"server_time":    time.Now().Format(time.RFC3339),
+			"sessions":       sm.ListSessions(),
 		})
 	})
 
@@ -1647,6 +1648,46 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]any{"success": true, "message": "Backup restored, session restarting on the restored credentials"})
+	})
+
+	// Privacy: per-session "appear offline" toggle. Persisted in
+	// privacy.json next to the session store; applied on every connect.
+	mux.HandleFunc("/api/session/privacy", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			SessionID     string `json:"session_id"`
+			Session       string `json:"session"`
+			AppearOffline bool   `json:"appear_offline"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+		id := req.SessionID
+		if id == "" {
+			id = req.Session
+		}
+		sess := sm.LookupSession(id)
+		if sess == nil {
+			http.Error(w, "session not found", http.StatusBadRequest)
+			return
+		}
+		sess.appearOffline.Store(req.AppearOffline)
+		if err := savePrivacy(sess.StoreDir, privacySettings{AppearOffline: req.AppearOffline}); err != nil {
+			http.Error(w, "failed to persist setting: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+		go sess.applyPresence()
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":        true,
+			"appear_offline": req.AppearOffline,
+		})
 	})
 
 	// 8b. On-demand history fetch: asks the paired phone for messages older

@@ -303,7 +303,9 @@ export function WhatsAppView() {
     setCreatingSession(true);
     setErrorMessage(null);
     try {
-      const res = await rpc.call("create_session", { name });
+      // The RPC runtime rejects undefined property values ("not a JSON
+      // value"), so omit `name` entirely when no label was given.
+      const res = await rpc.call("create_session", name ? { name } : {});
       if (res.success && res.session) {
         const newSid = res.session.id;
         setActiveSessionId(newSid);

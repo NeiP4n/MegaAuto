@@ -31,6 +31,11 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// BuildSHA is stamped by CI (-ldflags "-X main.BuildSHA=<sha>") so the
+// plugin can tell which commit the running binary was built from and
+// auto-update it from the rolling GitHub release. Empty for local builds.
+var BuildSHA = ""
+
 // Message represents a chat message for our client
 type Message struct {
 	Time      time.Time
@@ -1165,6 +1170,7 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 				"connected":   false,
 				"phone":       "",
 				"qr":          "",
+				"build":       BuildSHA,
 				"server_time": time.Now().Format(time.RFC3339),
 				"sessions":    sm.ListSessions(),
 			})
@@ -1180,6 +1186,7 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 			"phone":       info.Phone,
 			"qr":          info.QR,
 			"error":       info.Error,
+			"build":       BuildSHA,
 			"server_time": time.Now().Format(time.RFC3339),
 			"sessions":    sm.ListSessions(),
 		})

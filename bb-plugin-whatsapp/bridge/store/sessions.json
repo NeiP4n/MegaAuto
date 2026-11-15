@@ -1,9 +1,13 @@
 {
-  "active_id": "default",
+  "active_id": "session_1794751157_9576",
   "sessions": [
     {
       "id": "default",
       "name": "Main Account"
+    },
+    {
+      "id": "session_1794751157_9576",
+      "name": "Account 2"
     }
   ]
 }

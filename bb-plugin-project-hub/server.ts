@@ -699,6 +699,26 @@ function appendServerLog(msg: string) {
   }
 }
 
+// Ensure cleanup on plugin/process shutdown
+function cleanupLocalN8n() {
+  if (localN8nProcess && localN8nProcess.pid) {
+    try {
+      if (process.platform === "win32") {
+        spawn("taskkill", ["/pid", String(localN8nProcess.pid), "/f", "/t"]);
+      } else {
+        localN8nProcess.kill("SIGKILL");
+      }
+    } catch {
+      // ignore
+    }
+    localN8nProcess = null;
+  }
+}
+
+process.on("exit", cleanupLocalN8n);
+process.on("SIGINT", cleanupLocalN8n);
+process.on("SIGTERM", cleanupLocalN8n);
+
 // Single-pass n8n probe: tries health/version endpoints in parallel, first OK wins.
 // Never falls back to 127.0.0.1 for a remote baseUrl - a remote instance must not
 // report "connected" (or receive commands) because a local n8n happens to answer.
@@ -1360,18 +1380,26 @@ export default function (bb: BbPluginApi) {
         };
       }
 
-      appendServerLog("Запуск локального сервера n8n (порт 5678)...");
+      appendServerLog("Запуск локального сервера n8n (127.0.0.1:5678)...");
       const isWin = process.platform === "win32";
-      const cmd = isWin ? "n8n.cmd" : "n8n";
+      let cmd = "n8n";
+      if (isWin) {
+        const npmPath = process.env.APPDATA ? path.join(process.env.APPDATA, "npm", "n8n.cmd") : "";
+        if (npmPath && fs.existsSync(npmPath)) {
+          cmd = npmPath;
+        } else {
+          cmd = "n8n.cmd";
+        }
+      }
 
       try {
         localN8nProcess = spawn(cmd, ["start"], {
-          shell: true,
+          shell: isWin,
           stdio: ["ignore", "pipe", "pipe"],
           env: {
             ...process.env,
             N8N_PORT: "5678",
-            N8N_HOST: "localhost",
+            N8N_HOST: "127.0.0.1",
             N8N_PROTOCOL: "http",
           },
         });

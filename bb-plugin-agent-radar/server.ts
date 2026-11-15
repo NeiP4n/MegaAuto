@@ -2,7 +2,18 @@ import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as os from "node:os";
 import type { AgentRadarStatus, AgentStep, RadarSettings } from "./src/types";
+
+function maskSecrets(text: string): string {
+  if (!text) return "";
+  return text
+    .replace(/(?:api[_-]?key|token|secret|password|bearer|auth|authorization)["':\s=]+([a-zA-Z0-9_\-\.]{8,})/gi, (m, g) =>
+      m.replace(g, "••••••••")
+    )
+    .replace(/ghp_[a-zA-Z0-9]{20,}/g, "ghp_••••••••")
+    .replace(/sk-[a-zA-Z0-9]{20,}/g, "sk-••••••••");
+}
 
 // ============================================================================
 // TYPES & SCHEMAS
@@ -101,7 +112,7 @@ class RadarEngine {
   };
 
   constructor() {
-    const userProfile = process.env.USERPROFILE || "C:\\Users\\Isako";
+    const userProfile = process.env.USERPROFILE || process.env.HOME || os.homedir();
     this.brainBaseDir = path.join(userProfile, ".gemini", "antigravity-cli", "brain");
   }
 
@@ -225,8 +236,9 @@ class RadarEngine {
         const tc = line.tool_calls[0];
         toolName = tc.name;
         const args = tc.args || {};
-        toolSummary = args.toolSummary || args.CommandLine || args.Path || args.query || args.Prompt || "";
-        toolCommand = args.CommandLine;
+        const rawSummary = args.toolSummary || args.CommandLine || args.Path || args.query || args.Prompt || "";
+        toolSummary = maskSecrets(String(rawSummary));
+        toolCommand = args.CommandLine ? maskSecrets(String(args.CommandLine)) : undefined;
       }
 
       let thinkingPreview: string | undefined = undefined;

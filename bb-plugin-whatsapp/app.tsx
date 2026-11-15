@@ -175,6 +175,18 @@ export function WhatsAppView() {
 
   const [chats, setChats] = useState<WhatsAppChat[]>([]);
   const [selectedChat, setSelectedChat] = useState<WhatsAppChat | null>(null);
+  // Narrow layout (<700px): show either the list or the open chat, never
+  // both squeezed together, with a back button to return to the list.
+  const [isNarrow, setIsNarrow] = useState<boolean>(
+    typeof window !== "undefined" ? window.innerWidth < 700 : false
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 699px)");
+    const onChange = (e: MediaQueryListEvent) => setIsNarrow(e.matches);
+    setIsNarrow(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
   const [messages, setMessages] = useState<WhatsAppMessage[]>([]);
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -1271,7 +1283,7 @@ export function WhatsAppView() {
           /* ---------- CHAT CLIENT ---------- */
           <>
             {/* Chat list column */}
-            <div className="w-[340px] max-w-[40%] bg-[var(--wa-panel)] border-r border-[var(--wa-border)] flex flex-col shrink-0">
+            <div className={isNarrow ? (selectedChat ? "hidden" : "flex-1 bg-[var(--wa-panel)] border-r border-[var(--wa-border)] flex flex-col min-w-0") : "w-[340px] max-w-[40%] bg-[var(--wa-panel)] border-r border-[var(--wa-border)] flex flex-col shrink-0"}>
               {/* List header: title + tabs + new chat */}
               <div className="h-[60px] px-4 bg-[var(--wa-header)] flex items-center justify-between shrink-0">
                 <div className="flex bg-[var(--wa-input)] p-0.5 rounded-full text-[13px]">
@@ -1371,11 +1383,20 @@ export function WhatsAppView() {
             </div>
 
             {/* Conversation column */}
-            <div className="flex-1 flex flex-col overflow-hidden">
+            <div className={isNarrow && !selectedChat ? "hidden" : "flex-1 flex flex-col overflow-hidden min-w-0"}>
               {selectedChat ? (
                 <>
                   {/* Conversation header */}
                   <div className="h-[60px] px-4 bg-[var(--wa-header)] flex items-center gap-3 shrink-0">
+                    {isNarrow && (
+                      <button
+                        onClick={() => setSelectedChat(null)}
+                        className="mr-1 -ml-1 p-1.5 rounded-full hover:bg-[var(--wa-border)] transition-colors text-[var(--wa-text-secondary)]"
+                        title="Back to chats"
+                      >
+                        <svg viewBox="0 0 24 24" width="20" height="20" fill="currentColor"><path d="M15.41 7.41 14 6l-6 6 6 6 1.41-1.41L10.83 12z"/></svg>
+                      </button>
+                    )}
                     <Avatar name={selectedChat.name || selectedChat.jid} size="lg" />
                     <div className="min-w-0">
                       <h3 className="text-[16px] text-[var(--wa-text)] truncate leading-tight">

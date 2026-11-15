@@ -312,7 +312,7 @@ export class WhatsAppBridgeController {
    * real bridge answers (retried - a busy bridge can miss a single 400 ms
    * window), null when the port is free or occupied by something else.
    */
-  private async probeBridge(port: number = this.bridgePort): Promise<{ build: string } | null> {
+  private async probeBridge(port: number = this.bridgePort): Promise<{ build: string; connected: boolean; pairing: boolean; syncing: boolean } | null> {
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
         const res = await fetch(`http://127.0.0.1:${port}/api/status`, {
@@ -322,7 +322,12 @@ export class WhatsAppBridgeController {
           const data = (await res.json()) as Record<string, unknown>;
           // Confirm it is actually our bridge, not a random service on 8080.
           if ("connected" in data || "sessions" in data || "status" in data) {
-            return { build: typeof data.build === "string" ? data.build : "" };
+            return {
+              build: typeof data.build === "string" ? data.build : "",
+              connected: Boolean(data.connected),
+              pairing: Boolean(data.pairing),
+              syncing: Boolean(data.syncing),
+            };
           }
           return null;
         }
@@ -372,13 +377,29 @@ export class WhatsAppBridgeController {
    * fallback) so start() can spawn the current one. Returns true when the
    * running bridge was adopted and no spawn is needed.
    */
-  private async adoptOrReplaceRunningBridge(running: { build: string }): Promise<boolean> {
+  private async adoptOrReplaceRunningBridge(running: { build: string; connected: boolean; pairing: boolean; syncing: boolean }): Promise<boolean> {
     const shaPath = path.join(this.bridgeDir, ".build-sha");
     const onDiskSha = fs.existsSync(shaPath) ? fs.readFileSync(shaPath, "utf8").trim() : "";
     // Same build as the exe on disk -> nothing to do. Unknown on-disk SHA with
     // a stamped running build can happen right after git pull; replace then so
     // the running process always ends up on the newest binary.
     if (running.build && onDiskSha && running.build === onDiskSha) {
+      this.lastError = null;
+      return true;
+    }
+    // No stamp yet (fresh clone, never self-updated): trust the running
+    // bridge's own build SHA and adopt it. Without this, every plugin reload
+    // with a missing stamp killed a healthy bridge - including mid-pairing.
+    if (!onDiskSha && running.build) {
+      try { fs.writeFileSync(shaPath, running.build); } catch { /* read-only dir */ }
+      this.lastError = null;
+      return true;
+    }
+    // NEVER kill a bridge whose session is connected, pairing, or syncing -
+    // replacing the binary mid-pair is what turns "logging in..." on the
+    // phone into "couldn't log in / logged out". A slightly stale but
+    // healthy bridge wins; the new binary takes over on the next clean start.
+    if (running.connected || running.pairing || running.syncing) {
       this.lastError = null;
       return true;
     }

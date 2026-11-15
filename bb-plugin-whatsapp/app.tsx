@@ -994,6 +994,35 @@ export function WhatsAppView() {
                     Re-pair account
                   </button>
                 </>
+              ) : status.phone && status.error && status.error.includes("Another bridge instance") ? (
+                /* StreamReplaced: a second bridge took over this account.
+                   Loud and explicit - no fake "reconnecting" spinner, the
+                   session stays down until the user resolves it. */
+                <>
+                  <div className="w-12 h-12 rounded-full bg-[rgba(241,92,109,0.12)] flex items-center justify-center text-[var(--wa-danger)] mb-4">
+                    <SvgAlertTriangle className="w-6 h-6" />
+                  </div>
+                  <h2 className="text-lg font-light text-[var(--wa-danger)] mb-1">
+                    Another bridge is using this account
+                  </h2>
+                  <p className="text-[13px] text-[var(--wa-text-secondary)] mb-6 leading-relaxed">
+                    A second bridge instance connected with this account's keys, so this copy stepped back - two clients fighting for one account is what gets it force-logged out by WhatsApp. Close the other bridge (check for a second Blackbox window or a manually started whatsapp-bridge.exe), then take the account back.
+                  </p>
+                  <div className="flex items-center gap-2.5 w-full">
+                    <button
+                      onClick={() => fetchStatus()}
+                      className="flex-1 py-2 px-4 border border-[var(--wa-border)] text-[var(--wa-text-secondary)] hover:bg-[var(--wa-hover)] rounded-full text-[14px] transition-colors"
+                    >
+                      Check again
+                    </button>
+                    <button
+                      onClick={handleRetrySession}
+                      className="flex-1 py-2 px-4 bg-[var(--wa-accent)] hover:bg-[var(--wa-accent-strong)] text-[#111b21] rounded-full text-[14px] font-medium transition-colors"
+                    >
+                      Use this device instead
+                    </button>
+                  </div>
+                </>
               ) : status.phone ? (
                 /* Paired but offline: reconnecting, NO QR exists for this state */
                 <>

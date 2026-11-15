@@ -2158,6 +2158,47 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 		})
 	})
 
+	// 10b. Raw media bytes for inline previews in the UI. Uses the same
+	// download+cache path as /api/download, then streams the file.
+	mux.HandleFunc("/api/media/raw", func(w http.ResponseWriter, r *http.Request) {
+		sess := getSession(r)
+		if sess == nil || sess.Client == nil {
+			http.Error(w, "WhatsApp session not found or not started", http.StatusBadRequest)
+			return
+		}
+		messageID := r.URL.Query().Get("message_id")
+		chatJID := r.URL.Query().Get("chat_jid")
+		if messageID == "" || chatJID == "" {
+			http.Error(w, "message_id and chat_jid are required", http.StatusBadRequest)
+			return
+		}
+
+		success, _, _, path, err := downloadMedia(sess.Client, sess.MessageStore, messageID, chatJID)
+		if !success || err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			errMsg := "media unavailable"
+			if err != nil {
+				errMsg = err.Error()
+			}
+			json.NewEncoder(w).Encode(map[string]any{"success": false, "message": errMsg})
+			return
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			http.Error(w, "failed to read cached media", http.StatusInternalServerError)
+			return
+		}
+		if len(data) > 25<<20 {
+			http.Error(w, "media too large for inline preview - use the download button", http.StatusRequestEntityTooLarge)
+			return
+		}
+		mime := http.DetectContentType(data)
+		w.Header().Set("Content-Type", mime)
+		w.Header().Set("Cache-Control", "private, max-age=3600")
+		w.Write(data)
+	})
+
 	// 11. Single chat metadata endpoint (used by whatsapp_get_chat /
 	// whatsapp_get_direct_chat instead of scanning the whole chat list)
 	mux.HandleFunc("/api/chat", func(w http.ResponseWriter, r *http.Request) {

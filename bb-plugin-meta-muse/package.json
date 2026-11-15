@@ -1,0 +1,34 @@
+{
+  "name": "bb-plugin-meta-muse",
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0",
+    "bb": ">=0.49",
+    "bbPluginSdk": ">=0.6.132"
+  },
+  "bb": {
+    "name": "Meta Muse AI",
+    "description": "Next-generation proactive AI companion with creative generation studio, secure VM isolation sandbox, long-term memory, and autonomous task scheduling.",
+    "branding": {
+      "icon": "Sparkles"
+    },
+    "server": "./server.ts",
+    "app": "./app.tsx",
+    "skills": [
+      "skills/meta-muse"
+    ]
+  },
+  "dependencies": {
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "0.6.132",
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^3.7.0",
+    "typescript": "^5.7.0"
+  }
+}

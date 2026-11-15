@@ -2,7 +2,12 @@ import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Account, Project, ChatMessage, HubStatus } from "./src/types";
+
+// ESM has no __dirname - the plugin server crashes on load without this shim
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // --- RPC CONTRACT SCHEMAS ---
 const accountSchema = z.object({

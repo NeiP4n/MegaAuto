@@ -3,75 +3,108 @@ name: n8n
 description: "Control local & remote n8n automation instances, inspect and trigger workflows, dispatch webhooks, monitor execution history, and manage the local n8n server lifecycle. Use when orchestrating n8n nodes, triggering automations, checking execution logs, or troubleshooting n8n."
 ---
 
-# n8n Automation & Workflow Management Skill
+# n8n Automation & Project Hub Management Skill
 
-The `n8n` skill provides full control over local and remote n8n workflow automation instances within Blackbox. Everything is accessible via registered Blackbox agent tools and the `bb project-hub` CLI.
+Этот скилл обеспечивает полный цикл управления локальными и удалёнными инстансами автоматизации **n8n** внутри Blackbox (BB) и через плагин **Project Hub**. Скилл доступен как для агентов через инструменты, так и для человека через CLI и интерфейс плагина.
 
-## Quick Cheat Sheet
+---
+
+## 🚀 Быстрая шпаргалка по CLI (`bb project-hub`)
 
 ```bash
-# Check n8n server status, latency, and registered accounts
+# 1. Проверка статуса n8n, задержки (latency) и числа подключённых аккаунтов
 bb project-hub status
 
-# Manage the local n8n server lifecycle (start, stop, check status)
+# 2. Управление локальным процессом n8n (статус, запуск, полная остановка)
 bb project-hub server status
 bb project-hub server start
 bb project-hub server stop
 
-# Inspect accounts and workflows
+# 3. Список подключённых инстансов n8n
 bb project-hub accounts
+
+# 4. Список сценариев (с подтягиванием статуса АКТИВЕН / ПАУЗА)
 bb project-hub workflows
-bb project-hub workflows acc-n8n-local
+bb project-hub workflows <accountId>
 
-# Trigger a webhook endpoint directly
-bb project-hub webhook test-webhook '{"msg": "Hello from Blackbox"}'
+# 5. Отправка вебхука с произвольным JSON-телом в n8n
+bb project-hub webhook my-endpoint '{"event": "lead_created", "userId": 42}'
 
-# Monitor and send commands to active workflow projects
+# 6. Синхронизация сценариев в карточки проектов
+bb project-hub sync
+
+# 7. Список проектов и отправка интерактивных команд/сообщений
 bb project-hub list
-bb project-hub send <projectId> "Execute daily backup"
+bb project-hub send <projectId> "Выполнить резервное копирование"
 ```
 
 ---
 
-## Agent Tools Reference
+## 🛠 Архитектура и возможности плагина
 
-Agents in Blackbox can call the following registered tools directly:
-
-### 1. Account & Workflow Inspection
-- `project_hub_list_accounts`: Lists all registered n8n instances with connection status (`online`/`offline`), latency in milliseconds, workflow count, and execution totals.
-- `project_hub_get_workflows`: Fetches workflows for an account (`id`, `name`, `active`, `tags`, `updatedAt`, `lastExecution`). Works via official REST API when an API key is set, and falls back seamlessly to local SQLite reading when unauthenticated.
-- `project_hub_get_executions`: Retrieves recent execution history (`status`, `startedAt`, `durationMs`, `mode`, errors) for troubleshooting.
-- `project_hub_sync`: Forces an immediate re-sync of workflows and execution history from n8n.
-
-### 2. Webhook Dispatching & Automation Triggers
-- `project_hub_dispatch_webhook`:
-  - `path`: The webhook path configured in the n8n Webhook node (e.g. `test-webhook` or `/webhook/notify`).
-  - `method`: `"POST"` (default) or `"GET"`.
-  - `payload`: JSON object sent as the request body.
-  - `accountId`: (Optional) Target n8n instance ID. Defaults to the local master instance.
-- `project_hub_send_message`: Sends an interactive command or event to an active project's connected webhook/agent.
-
-### 3. Server Process Control
-- `project_hub_server_status`: Checks whether the local n8n server is listening on port 5678, reports PID, and returns recent console output logs.
-- `project_hub_manage_server`:
-  - `action`: `"start"` or `"status"`. Checks server status or launches the daemon process. (Stopping the server is restricted to the human operator via UI to prevent autonomous downtime).
+1. **Dual-Mode чтение данных**:
+   - **Официальный REST API**: используется при наличии `X-N8N-API-KEY`.
+   - **Автономный SQLite Fallback**: если ключ не задан или на локальном мастере (порт 5678), плагин безопасно читает `~/.n8n/database.sqlite` в строгом режиме `readOnly: true`. Никаких блокировок базы данных.
+2. **Гарантированное управление жизненным циклом**:
+   - Автоматический поиск PID на порту 5678 (через системный `netstat`/`lsof`), даже если n8n был запущен внешне.
+   - Двухэтапная остановка: мягкий сигнал (`taskkill /t` или `SIGTERM`), ожидание освобождения порта до 3 секунд и эскалация в принудительное завершение (`taskkill /f /t` или `SIGKILL`).
+   - Таймаут готовности при старте до 30 секунд для надёжного запуска холодного n8n на Windows.
+3. **Безопасность корпоративного уровня**:
+   - Шифрование API-ключей at-rest алгоритмом **AES-256-GCM** с префиксом `enc:v1:`.
+   - Защита вебхуков: строгий запрет HTTP-редиректов (`redirect: "manual"`), валидация URL через WHATWG-парсер, защита от Path Traversal (`/webhook/../`), двойного URL-декодирования и сохранения pathname инстанса.
 
 ---
 
-## Local vs. Remote Instances
+## 📋 Инструменты агентов (Agent Tools)
 
-1. **Local n8n (Master)**:
-   - Default URL: `http://127.0.0.1:5678` (or `http://localhost:5678`).
-   - Managed automatically by the Project Hub plugin.
-   - Dual-mode data fetching: If an API key is not configured, workflows and executions are read directly and safely from `~/.n8n/database.sqlite` (read-only SQLite).
-2. **Remote n8n Instances**:
-   - Registered via `Add Instance` in the UI or `create_account` RPC.
-   - Requires an `X-N8N-API-KEY` generated from n8n Settings (`Settings` -> `n8n API`).
+Агенты в Blackbox могут вызывать инструменты напрямую:
+
+| Инструмент | Параметры | Описание |
+|---|---|---|
+| `project_hub_list_accounts` | — | Список всех инстансов со статусами (`online`/`offline`), latency (мс) и счётчиками воркфлоу |
+| `project_hub_get_workflows` | `accountId` | Получение списка воркфлоу, тегов, активности и последнего execution |
+| `project_hub_get_executions` | `accountId`, `workflowId` | История запусков, время выполнения, статус (`success`, `error`), имя упавшей ноды |
+| `project_hub_dispatch_webhook` | `path`, `payload`, `method` | Отправка вебхука в n8n с возвратом HTTP-кода и ответа ноды |
+| `project_hub_server_status` | — | Проверка доступности порта 5678, PID процесса и последних консольных логов |
+| `project_hub_manage_server` | `action: "start" \| "status"` | Запуск сервера или опрос его состояния |
 
 ---
 
-## Troubleshooting & Best Practices
+## 🧩 Практические рецепты автоматизаций
 
-- **Port in use (5678)**: After stopping n8n on Windows, TCP sockets may stay in `TIME_WAIT` for 15–30 seconds. Project Hub handles PID detection automatically. If a lingering process exists, `project_hub_manage_server` with `stop` will terminate it cleanly.
-- **Deprecation & Warnings**: The local runner environment automatically sets `N8N_RUNNERS_ENABLED=false`, `N8N_DIAGNOSTICS_ENABLED=false`, and deprecation variables to keep logs clean and free of Python task runner noise.
-- **Workflow Testing**: Always check `project_hub_get_executions` immediately after dispatching a webhook to verify whether the node execution succeeded or failed.
+### Рецепт 1: Приём вебхука в n8n и возврат ответа
+1. В веб-редакторе n8n (`http://localhost:5678`) добавьте ноду **Webhook**:
+   - **HTTP Method**: `POST`
+   - **Path**: `incoming-lead`
+   - **Response Mode**: `When Last Node Finishes` (или `Using 'Respond to Webhook' Node`)
+2. Соедините с нодой **Code** или базой данных.
+3. Активируйте воркфлоу (переключатель **Active** в правом верхнем углу).
+4. Протестируйте вызов из Blackbox:
+   ```bash
+   bb project-hub webhook incoming-lead '{"name": "Иван", "email": "ivan@example.com"}'
+   ```
+
+### Рецепт 2: Telegram-бот с AI-агентом
+1. Добавьте ноду **Telegram Trigger** (укажите токен бота из BotFather).
+2. Подключите ноду **AI Agent**:
+   - **Model**: OpenAI Chat Model / Anthropic Chat Model / Local Ollama.
+   - **Memory**: Window Buffer Memory.
+   - **Tools**: Нода Calculator, HTTP Request или поиск.
+3. В Project Hub этот сценарий появится как проект, и сообщения можно отслеживать прямо в чате хаба.
+
+### Рецепт 3: Регулярный мониторинг и CRON
+1. Нода **Schedule Trigger** (интервал: каждые 15 минут).
+2. Нода **HTTP Request** (проверка доступности внешнего сервиса).
+3. Нода **If**: если статус `>= 400`, отправить оповещение.
+4. В Project Hub вы увидите историю выполнений и предупреждения при сбоях.
+
+---
+
+## 🔧 Диагностика и решение проблем
+
+* **Сервер не запускается, порт 5678 занят**:
+  Выполните `bb project-hub server stop`. Плагин автоматически вычислит занявший порт процесс (PID) и полностью освободит порт.
+* **Вебхук возвращает 404**:
+  В n8n производственный вебхук (`/webhook/<path>`) отвечает только тогда, когда воркфлоу **активирован** (тумблер **Active** в n8n). Для неактивного воркфлоу используйте тестовый путь `/webhook-test/<path>`.
+* **Воркфлоу не видны после создания**:
+  Нажмите иконку обновления 🔄 в UI плагина или выполните `bb project-hub sync`. Данные синхронизируются мгновенно.

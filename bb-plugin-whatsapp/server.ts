@@ -261,6 +261,58 @@ class WhatsAppBridgeController {
     }
   }
 
+  /**
+   * Self-update whatsapp-bridge.exe from the rolling "bridge-latest" GitHub
+   * release (built by CI on every bridge change). Only runs while no bridge
+   * is up; on any failure keeps the existing binary. Repo is public, no
+   * credentials needed.
+   */
+  private async maybeUpdateBridge(): Promise<void> {
+    if (this.process && !this.process.killed) return;
+    if (await this.isPortInUse()) return;
+    try {
+      const rel = await fetch(
+        "https://api.github.com/repos/NeiP4n/MegaAuto/releases/tags/bridge-latest",
+        {
+          headers: { "User-Agent": "bb-plugin-whatsapp", Accept: "application/vnd.github+json" },
+          signal: AbortSignal.timeout(8000),
+        }
+      );
+      if (!rel.ok) return;
+      const data = (await rel.json()) as {
+        assets?: { name: string; browser_download_url: string }[];
+      };
+      const verAsset = data.assets?.find((a) => a.name === "bridge-version.txt");
+      const exeAsset = data.assets?.find((a) => a.name === "whatsapp-bridge.exe");
+      if (!verAsset || !exeAsset) return;
+
+      const verRes = await fetch(verAsset.browser_download_url, {
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!verRes.ok) return;
+      const latestSha = (await verRes.text()).trim();
+      const shaPath = path.join(this.bridgeDir, ".build-sha");
+      const currentSha = fs.existsSync(shaPath) ? fs.readFileSync(shaPath, "utf8").trim() : "";
+      if (!latestSha || latestSha === currentSha) return;
+
+      const exeRes = await fetch(exeAsset.browser_download_url, {
+        redirect: "follow",
+        signal: AbortSignal.timeout(180000),
+      });
+      if (!exeRes.ok) return;
+      const buf = Buffer.from(await exeRes.arrayBuffer());
+      // Sanity: a real build is tens of MB; never swap in an error page.
+      if (buf.length < 1_000_000) return;
+
+      const tmp = this.bridgeExe + ".download";
+      fs.writeFileSync(tmp, buf);
+      fs.renameSync(tmp, this.bridgeExe);
+      fs.writeFileSync(shaPath, latestSha);
+    } catch {
+      // Offline, rate limit, missing release - keep the current binary.
+    }
+  }
+
   public async start(): Promise<boolean> {
     this.stopRequested = false;
 
@@ -268,14 +320,17 @@ class WhatsAppBridgeController {
       return true;
     }
 
-    if (!fs.existsSync(this.bridgeExe)) {
-      this.lastError = `Bridge executable not found at: ${this.bridgeExe}`;
-      return false;
-    }
-
     // If port is already in use by another process, consider it running
     if (await this.isPortInUse()) {
       return true;
+    }
+
+    // Grab the newest CI-built binary before (maybe) starting the bridge.
+    await this.maybeUpdateBridge();
+
+    if (!fs.existsSync(this.bridgeExe)) {
+      this.lastError = `Bridge executable not found at: ${this.bridgeExe}`;
+      return false;
     }
 
     try {

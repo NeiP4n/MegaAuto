@@ -5,8 +5,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math/rand"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -188,11 +190,16 @@ func (sm *SessionManager) loadMeta() SessionMeta {
 }
 
 func (sm *SessionManager) saveMeta() {
+	ids := make([]string, 0, len(sm.sessions))
+	for id := range sm.sessions {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
 	var items []SessionMetaItem
-	for _, s := range sm.sessions {
+	for _, id := range ids {
 		items = append(items, SessionMetaItem{
-			ID:   s.ID,
-			Name: s.Name,
+			ID:   id,
+			Name: sm.sessions[id].Name,
 		})
 	}
 	meta := SessionMeta{
@@ -327,6 +334,18 @@ func (sm *SessionManager) GetActiveSession() *Session {
 	return nil
 }
 
+// LookupSession resolves an explicit session id without falling back to the
+// active session. An empty id still means the active session. Use this on
+// write paths so a stale id can never send from the wrong account.
+func (sm *SessionManager) LookupSession(id string) *Session {
+	if id == "" {
+		return sm.GetActiveSession()
+	}
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+	return sm.sessions[id]
+}
+
 func (sm *SessionManager) GetSession(id string) *Session {
 	if id == "" {
 		return sm.GetActiveSession()
@@ -343,8 +362,22 @@ func (sm *SessionManager) ListSessions() []SessionInfo {
 	sm.mu.RLock()
 	defer sm.mu.RUnlock()
 
-	var list []SessionInfo
+	ordered := make([]*Session, 0, len(sm.sessions))
 	for _, s := range sm.sessions {
+		ordered = append(ordered, s)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].ID == "default" {
+			return true
+		}
+		if ordered[j].ID == "default" {
+			return false
+		}
+		return ordered[i].ID < ordered[j].ID
+	})
+
+	var list []SessionInfo
+	for _, s := range ordered {
 		list = append(list, s.GetInfo(s.ID == sm.activeID))
 	}
 	return list
@@ -365,7 +398,13 @@ func (sm *SessionManager) CreateSession(name string) (SessionInfo, error) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	id := fmt.Sprintf("session_%d", time.Now().Unix())
+	var id string
+	for {
+		id = fmt.Sprintf("session_%d_%04d", time.Now().Unix(), rand.Intn(10000))
+		if _, taken := sm.sessions[id]; !taken {
+			break
+		}
+	}
 	if name == "" {
 		name = fmt.Sprintf("Account %d", len(sm.sessions)+1)
 	}

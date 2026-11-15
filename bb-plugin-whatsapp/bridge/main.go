@@ -1015,7 +1015,7 @@ func startRESTServer(sm *SessionManager, port int) {
 		if sid == "" {
 			sid = r.Header.Get("X-Session-ID")
 		}
-		return sm.GetSession(sid)
+		return sm.LookupSession(sid)
 	}
 
 	mux := http.NewServeMux()
@@ -1457,12 +1457,9 @@ func startRESTServer(sm *SessionManager, port int) {
 			return
 		}
 
-		sess := sm.GetSession(req.Session)
+		sess := sm.LookupSession(req.Session)
 		if sess == nil {
-			sess = getSession(r)
-		}
-		if sess == nil {
-			http.Error(w, "No active WhatsApp session found", http.StatusBadRequest)
+			http.Error(w, "WhatsApp session not found: "+req.Session, http.StatusBadRequest)
 			return
 		}
 		if sess.Client == nil {
@@ -1510,12 +1507,9 @@ func startRESTServer(sm *SessionManager, port int) {
 			return
 		}
 
-		sess := sm.GetSession(req.Session)
+		sess := sm.LookupSession(req.Session)
 		if sess == nil {
-			sess = getSession(r)
-		}
-		if sess == nil {
-			http.Error(w, "No active WhatsApp session found", http.StatusBadRequest)
+			http.Error(w, "WhatsApp session not found: "+req.Session, http.StatusBadRequest)
 			return
 		}
 		if sess.Client == nil {

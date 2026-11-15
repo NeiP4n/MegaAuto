@@ -1,6 +1,6 @@
 ---
 name: meta-muse
-description: "Meta Muse companion: conversation history, proactive task scheduling (cron/interval/due date), and associative long-term memory. Media generation is not connected yet, and Strict Mode blocks external network requests - tools report that honestly."
+description: "Meta Muse companion: conversation history, proactive task scheduling (cron/interval/due date), and associative long-term memory. Media generation is not connected yet, and Strict Mode blocks outgoing model/media API requests - tools report that honestly."
 ---
 
 # Meta Muse AI Companion & Autonomous Assistant Skill

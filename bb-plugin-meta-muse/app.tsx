@@ -97,14 +97,17 @@ export function MetaMuseView() {
   }) => {
     try {
       const res = await rpc.call("update_api_config", newConfig);
-      if (res) {
+      if (res && res.success) {
         await loadApiConfig();
         setLastChatError(null);
         setLastMediaError(null);
+      } else {
+        throw new Error("Не удалось сохранить конфигурацию на диск");
       }
     } catch (err: any) {
       console.error("Failed to update API config:", err);
       setLastChatError(err?.message || "Не удалось сохранить конфигурацию API");
+      throw err;
     }
   };
 

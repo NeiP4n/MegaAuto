@@ -70,6 +70,8 @@ export function ApiConfigModal({
         setSavedSuccess(false);
         onClose();
       }, 600);
+    } catch {
+      setSavedSuccess(false);
     } finally {
       setIsSaving(false);
     }

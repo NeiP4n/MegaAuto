@@ -153,7 +153,7 @@ export function VmMemoryTab({
               Хост-процесс (без изолированного гипервизора)
             </div>
             <p className="text-[11px] text-slate-400 leading-relaxed">
-              Аппаратная VM-изоляция и микро-гипервизор не поддерживаются в текущем локальном Node.js окружении. Выполнение скриптов производится напрямую в рамках хост-процесса с программным ограничением времени и квот.
+              Аппаратная VM-изоляция и гипервизор отсутствуют. Плагин выполняется внутри процесса Node.js без изолированной песочницы и аппаратных ограничений.
             </p>
           </div>
         </div>
@@ -202,8 +202,8 @@ export function VmMemoryTab({
                   />
                 </div>
                 <div className="flex justify-between text-[10px] font-mono text-slate-500">
-                  <span>{memUsed} MB (реальный RSS)</span>
-                  <span>Лимит: {memLimit} MB</span>
+                  <span>{memUsed} MB (RSS процесса)</span>
+                  <span>ОЗУ хоста: {memLimit} MB</span>
                 </div>
               </div>
 
@@ -212,19 +212,19 @@ export function VmMemoryTab({
                 <div className="flex justify-between items-center text-[11px]">
                   <span className="text-slate-400 flex items-center space-x-1">
                     <SvgCpu className="w-3.5 h-3.5 text-pink-400" />
-                    <span>Выделение ЦП</span>
+                    <span>Доступность ЦП хоста</span>
                   </span>
-                  <span className="font-mono text-pink-300 font-semibold">{vmStatus.cpuQuotaPercent}%</span>
+                  <span className="font-mono text-pink-300 font-semibold">100%</span>
                 </div>
                 <div className="w-full bg-[#0B0E14] rounded-full h-2 overflow-hidden border border-slate-800">
                   <div
                     className="h-full bg-gradient-to-r from-[#0866FF] to-[#E03E93] transition-all duration-300"
-                    style={{ width: `${vmStatus.cpuQuotaPercent}%` }}
+                    style={{ width: "100%" }}
                   />
                 </div>
                 <div className="flex justify-between text-[10px] font-mono text-slate-500">
-                  <span>Квота потока: {vmStatus.cpuQuotaPercent}%</span>
-                  <span>Лимит: 100%</span>
+                  <span>Ограничения квот: отсутствуют</span>
+                  <span>Доступно: 100% ЦП хоста</span>
                 </div>
               </div>
             </div>
@@ -262,7 +262,7 @@ export function VmMemoryTab({
                 <span className="text-[11px] font-semibold text-slate-300">
                   Процессы хоста в контексте плагина ({vmStatus.activeProcesses.length})
                 </span>
-                <span className="text-[10px] text-slate-500 font-mono">PID / CPU / ОЗУ</span>
+                <span className="text-[10px] text-slate-500 font-mono">PID / ЦП (мс) / ОЗУ</span>
               </div>
 
               <div className="space-y-1.5">
@@ -276,7 +276,7 @@ export function VmMemoryTab({
                       <span className="text-cyan-300 font-medium">{p.name}</span>
                     </div>
                     <div className="flex items-center space-x-3 text-slate-400">
-                      <span>{p.cpu}% CPU</span>
+                      <span>{p.cpu} ms CPU</span>
                       <span className="text-pink-300 font-semibold">{p.memoryMB} MB</span>
                     </div>
                   </div>

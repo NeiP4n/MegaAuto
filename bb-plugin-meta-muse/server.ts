@@ -198,14 +198,23 @@ function nextRunFromExpression(
   if (!mins || !hours || !doms || !mons || !dowsRaw) return null;
   const dows = new Set(Array.from(dowsRaw).map((d) => (d === 7 ? 0 : d)));
 
+  // Standard POSIX cron rule: when both DOM and DOW are specified (neither is *),
+  // they match using OR instead of AND.
+  const domRestricted = fields[2] !== "*";
+  const dowRestricted = fields[4] !== "*";
+
   // Minute-by-minute scan, bounded to one year ahead.
   const t = new Date(from.getTime() + 60000);
   t.setSeconds(0, 0);
   for (let i = 0; i < 527040; i++) {
+    const dayMatch =
+      domRestricted && dowRestricted
+        ? doms.has(t.getDate()) || dows.has(t.getDay())
+        : doms.has(t.getDate()) && dows.has(t.getDay());
+
     if (
       mons.has(t.getMonth() + 1) &&
-      doms.has(t.getDate()) &&
-      dows.has(t.getDay()) &&
+      dayMatch &&
       hours.has(t.getHours()) &&
       mins.has(t.getMinutes())
     ) {
@@ -1041,8 +1050,9 @@ export class MetaMuseController {
     this.vmState.uptimeSeconds = Math.floor((Date.now() - this.startTime) / 1000);
     this.vmState.memoryUsedMB = usedMB;
     this.vmState.memoryLimitMB = totalMB;
+    const cpuMs = Math.round(process.cpuUsage().user / 1000);
     this.vmState.activeProcesses = [
-      { pid: process.pid, name: "bb-host-node", cpu: 0, memoryMB: usedMB },
+      { pid: process.pid, name: "bb-host-node", cpu: cpuMs, memoryMB: usedMB },
     ];
     if (_refresh) {
       this.vmState.lastSecurityAudit = new Date().toISOString();

@@ -94,6 +94,15 @@ func NewMessageStoreAtPath(dbPath string) (*MessageStore, error) {
 		return nil, fmt.Errorf("failed to create tables: %v", err)
 	}
 
+	// Migration: remember each sender's push name so display names survive
+	// even when the contact store has not synced yet.
+	if _, err := db.Exec("ALTER TABLE messages ADD COLUMN push_name TEXT NOT NULL DEFAULT ''"); err != nil {
+		if !strings.Contains(err.Error(), "duplicate column") {
+			db.Close()
+			return nil, fmt.Errorf("failed to migrate messages table: %v", err)
+		}
+	}
+
 	return &MessageStore{db: db}, nil
 }
 
@@ -114,8 +123,8 @@ func (store *MessageStore) StoreChat(jid, name string, lastMessageTime time.Time
 		ON CONFLICT(jid) DO UPDATE SET
 			last_message_time = excluded.last_message_time,
 			name = CASE
-				WHEN excluded.name != '' AND (chats.name IS NULL OR chats.name = '' OR chats.name = chats.jid OR chats.name GLOB '[0-9]*') THEN excluded.name
-				WHEN excluded.name != '' AND NOT (excluded.name GLOB '[0-9]*') THEN excluded.name
+				WHEN excluded.name != '' AND (chats.name IS NULL OR chats.name = '' OR chats.name = chats.jid OR chats.name GLOB '[0-9]*' OR chats.name GLOB '+[0-9]*') THEN excluded.name
+				WHEN excluded.name != '' AND NOT (excluded.name GLOB '[0-9]*' OR excluded.name GLOB '+[0-9]*') THEN excluded.name
 				ELSE chats.name
 			END
 	`, jid, name, lastMessageTime)
@@ -124,7 +133,7 @@ func (store *MessageStore) StoreChat(jid, name string, lastMessageTime time.Time
 
 // Store a message in the database
 func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, timestamp time.Time, isFromMe bool,
-	mediaType, filename, url string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64) error {
+	mediaType, filename, url string, mediaKey, fileSHA256, fileEncSHA256 []byte, fileLength uint64, pushName string) error {
 	// Only store if there's actual content or media
 	if content == "" && mediaType == "" {
 		return nil
@@ -132,9 +141,9 @@ func (store *MessageStore) StoreMessage(id, chatJID, sender, content string, tim
 
 	_, err := store.db.Exec(
 		`INSERT OR REPLACE INTO messages 
-		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length) 
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		id, chatJID, sender, content, timestamp, isFromMe, mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength,
+		(id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, media_key, file_sha256, file_enc_sha256, file_length, push_name) 
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, chatJID, sender, content, timestamp, isFromMe, mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength, pushName,
 	)
 	return err
 }
@@ -431,6 +440,7 @@ func sendWhatsAppMessage(client *whatsmeow.Client, messageStore *MessageStore, r
 			nil,
 			nil,
 			0,
+			"",
 		)
 		if err != nil && logger != nil {
 			logger.Warnf("Failed to store sent message in DB: %v", err)
@@ -522,6 +532,7 @@ func handleMessage(client *whatsmeow.Client, messageStore *MessageStore, msg *ev
 		fileSHA256,
 		fileEncSHA256,
 		fileLength,
+		msg.Info.PushName,
 	)
 
 	if err != nil {
@@ -749,6 +760,12 @@ func extractDirectPathFromURL(url string) string {
 }
 
 // Helper: check if string is empty or contains only numeric digits
+// isRawNumberName reports whether a display name is just a bare phone number
+// (with or without a leading +), i.e. not a real name worth keeping.
+func isRawNumberName(s string) bool {
+	return isAllDigits(strings.TrimPrefix(s, "+"))
+}
+
 func isAllDigits(s string) bool {
 	if s == "" {
 		return false
@@ -855,7 +872,7 @@ func GetChatName(client *whatsmeow.Client, messageStore *MessageStore, jid types
 	if messageStore != nil && messageStore.db != nil {
 		var existingName string
 		err := messageStore.db.QueryRow("SELECT name FROM chats WHERE jid = ?", chatJID).Scan(&existingName)
-		if err == nil && existingName != "" && !isAllDigits(existingName) && existingName != chatJID && existingName != jid.User {
+		if err == nil && existingName != "" && !isRawNumberName(existingName) && existingName != chatJID && existingName != jid.User {
 			return existingName
 		}
 	}
@@ -921,12 +938,23 @@ func (store *MessageStore) RefreshChatNames(client *whatsmeow.Client, logger waL
 		if err := rows.Scan(&jidStr, &currName); err != nil {
 			continue
 		}
-		if currName == "" || currName == jidStr || isAllDigits(currName) {
+		if currName == "" || currName == jidStr || isRawNumberName(currName) {
 			parsedJID, err := types.ParseJID(jidStr)
 			if err != nil {
 				continue
 			}
 			resolved := ResolveContactName(client, parsedJID, "")
+			// Contact store may not have synced yet; fall back to the push
+			// name observed on incoming messages in this chat.
+			if (resolved == "" || isRawNumberName(resolved)) && parsedJID.Server != "g.us" {
+				var pn string
+				if qErr := store.db.QueryRow(
+					"SELECT push_name FROM messages WHERE chat_jid = ? AND is_from_me = 0 AND push_name != '' ORDER BY timestamp DESC LIMIT 1",
+					jidStr,
+				).Scan(&pn); qErr == nil && pn != "" && !isRawNumberName(pn) {
+					resolved = pn
+				}
+			}
 			if resolved != "" && resolved != currName {
 				updates = append(updates, chatToUpdate{jid: jidStr, newName: resolved})
 			}
@@ -969,6 +997,7 @@ type restMsgItem struct {
 	Filename   string    `json:"filename"`
 	URL        string    `json:"url"`
 	FileLength int64     `json:"file_length"`
+	PushName   string    `json:"-"`
 }
 
 // scanMsgRows reads message rows and resolves sender display names.
@@ -977,17 +1006,23 @@ func scanMsgRows(sess *Session, rows *sql.Rows) []restMsgItem {
 	var msgs []restMsgItem
 	for rows.Next() {
 		var m restMsgItem
-		if err := rows.Scan(&m.ID, &m.ChatJID, &m.Sender, &m.Content, &m.Timestamp, &m.IsFromMe, &m.MediaType, &m.Filename, &m.URL, &m.FileLength); err != nil {
+		if err := rows.Scan(&m.ID, &m.ChatJID, &m.Sender, &m.Content, &m.Timestamp, &m.IsFromMe, &m.MediaType, &m.Filename, &m.URL, &m.FileLength, &m.PushName); err != nil {
 			continue
 		}
 		if m.IsFromMe {
 			m.SenderName = "You"
-		} else if sJID, err := types.ParseJID(m.Sender); err == nil {
-			m.SenderName = ResolveContactName(sess.Client, sJID, "")
-		} else if isAllDigits(m.Sender) {
-			m.SenderName = ResolveContactName(sess.Client, types.JID{User: m.Sender, Server: "s.whatsapp.net"}, "")
 		} else {
-			m.SenderName = m.Sender
+			if sJID, err := types.ParseJID(m.Sender); err == nil {
+				m.SenderName = ResolveContactName(sess.Client, sJID, "")
+			} else if isAllDigits(m.Sender) {
+				m.SenderName = ResolveContactName(sess.Client, types.JID{User: m.Sender, Server: "s.whatsapp.net"}, "")
+			} else {
+				m.SenderName = m.Sender
+			}
+			// Prefer the sender's own push name over a bare number.
+			if (m.SenderName == "" || isRawNumberName(m.SenderName)) && m.PushName != "" && !isRawNumberName(m.PushName) {
+				m.SenderName = m.PushName
+			}
 		}
 		msgs = append(msgs, m)
 	}
@@ -1011,7 +1046,7 @@ func altJID(sess *Session, chatJID string) string {
 }
 
 const msgColumns = `id, chat_jid, sender, content, timestamp, is_from_me,
-	COALESCE(media_type, ''), COALESCE(filename, ''), COALESCE(url, ''), COALESCE(file_length, 0)`
+	COALESCE(media_type, ''), COALESCE(filename, ''), COALESCE(url, ''), COALESCE(file_length, 0), COALESCE(push_name, '')`
 
 // Start a REST API server with Multi-Account / Multi-Session support
 // The listener must be bound by the caller BEFORE any session connects:
@@ -1236,7 +1271,7 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 			var item ChatItem
 			if err := rows.Scan(&item.JID, &item.Name, &item.LastMessageTime, &item.LastMessage, &item.LastSender, &item.LastIsFromMe); err == nil {
 				// If name is all digits or equals JID, resolve in-memory immediately
-				if item.Name == "" || item.Name == item.JID || isAllDigits(item.Name) {
+				if item.Name == "" || item.Name == item.JID || isRawNumberName(item.Name) {
 					if parsed, pErr := types.ParseJID(item.JID); pErr == nil {
 						resolved := ResolveContactName(sess.Client, parsed, "")
 						if resolved != "" && resolved != item.Name {
@@ -1404,9 +1439,9 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 		if altJIDStr != "" {
 			rows, err = sess.MessageStore.db.Query(`
 				SELECT id, chat_jid, sender, content, timestamp, is_from_me, 
-				       COALESCE(media_type, ''), COALESCE(filename, ''), COALESCE(url, ''), COALESCE(file_length, 0)
+				       COALESCE(media_type, ''), COALESCE(filename, ''), COALESCE(url, ''), COALESCE(file_length, 0), COALESCE(push_name, '')
 				FROM (
-					SELECT id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, file_length
+					SELECT id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, file_length, COALESCE(push_name, '')
 					FROM messages
 					WHERE chat_jid = ? OR chat_jid = ?
 					ORDER BY timestamp DESC LIMIT ?
@@ -1416,9 +1451,9 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 		} else {
 			rows, err = sess.MessageStore.db.Query(`
 				SELECT id, chat_jid, sender, content, timestamp, is_from_me, 
-				       COALESCE(media_type, ''), COALESCE(filename, ''), COALESCE(url, ''), COALESCE(file_length, 0)
+				       COALESCE(media_type, ''), COALESCE(filename, ''), COALESCE(url, ''), COALESCE(file_length, 0), COALESCE(push_name, '')
 				FROM (
-					SELECT id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, file_length
+					SELECT id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, file_length, COALESCE(push_name, '')
 					FROM messages
 					WHERE chat_jid = ?
 					ORDER BY timestamp DESC LIMIT ?
@@ -1984,6 +2019,7 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 					fileSHA256,
 					fileEncSHA256,
 					fileLength,
+					msg.Message.GetPushName(),
 				)
 				if err != nil {
 					logger.Warnf("Failed to store history message: %v", err)

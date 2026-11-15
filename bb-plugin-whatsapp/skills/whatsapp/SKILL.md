@@ -102,7 +102,7 @@ Retrieve messages immediately before and after a target message to inspect conte
   "context_size": 5 // optional, default 5
 }
 ```
-Returns `{ "message": {...}, "before": [...], "after": [...] }`.
+Returns `{ "target": {...} | null, "before": [...], "after": [...] }`.
 
 ---
 
@@ -159,13 +159,13 @@ bb whatsapp chats
 bb whatsapp contacts "Alice"
 
 # List messages in a specific chat
-bb whatsapp messages --chat "12025551234@s.whatsapp.net" --limit 50
+bb whatsapp messages "12025551234@s.whatsapp.net" 50
 
 # Send a text message
 bb whatsapp send "+12025551234" "Hello from Blackbox!"
 
 # Send a file with optional caption
-bb whatsapp send-file "+12025551234" "C:/path/to/photo.jpg" --caption "Vacation photo"
+bb whatsapp send-file "+12025551234" "C:/path/to/photo.jpg" "Vacation photo"
 
 # Bridge lifecycle management
 bb whatsapp start

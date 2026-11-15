@@ -1134,7 +1134,10 @@ export default async function plugin(bb: BbPluginApi) {
       { name: "status", summary: "Check bridge connection and phone info", usage: "bb whatsapp status" },
       { name: "qr", summary: "Display current pairing QR code", usage: "bb whatsapp qr" },
       { name: "chats", summary: "List recent chats", usage: "bb whatsapp chats" },
+      { name: "contacts", summary: "Search contacts", usage: "bb whatsapp contacts <query>" },
+      { name: "messages", summary: "List messages in a chat", usage: "bb whatsapp messages <chat_jid> [limit]" },
       { name: "send", summary: "Send a message", usage: "bb whatsapp send <recipient> <message>" },
+      { name: "send-file", summary: "Send a file", usage: "bb whatsapp send-file <recipient> <path> [caption]" },
       { name: "start", summary: "Start the WhatsApp bridge daemon", usage: "bb whatsapp start" },
       { name: "stop", summary: "Stop the WhatsApp bridge daemon", usage: "bb whatsapp stop" },
       { name: "restart", summary: "Restart the WhatsApp bridge daemon", usage: "bb whatsapp restart" },
@@ -1173,6 +1176,48 @@ export default async function plugin(bb: BbPluginApi) {
         return { exitCode: 0, stdout: `Recent WhatsApp Chats (${chats.length}):\n\n${lines.join("\n\n")}` };
       }
 
+      if (sub === "contacts") {
+        const query = argv.slice(1).join(" ");
+        if (!query) {
+          return { exitCode: 1, stderr: "Usage: bb whatsapp contacts <query>" };
+        }
+        const contacts = await bridge.searchContacts(query);
+        if (contacts.length === 0) {
+          return { exitCode: 0, stdout: "No contacts matched." };
+        }
+        const lines = contacts.map((c) => `• ${c.name || "(no name)"} - ${c.phone_number || c.jid} (${c.jid})`);
+        return { exitCode: 0, stdout: `Contacts (${contacts.length}):\n\n${lines.join("\n")}` };
+      }
+
+      if (sub === "messages") {
+        const chatJid = argv[1];
+        const limit = Number(argv[2]) || 20;
+        if (!chatJid) {
+          return { exitCode: 1, stderr: "Usage: bb whatsapp messages <chat_jid> [limit]" };
+        }
+        const msgs = await bridge.getMessages(chatJid, limit);
+        if (msgs.length === 0) {
+          return { exitCode: 0, stdout: "No messages found in this chat." };
+        }
+        const lines = msgs.map((m) => {
+          const who = m.is_from_me ? "You" : (m.sender_name || m.sender);
+          const media = m.media_type ? ` [${m.media_type}${m.filename ? ": " + m.filename : ""}]` : "";
+          return `[${m.timestamp}] ${who}: ${m.content}${media}`;
+        });
+        return { exitCode: 0, stdout: lines.join("\n") };
+      }
+
+      if (sub === "send-file") {
+        const recipient = argv[1];
+        const filePath = argv[2];
+        const caption = argv.slice(3).join(" ");
+        if (!recipient || !filePath) {
+          return { exitCode: 1, stderr: "Usage: bb whatsapp send-file <recipient> <path> [caption]" };
+        }
+        const res = await bridge.sendMessage(recipient, caption, filePath);
+        return { exitCode: res.success ? 0 : 1, stdout: res.message };
+      }
+
       if (sub === "send") {
         const recipient = argv[1];
         const message = argv.slice(2).join(" ");
@@ -1198,7 +1243,7 @@ export default async function plugin(bb: BbPluginApi) {
         return { exitCode: ok ? 0 : 1, stdout: ok ? "WhatsApp bridge restarted." : "Failed to restart bridge." };
       }
 
-      return { exitCode: 1, stderr: `Unknown subcommand: ${sub}. Available: status, qr, chats, send, start, stop, restart.` };
+      return { exitCode: 1, stderr: `Unknown subcommand: ${sub}. Available: status, qr, chats, contacts, messages, send, send-file, start, stop, restart.` };
     },
   });
 }

@@ -50,6 +50,25 @@ type Session struct {
 	qrLock       sync.RWMutex
 	logger       waLog.Logger
 	dbLog        waLog.Logger
+
+	nameRefreshMu   sync.Mutex
+	lastNameRefresh time.Time
+}
+
+// maybeRefreshChatNames resolves missing chat names in the background, at most
+// once per minute, so polling clients do not spawn a goroutine per request.
+func (s *Session) maybeRefreshChatNames() {
+	if s.MessageStore == nil {
+		return
+	}
+	s.nameRefreshMu.Lock()
+	if time.Since(s.lastNameRefresh) < time.Minute {
+		s.nameRefreshMu.Unlock()
+		return
+	}
+	s.lastNameRefresh = time.Now()
+	s.nameRefreshMu.Unlock()
+	go s.MessageStore.RefreshChatNames(s.Client, nil)
 }
 
 func (s *Session) GetQR() string {

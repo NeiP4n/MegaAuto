@@ -935,6 +935,78 @@ func (store *MessageStore) RefreshChatNames(client *whatsmeow.Client, logger waL
 	}
 }
 
+// corsMiddleware answers browser preflights and lets the Blackbox web UI reach
+// this loopback-only API from its own origin.
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Session-ID")
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// restMsgItem is the JSON shape served by the message endpoints.
+type restMsgItem struct {
+	ID         string    `json:"id"`
+	ChatJID    string    `json:"chat_jid"`
+	Sender     string    `json:"sender"`
+	SenderName string    `json:"sender_name"`
+	Content    string    `json:"content"`
+	Timestamp  time.Time `json:"timestamp"`
+	IsFromMe   bool      `json:"is_from_me"`
+	MediaType  string    `json:"media_type"`
+	Filename   string    `json:"filename"`
+	URL        string    `json:"url"`
+	FileLength int64     `json:"file_length"`
+}
+
+// scanMsgRows reads message rows and resolves sender display names.
+func scanMsgRows(sess *Session, rows *sql.Rows) []restMsgItem {
+	defer rows.Close()
+	var msgs []restMsgItem
+	for rows.Next() {
+		var m restMsgItem
+		if err := rows.Scan(&m.ID, &m.ChatJID, &m.Sender, &m.Content, &m.Timestamp, &m.IsFromMe, &m.MediaType, &m.Filename, &m.URL, &m.FileLength); err != nil {
+			continue
+		}
+		if m.IsFromMe {
+			m.SenderName = "You"
+		} else if sJID, err := types.ParseJID(m.Sender); err == nil {
+			m.SenderName = ResolveContactName(sess.Client, sJID, "")
+		} else if isAllDigits(m.Sender) {
+			m.SenderName = ResolveContactName(sess.Client, types.JID{User: m.Sender, Server: "s.whatsapp.net"}, "")
+		} else {
+			m.SenderName = m.Sender
+		}
+		msgs = append(msgs, m)
+	}
+	if msgs == nil {
+		msgs = []restMsgItem{}
+	}
+	return msgs
+}
+
+// altJID returns the alternate JID (LID <-> phone) for a chat JID, or "".
+func altJID(sess *Session, chatJID string) string {
+	parsed, err := types.ParseJID(chatJID)
+	if err != nil || sess.Client == nil || sess.Client.Store == nil {
+		return ""
+	}
+	alt, err := sess.Client.Store.GetAltJID(context.Background(), parsed)
+	if err != nil || alt.IsEmpty() {
+		return ""
+	}
+	return alt.String()
+}
+
+const msgColumns = `id, chat_jid, sender, content, timestamp, is_from_me,
+	COALESCE(media_type, ''), COALESCE(filename, ''), COALESCE(url, ''), COALESCE(file_length, 0)`
+
 // Start a REST API server with Multi-Account / Multi-Session support
 func startRESTServer(sm *SessionManager, port int) {
 	// Helper to extract requested session or active session
@@ -946,8 +1018,10 @@ func startRESTServer(sm *SessionManager, port int) {
 		return sm.GetSession(sid)
 	}
 
+	mux := http.NewServeMux()
+
 	// 1. Sessions list endpoint
-	http.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
@@ -961,7 +1035,7 @@ func startRESTServer(sm *SessionManager, port int) {
 	})
 
 	// 2. Create new session endpoint
-	http.HandleFunc("/api/sessions/create", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/sessions/create", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
@@ -988,7 +1062,7 @@ func startRESTServer(sm *SessionManager, port int) {
 	})
 
 	// 3. Switch active session endpoint
-	http.HandleFunc("/api/sessions/switch", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/sessions/switch", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
@@ -1017,7 +1091,7 @@ func startRESTServer(sm *SessionManager, port int) {
 	})
 
 	// 4. Delete session endpoint
-	http.HandleFunc("/api/sessions/delete", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/sessions/delete", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
@@ -1045,7 +1119,7 @@ func startRESTServer(sm *SessionManager, port int) {
 	})
 
 	// 5. Status endpoint for Blackbox UI and agent tools
-	http.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/status", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
@@ -1076,7 +1150,7 @@ func startRESTServer(sm *SessionManager, port int) {
 	})
 
 	// 6. Chats endpoint for UI
-	http.HandleFunc("/api/chats", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/chats", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
@@ -1088,8 +1162,9 @@ func startRESTServer(sm *SessionManager, port int) {
 
 		query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("query")))
 
-		// Auto refresh any empty or raw numeric chat names in background
-		go sess.MessageStore.RefreshChatNames(sess.Client, nil)
+		// Auto refresh unresolved chat names in background, throttled: the UI
+		// polls this endpoint every few seconds.
+		sess.maybeRefreshChatNames()
 
 		rows, err := sess.MessageStore.db.Query(`
 			SELECT c.jid, COALESCE(c.name, c.jid) as name, c.last_message_time,
@@ -1138,7 +1213,7 @@ func startRESTServer(sm *SessionManager, port int) {
 	})
 
 	// 7. Contacts search endpoint
-	http.HandleFunc("/api/contacts", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/contacts", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
@@ -1245,7 +1320,7 @@ func startRESTServer(sm *SessionManager, port int) {
 	})
 
 	// 8. Messages endpoint for UI and agents with SenderName support
-	http.HandleFunc("/api/messages", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/messages", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 
@@ -1356,7 +1431,7 @@ func startRESTServer(sm *SessionManager, port int) {
 	})
 
 	// 9. Send message endpoint
-	http.HandleFunc("/api/send", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/send", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -1390,6 +1465,10 @@ func startRESTServer(sm *SessionManager, port int) {
 			http.Error(w, "No active WhatsApp session found", http.StatusBadRequest)
 			return
 		}
+		if sess.Client == nil {
+			http.Error(w, "WhatsApp session is not started yet - pair or reconnect first", http.StatusBadRequest)
+			return
+		}
 
 		success, msgText, msgID, msgTime, targetChatJID := sendWhatsAppMessage(
 			sess.Client,
@@ -1415,7 +1494,7 @@ func startRESTServer(sm *SessionManager, port int) {
 	})
 
 	// 10. Download media endpoint
-	http.HandleFunc("/api/download", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/download", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -1437,6 +1516,10 @@ func startRESTServer(sm *SessionManager, port int) {
 		}
 		if sess == nil {
 			http.Error(w, "No active WhatsApp session found", http.StatusBadRequest)
+			return
+		}
+		if sess.Client == nil {
+			http.Error(w, "WhatsApp session is not started yet - pair or reconnect first", http.StatusBadRequest)
 			return
 		}
 
@@ -1464,11 +1547,239 @@ func startRESTServer(sm *SessionManager, port int) {
 		})
 	})
 
-	// Start the server
-	serverAddr := fmt.Sprintf(":%d", port)
+	// 11. Single chat metadata endpoint (used by whatsapp_get_chat /
+	// whatsapp_get_direct_chat instead of scanning the whole chat list)
+	mux.HandleFunc("/api/chat", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		sess := getSession(r)
+		jid := strings.TrimSpace(r.URL.Query().Get("jid"))
+		if jid == "" {
+			http.Error(w, `{"error":"jid is required"}`, http.StatusBadRequest)
+			return
+		}
+		if sess == nil || sess.MessageStore == nil {
+			json.NewEncoder(w).Encode(nil)
+			return
+		}
+
+		alt := altJID(sess, jid)
+		var row *sql.Row
+		if alt != "" {
+			row = sess.MessageStore.db.QueryRow(`
+				SELECT c.jid, COALESCE(c.name, c.jid), c.last_message_time,
+				       COALESCE((SELECT content FROM messages m WHERE m.chat_jid = c.jid ORDER BY timestamp DESC LIMIT 1), ''),
+				       COALESCE((SELECT sender FROM messages m WHERE m.chat_jid = c.jid ORDER BY timestamp DESC LIMIT 1), ''),
+				       COALESCE((SELECT is_from_me FROM messages m WHERE m.chat_jid = c.jid ORDER BY timestamp DESC LIMIT 1), 0)
+				FROM chats c WHERE c.jid = ? OR c.jid = ? LIMIT 1
+			`, jid, alt)
+		} else {
+			row = sess.MessageStore.db.QueryRow(`
+				SELECT c.jid, COALESCE(c.name, c.jid), c.last_message_time,
+				       COALESCE((SELECT content FROM messages m WHERE m.chat_jid = c.jid ORDER BY timestamp DESC LIMIT 1), ''),
+				       COALESCE((SELECT sender FROM messages m WHERE m.chat_jid = c.jid ORDER BY timestamp DESC LIMIT 1), ''),
+				       COALESCE((SELECT is_from_me FROM messages m WHERE m.chat_jid = c.jid ORDER BY timestamp DESC LIMIT 1), 0)
+				FROM chats c WHERE c.jid = ? LIMIT 1
+			`, jid)
+		}
+
+		var item struct {
+			JID             string    `json:"jid"`
+			Name            string    `json:"name"`
+			LastMessageTime time.Time `json:"last_message_time"`
+			LastMessage     string    `json:"last_message"`
+			LastSender      string    `json:"last_sender"`
+			LastIsFromMe    bool      `json:"last_is_from_me"`
+		}
+		if err := row.Scan(&item.JID, &item.Name, &item.LastMessageTime, &item.LastMessage, &item.LastSender, &item.LastIsFromMe); err != nil {
+			json.NewEncoder(w).Encode(nil)
+			return
+		}
+		json.NewEncoder(w).Encode(item)
+	})
+
+	// 12. All chats involving a contact (direct chat plus groups they wrote in)
+	mux.HandleFunc("/api/contact-chats", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		sess := getSession(r)
+		if sess == nil || sess.MessageStore == nil {
+			json.NewEncoder(w).Encode([]interface{}{})
+			return
+		}
+
+		raw := strings.TrimSpace(r.URL.Query().Get("jid"))
+		if raw == "" {
+			http.Error(w, `{"error":"jid is required"}`, http.StatusBadRequest)
+			return
+		}
+		digits := strings.TrimPrefix(raw, "+")
+		if idx := strings.Index(digits, "@"); idx >= 0 {
+			digits = digits[:idx]
+		}
+		directJID := raw
+		if !strings.Contains(raw, "@") {
+			directJID = digits + "@s.whatsapp.net"
+		}
+
+		rows, err := sess.MessageStore.db.Query(`
+			SELECT DISTINCT c.jid, COALESCE(c.name, c.jid), c.last_message_time,
+			       COALESCE((SELECT content FROM messages m WHERE m.chat_jid = c.jid ORDER BY timestamp DESC LIMIT 1), ''),
+			       COALESCE((SELECT sender FROM messages m WHERE m.chat_jid = c.jid ORDER BY timestamp DESC LIMIT 1), ''),
+			       COALESCE((SELECT is_from_me FROM messages m WHERE m.chat_jid = c.jid ORDER BY timestamp DESC LIMIT 1), 0)
+			FROM chats c
+			WHERE c.jid = ?
+			   OR c.jid IN (SELECT DISTINCT chat_jid FROM messages WHERE sender = ? OR sender LIKE ?)
+			ORDER BY c.last_message_time DESC LIMIT 100
+		`, directJID, directJID, digits+"@%")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
+
+		type ChatItem struct {
+			JID             string    `json:"jid"`
+			Name            string    `json:"name"`
+			LastMessageTime time.Time `json:"last_message_time"`
+			LastMessage     string    `json:"last_message"`
+			LastSender      string    `json:"last_sender"`
+			LastIsFromMe    bool      `json:"last_is_from_me"`
+		}
+		var list []ChatItem
+		for rows.Next() {
+			var item ChatItem
+			if err := rows.Scan(&item.JID, &item.Name, &item.LastMessageTime, &item.LastMessage, &item.LastSender, &item.LastIsFromMe); err == nil {
+				list = append(list, item)
+			}
+		}
+		if list == nil {
+			list = []ChatItem{}
+		}
+		json.NewEncoder(w).Encode(list)
+	})
+
+	// 13. Most recent message exchanged with a contact
+	mux.HandleFunc("/api/last-interaction", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		sess := getSession(r)
+		if sess == nil || sess.MessageStore == nil {
+			json.NewEncoder(w).Encode(nil)
+			return
+		}
+
+		raw := strings.TrimSpace(r.URL.Query().Get("jid"))
+		if raw == "" {
+			http.Error(w, `{"error":"jid is required"}`, http.StatusBadRequest)
+			return
+		}
+		digits := strings.TrimPrefix(raw, "+")
+		if idx := strings.Index(digits, "@"); idx >= 0 {
+			digits = digits[:idx]
+		}
+		directJID := raw
+		if !strings.Contains(raw, "@") {
+			directJID = digits + "@s.whatsapp.net"
+		}
+		alt := altJID(sess, directJID)
+
+		rows, err := sess.MessageStore.db.Query(`
+			SELECT `+msgColumns+`
+			FROM messages
+			WHERE chat_jid = ? OR chat_jid = ? OR sender = ? OR sender LIKE ?
+			ORDER BY timestamp DESC LIMIT 1
+		`, directJID, alt, directJID, digits+"@%")
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		msgs := scanMsgRows(sess, rows)
+		if len(msgs) == 0 {
+			json.NewEncoder(w).Encode(nil)
+			return
+		}
+		json.NewEncoder(w).Encode(msgs[0])
+	})
+
+	// 14. Messages immediately before and after a given message ID
+	mux.HandleFunc("/api/message-context", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		sess := getSession(r)
+		if sess == nil || sess.MessageStore == nil {
+			json.NewEncoder(w).Encode(map[string]interface{}{"before": []interface{}{}, "target": nil, "after": []interface{}{}})
+			return
+		}
+
+		messageID := strings.TrimSpace(r.URL.Query().Get("message_id"))
+		chatJID := strings.TrimSpace(r.URL.Query().Get("chat_jid"))
+		if messageID == "" || chatJID == "" {
+			http.Error(w, `{"error":"message_id and chat_jid are required"}`, http.StatusBadRequest)
+			return
+		}
+		contextSize := 5
+		if cs := r.URL.Query().Get("context"); cs != "" {
+			if n, parseErr := fmt.Sscanf(cs, "%d", &contextSize); n != 1 || parseErr != nil || contextSize <= 0 {
+				contextSize = 5
+			}
+		}
+		if contextSize > 50 {
+			contextSize = 50
+		}
+
+		var targetTS time.Time
+		err := sess.MessageStore.db.QueryRow(
+			"SELECT timestamp FROM messages WHERE id = ? AND chat_jid = ?", messageID, chatJID,
+		).Scan(&targetTS)
+		if err != nil {
+			json.NewEncoder(w).Encode(map[string]interface{}{"before": []interface{}{}, "target": nil, "after": []interface{}{}})
+			return
+		}
+
+		targetRows, err := sess.MessageStore.db.Query(
+			"SELECT "+msgColumns+" FROM messages WHERE id = ? AND chat_jid = ?", messageID, chatJID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		target := scanMsgRows(sess, targetRows)
+
+		beforeRows, err := sess.MessageStore.db.Query(
+			"SELECT "+msgColumns+" FROM (SELECT * FROM messages WHERE chat_jid = ? AND timestamp < ? ORDER BY timestamp DESC LIMIT ?) ORDER BY timestamp ASC",
+			chatJID, targetTS, contextSize)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		before := scanMsgRows(sess, beforeRows)
+
+		afterRows, err := sess.MessageStore.db.Query(
+			"SELECT "+msgColumns+" FROM messages WHERE chat_jid = ? AND timestamp > ? ORDER BY timestamp ASC LIMIT ?",
+			chatJID, targetTS, contextSize)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		after := scanMsgRows(sess, afterRows)
+
+		var targetVal interface{}
+		if len(target) > 0 {
+			targetVal = target[0]
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"before": before,
+			"target": targetVal,
+			"after":  after,
+		})
+	})
+
+	// Bind to loopback only: this API is unauthenticated and can read chats
+	// and send messages, so it must never be reachable from the network.
+	serverAddr := fmt.Sprintf("127.0.0.1:%d", port)
 	fmt.Printf("Starting REST API server on %s...\n", serverAddr)
 	go func() {
-		if err := http.ListenAndServe(serverAddr, nil); err != nil {
+		if err := http.ListenAndServe(serverAddr, corsMiddleware(mux)); err != nil {
 			fmt.Printf("REST API server error: %v\n", err)
 		}
 	}()
@@ -1487,14 +1798,22 @@ func main() {
 	}
 	defer sm.CloseAll()
 
-	// Start REST API server with session manager
-	startRESTServer(sm, 8080)
+	// Start REST API server with session manager. The port can be overridden
+	// when 8080 is already taken by another local service.
+	port := 8080
+	if envPort := os.Getenv("WHATSAPP_BRIDGE_PORT"); envPort != "" {
+		if n, parseErr := fmt.Sscanf(envPort, "%d", &port); n != 1 || parseErr != nil || port <= 0 || port > 65535 {
+			logger.Errorf("Invalid WHATSAPP_BRIDGE_PORT %q, falling back to 8080", envPort)
+			port = 8080
+		}
+	}
+	startRESTServer(sm, port)
 
 	// Keep alive until termination signal
 	exitChan := make(chan os.Signal, 1)
 	signal.Notify(exitChan, syscall.SIGINT, syscall.SIGTERM)
 
-	fmt.Println("Multi-session WhatsApp bridge running on :8080. Press Ctrl+C to disconnect and exit.")
+	fmt.Printf("Multi-session WhatsApp bridge running on 127.0.0.1:%d. Press Ctrl+C to disconnect and exit.\n", port)
 	<-exitChan
 
 	fmt.Println("Shutting down all WhatsApp sessions...")

@@ -5,7 +5,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, execSync, type ChildProcess } from "node:child_process";
 import type { Account, Project, ChatMessage, HubStatus } from "./src/types";
 
 // ESM has no __dirname or require - shims for ESM plugin runtime
@@ -967,6 +967,28 @@ function appendServerLog(msg: string) {
   }
 }
 
+function findPortPid(port: number = 5678): number | null {
+  try {
+    if (process.platform === "win32") {
+      const out = execSync("netstat -ano -p tcp", { encoding: "utf8", timeout: 2000 });
+      for (const line of out.split("\n")) {
+        if (line.includes(`:${port}`) && line.includes("LISTENING")) {
+          const parts = line.trim().split(/\s+/);
+          const pid = parseInt(parts[parts.length - 1], 10);
+          if (!isNaN(pid) && pid > 0) return pid;
+        }
+      }
+    } else {
+      const out = execSync(`lsof -ti :${port}`, { encoding: "utf8", timeout: 2000 });
+      const pid = parseInt(out.trim().split("\n")[0], 10);
+      if (!isNaN(pid) && pid > 0) return pid;
+    }
+  } catch {
+    // not found or error
+  }
+  return null;
+}
+
 async function startLocalN8nProcess(): Promise<{ ok: boolean; message: string; pid?: number }> {
   // 1. Guard against alive child process regardless of current state
   if (localN8nProcess && localN8nProcess.exitCode === null) {
@@ -988,10 +1010,11 @@ async function startLocalN8nProcess(): Promise<{ ok: boolean; message: string; p
       const health = await checkN8nHealth("http://127.0.0.1:5678", true);
       if (health.connected) {
         serverState = "running";
+        const existingPid = localN8nProcess?.pid || findPortPid(5678);
         return {
           ok: true,
-          message: "Сервер n8n уже работает",
-          pid: localN8nProcess?.pid,
+          message: existingPid ? `Сервер n8n уже работает (PID ${existingPid})` : "Сервер n8n уже работает",
+          pid: existingPid ?? undefined,
         };
       }
 
@@ -1047,8 +1070,8 @@ async function startLocalN8nProcess(): Promise<{ ok: boolean; message: string; p
         healthCache.clear();
       });
 
-      // Poll readiness health check up to 15 seconds
-      const deadline = Date.now() + 15000;
+      // Poll readiness health check up to 30 seconds
+      const deadline = Date.now() + 30000;
       let ready = false;
       while (Date.now() < deadline) {
         if (localN8nProcess !== child || child.exitCode !== null) {
@@ -1068,9 +1091,17 @@ async function startLocalN8nProcess(): Promise<{ ok: boolean; message: string; p
 
       if (!ready) {
         serverState = "error";
+        try {
+          if (process.platform === "win32") {
+            spawn("taskkill", ["/pid", String(child.pid), "/f", "/t"]);
+          } else {
+            child.kill("SIGKILL");
+          }
+        } catch {}
+        if (localN8nProcess === child) localN8nProcess = null;
         return {
           ok: false,
-          message: `Таймаут запуска: n8n не перешёл в состояние готовности за 15 секунд (PID ${child.pid})`,
+          message: `Таймаут запуска: n8n не перешёл в состояние готовности за 30 секунд (PID ${child.pid})`,
           pid: child.pid,
         };
       }
@@ -1101,59 +1132,72 @@ async function stopLocalN8nProcess(): Promise<{ ok: boolean; message: string }> 
   healthCache.clear();
 
   const child = localN8nProcess;
-  if (!child || child.exitCode !== null) {
+  let targetPid: number | null = null;
+
+  if (child && child.pid && child.exitCode === null) {
+    targetPid = child.pid;
+  } else {
+    targetPid = findPortPid(5678);
+  }
+
+  if (!targetPid) {
     localN8nProcess = null;
     serverState = "stopped";
+    appendServerLog("Процесс на порту 5678 не найден (уже остановлен)");
     return {
-      ok: false,
-      message: "Сервер запущен внешне, плагин управляет только собственным процессом",
+      ok: true,
+      message: "Сервер n8n не запущен на порту 5678",
     };
   }
 
   serverState = "stopping";
-  const pid = child.pid;
+  appendServerLog(`Сигнал остановки отправлен процессу n8n (PID ${targetPid})...`);
 
   try {
     if (process.platform === "win32") {
-      spawn("taskkill", ["/pid", String(pid), "/t"]);
+      spawn("taskkill", ["/pid", String(targetPid), "/t"]);
     } else {
-      child.kill("SIGTERM");
+      process.kill(targetPid, "SIGTERM");
     }
-    appendServerLog(`Сигнал остановки отправлен процессу n8n (PID ${pid})...`);
   } catch (e: any) {
     appendServerLog(`Ошибка при отправке сигнала остановки: ${e?.message}`);
   }
 
-  // Wait for true process exit, escalate to SIGKILL if exit not received within 3s
-  await new Promise<void>((resolve) => {
-    if (child.exitCode !== null) return resolve();
-    let timer: NodeJS.Timeout;
-    const onExit = () => {
-      clearTimeout(timer);
-      resolve();
-    };
-    child.once("exit", onExit);
-    timer = setTimeout(() => {
-      child.off("exit", onExit);
-      if (child.exitCode === null) {
-        appendServerLog(`Процесс n8n (PID ${pid}) не завершился за 3с, эскалация SIGKILL...`);
-        try {
-          if (process.platform === "win32") {
-            spawn("taskkill", ["/pid", String(pid), "/f", "/t"]);
-          } else {
-            child.kill("SIGKILL");
-          }
-        } catch {}
+  // Wait for true process exit or port release (up to 3s), escalate to force kill if needed
+  const deadline = Date.now() + 3000;
+  let stillAlive = true;
+  while (Date.now() < deadline) {
+    if (child && child.exitCode !== null) {
+      stillAlive = false;
+      break;
+    }
+    const currentPid = findPortPid(5678);
+    if (!currentPid) {
+      stillAlive = false;
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  if (stillAlive) {
+    appendServerLog(`Процесс (PID ${targetPid}) не завершился добровольно за 3с, эскалация SIGKILL...`);
+    try {
+      if (process.platform === "win32") {
+        spawn("taskkill", ["/pid", String(targetPid), "/f", "/t"]);
+      } else {
+        process.kill(targetPid, "SIGKILL");
       }
-      resolve();
-    }, 3000);
-  });
+    } catch {}
+    await new Promise((r) => setTimeout(r, 500));
+  }
 
   if (localN8nProcess === child) {
     localN8nProcess = null;
   }
   serverState = "stopped";
-  return { ok: true, message: `Сервер n8n остановлен (PID ${pid})` };
+  healthCache.clear();
+  appendServerLog(`Сервер n8n остановлен (PID ${targetPid})`);
+  return { ok: true, message: `Сервер n8n остановлен (PID ${targetPid})` };
 }
 
 // Ensure cleanup on plugin/process shutdown
@@ -1929,11 +1973,12 @@ export default function (bb: BbPluginApi) {
     get_local_server_status: async () => {
       const health = await checkN8nHealth("http://127.0.0.1:5678", undefined, true);
       const isManaged = Boolean(localN8nProcess !== null && !localN8nProcess.killed);
+      const activePid = localN8nProcess?.pid || (health.connected ? findPortPid(5678) : undefined);
       return {
         ok: true,
         running: health.connected,
         managedByPlugin: isManaged,
-        pid: localN8nProcess?.pid ?? undefined,
+        pid: activePid ?? undefined,
         logs: serverLogs.slice(-50),
       };
     },
@@ -2013,7 +2058,7 @@ export default function (bb: BbPluginApi) {
               activeProjectsCount: projects.length,
               totalMessagesCount: store.getTotalMessagesCount(),
               localServerRunning: isManaged || localHealth.connected,
-              localServerPid: localN8nProcess?.pid || null,
+              localServerPid: localN8nProcess?.pid || (localHealth.connected ? findPortPid(5678) : null),
             },
             null,
             2

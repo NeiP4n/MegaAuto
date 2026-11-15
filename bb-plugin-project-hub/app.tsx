@@ -121,11 +121,14 @@ export function ProjectHubView() {
       );
       if (res.status === "online") {
         setIsServerRunning(true);
+      } else {
+        setIsServerRunning(false);
       }
     } catch {
       setAccounts((prev) =>
         prev.map((a) => (a.id === accountId ? { ...a, status: "offline", latencyMs: undefined } : a))
       );
+      setIsServerRunning(false);
     } finally {
       setPingingId(null);
     }
@@ -214,10 +217,11 @@ export function ProjectHubView() {
         setAccounts((prev) =>
           prev.map((a) =>
             isLocalPort5678(a.url)
-              ? { ...a, status: "offline" }
+              ? { ...a, status: "offline", latencyMs: undefined }
               : a
           )
         );
+        setWorkflows([]);
         if (activeAccount?.id) {
           handlePingAccount(activeAccount.id);
         }

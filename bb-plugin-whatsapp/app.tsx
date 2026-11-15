@@ -15,11 +15,9 @@ import {
   SvgRefresh,
   SvgCheck,
   SvgCheckCheck,
-  SvgQrCode,
   SvgPhone,
   SvgTerminal,
   SvgPower,
-  SvgCopy,
   SvgFile,
   SvgAlertTriangle,
   SvgDownload,
@@ -33,23 +31,110 @@ interface RegisteredToolInfo {
   name: string;
   desc: string;
   category: "Read" | "Write" | "System";
-  status: "active" | "ready";
 }
 
 const REGISTERED_TOOLS: RegisteredToolInfo[] = [
-  { name: "whatsapp_status", desc: "Check bridge state, connection, paired phone, and QR pairing status.", category: "System", status: "active" },
-  { name: "whatsapp_list_chats", desc: "List recent WhatsApp chats with last message preview and timestamps.", category: "Read", status: "active" },
-  { name: "whatsapp_list_messages", desc: "Query message history with filters (query, date, limit).", category: "Read", status: "active" },
-  { name: "whatsapp_search_contacts", desc: "Lookup contacts by name or phone number.", category: "Read", status: "active" },
-  { name: "whatsapp_get_chat", desc: "Get metadata and state for a specific chat by JID.", category: "Read", status: "active" },
-  { name: "whatsapp_get_direct_chat", desc: "Find or resolve the 1-on-1 direct chat for a given phone number.", category: "Read", status: "active" },
-  { name: "whatsapp_get_contact_chats", desc: "List all chats involving a specific contact or phone number.", category: "Read", status: "active" },
-  { name: "whatsapp_get_last_interaction", desc: "Retrieve the most recent message exchanged with a contact.", category: "Read", status: "active" },
-  { name: "whatsapp_get_message_context", desc: "Retrieve surrounding messages before and after a given message ID.", category: "Read", status: "active" },
-  { name: "whatsapp_send_message", desc: "Dispatch text messages to any phone number or group JID.", category: "Write", status: "active" },
-  { name: "whatsapp_send_file", desc: "Send documents, images, audio files to contacts.", category: "Write", status: "active" },
-  { name: "whatsapp_download_media", desc: "Download attached media files to local disk and return their file path.", category: "Read", status: "active" },
+  { name: "whatsapp_status", desc: "Check bridge state, connection, paired phone, and QR pairing status.", category: "System" },
+  { name: "whatsapp_list_chats", desc: "List recent WhatsApp chats with last message preview and timestamps.", category: "Read" },
+  { name: "whatsapp_list_messages", desc: "Query message history with filters (query, date, limit).", category: "Read" },
+  { name: "whatsapp_search_contacts", desc: "Lookup contacts by name or phone number.", category: "Read" },
+  { name: "whatsapp_get_chat", desc: "Get metadata and state for a specific chat by JID.", category: "Read" },
+  { name: "whatsapp_get_direct_chat", desc: "Find or resolve the 1-on-1 direct chat for a given phone number.", category: "Read" },
+  { name: "whatsapp_get_contact_chats", desc: "List all chats involving a specific contact or phone number.", category: "Read" },
+  { name: "whatsapp_get_last_interaction", desc: "Retrieve the most recent message exchanged with a contact.", category: "Read" },
+  { name: "whatsapp_get_message_context", desc: "Retrieve surrounding messages before and after a given message ID.", category: "Read" },
+  { name: "whatsapp_send_message", desc: "Dispatch text messages to any phone number or group JID.", category: "Write" },
+  { name: "whatsapp_send_file", desc: "Send documents, images, audio files to contacts.", category: "Write" },
+  { name: "whatsapp_download_media", desc: "Download attached media files to local disk and return their file path.", category: "Read" },
 ];
+
+/**
+ * WhatsApp Web look: the layout, bubbles and palette follow the WhatsApp Web
+ * dark theme, with a light-theme fallback via prefers-color-scheme.
+ * All colors are plain CSS variables; no proprietary assets.
+ */
+const WA_STYLES = `
+.wa-root {
+  --wa-app-bg: #111b21;
+  --wa-chat-bg: #0b141a;
+  --wa-header: #202c33;
+  --wa-panel: #111b21;
+  --wa-panel-raised: #202c33;
+  --wa-hover: #2a3942;
+  --wa-active: #2a3942;
+  --wa-input: #2a3942;
+  --wa-text: #e9edef;
+  --wa-text-secondary: #8696a0;
+  --wa-icon: #aebac1;
+  --wa-accent: #00a884;
+  --wa-accent-strong: #06cf9c;
+  --wa-bubble-out: #005c4b;
+  --wa-bubble-in: #202c33;
+  --wa-border: rgba(134, 150, 160, 0.15);
+  --wa-danger: #f15c6d;
+  --wa-warning: #f0b330;
+  --wa-tick-read: #53bdeb;
+  --wa-doodle: rgba(134, 150, 160, 0.05);
+}
+@media (prefers-color-scheme: light) {
+  .wa-root {
+    --wa-app-bg: #ffffff;
+    --wa-chat-bg: #efeae2;
+    --wa-header: #f0f2f5;
+    --wa-panel: #ffffff;
+    --wa-panel-raised: #f0f2f5;
+    --wa-hover: #f0f2f5;
+    --wa-active: #e9edef;
+    --wa-input: #f0f2f5;
+    --wa-text: #111b21;
+    --wa-text-secondary: #667781;
+    --wa-icon: #54656f;
+    --wa-bubble-out: #d9fdd3;
+    --wa-bubble-in: #ffffff;
+    --wa-border: #d1d7db;
+    --wa-doodle: rgba(11, 20, 26, 0.04);
+  }
+}
+.wa-root ::-webkit-scrollbar { width: 6px; height: 6px; }
+.wa-root ::-webkit-scrollbar-thumb { background: rgba(134, 150, 160, 0.3); border-radius: 3px; }
+.wa-root ::-webkit-scrollbar-track { background: transparent; }
+.wa-chat-doodle {
+  background-color: var(--wa-chat-bg);
+  background-image: radial-gradient(var(--wa-doodle) 1px, transparent 1px);
+  background-size: 22px 22px;
+}
+`;
+
+function formatTime(iso: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatListTime(iso: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  const now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  if (sameDay) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const weekAgo = now.getTime() - 7 * 24 * 60 * 60 * 1000;
+  if (d.getTime() > weekAgo) return d.toLocaleDateString([], { weekday: "short" });
+  return d.toLocaleDateString([], { day: "2-digit", month: "2-digit", year: "numeric" });
+}
+
+function Avatar({ name, size = "md" }: { name: string; size?: "md" | "lg" }) {
+  const cls = size === "lg" ? "w-10 h-10 text-base" : "w-[49px] h-[49px] text-lg";
+  const initial = (name || "?").trim().charAt(0).toUpperCase();
+  return (
+    <div
+      className={`${cls} rounded-full bg-[#6b7c85] text-white flex items-center justify-center font-normal shrink-0 select-none`}
+    >
+      {initial || <SvgUser className="w-5 h-5" />}
+    </div>
+  );
+}
 
 export function WhatsAppView() {
   const rpc = useRpc<typeof rpcContract>();
@@ -242,7 +327,7 @@ export function WhatsAppView() {
   const handleDeleteSession = async (sessionId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (sessions.length <= 1) return;
-    if (!confirm("Are you sure you want to disconnect and remove this WhatsApp account session?")) {
+    if (!confirm("Disconnect and remove this WhatsApp account from Blackbox?")) {
       return;
     }
     try {
@@ -466,12 +551,12 @@ export function WhatsAppView() {
         message: testMessage.trim(),
         session_id: activeSessionId,
       });
-      setTestResult(res.success ? "✓ Sent successfully" : `✗ Error: ${res.message}`);
+      setTestResult(res.success ? "Sent" : `Error: ${res.message}`);
       if (res.success) {
         fetchChats();
       }
     } catch (e: any) {
-      setTestResult(`✗ Error: ${e.message}`);
+      setTestResult(`Error: ${e.message}`);
     }
   };
 
@@ -482,43 +567,55 @@ export function WhatsAppView() {
     return c.name.toLowerCase().includes(q) || c.jid.toLowerCase().includes(q);
   });
 
+  const isTab = (t: string) => activeTab === t;
+
+  const connectionLabel = status.connected
+    ? "Connected"
+    : status.status === "needs_scan"
+    ? "Pairing needed"
+    : status.status === "stopped"
+    ? "Bridge stopped"
+    : status.status === "error"
+    ? "Error"
+    : "Connecting...";
+
   return (
-    <div className="flex flex-col h-full bg-[#0c0d0e] text-[#e1e4ea] font-sans antialiased select-none overflow-hidden">
-      {/* ============================================================ */}
-      {/* 0. TOP ACCOUNT SESSIONS TABS BAR                            */}
-      {/* ============================================================ */}
-      <div className="h-9 bg-[#0b0c0e] border-b border-[rgba(255,255,255,0.08)] flex items-center px-3 gap-1.5 overflow-x-auto select-none shrink-0 no-scrollbar">
+    <div className="wa-root flex flex-col h-full bg-[var(--wa-app-bg)] text-[var(--wa-text)] font-sans antialiased overflow-hidden">
+      <style>{WA_STYLES}</style>
+
+      {/* ==================== ACCOUNT SESSION BAR ==================== */}
+      <div className="h-11 bg-[var(--wa-header)] border-b border-[var(--wa-border)] flex items-center px-2 gap-1 overflow-x-auto shrink-0 no-scrollbar">
         {sessions.map((sess) => {
           const isActive = sess.id === activeSessionId;
-          const phoneDisplay = sess.phone ? `+${sess.phone}` : sess.name || sess.id;
+          const label = sess.phone ? `+${sess.phone}` : sess.name || sess.id;
           return (
             <div
               key={sess.id}
               onClick={() => handleSwitchSession(sess.id)}
-              className={`group relative flex items-center gap-2 px-3 py-1 rounded-md text-xs cursor-pointer transition-all border ${
+              className={`group relative flex items-center gap-1.5 px-2.5 h-7 rounded-md text-[13px] cursor-pointer transition-colors ${
                 isActive
-                  ? "bg-[#16171d] text-neutral-100 font-medium border-emerald-500/50 shadow-sm"
-                  : "bg-[#101114] text-neutral-400 hover:text-neutral-200 hover:bg-[#14151a] border-[rgba(255,255,255,0.05)]"
+                  ? "bg-[var(--wa-active)] text-[var(--wa-text)]"
+                  : "text-[var(--wa-text-secondary)] hover:bg-[var(--wa-hover)] hover:text-[var(--wa-text)]"
               }`}
             >
               <span
                 className={`w-2 h-2 rounded-full shrink-0 ${
                   sess.connected
-                    ? "bg-emerald-400 shadow-[0_0_6px_rgba(52,211,153,0.6)]"
+                    ? "bg-[var(--wa-accent-strong)]"
                     : sess.status === "needs_scan"
-                    ? "bg-amber-400 animate-pulse"
-                    : "bg-neutral-500"
+                    ? "bg-[var(--wa-warning)] animate-pulse"
+                    : "bg-[var(--wa-text-secondary)]"
                 }`}
                 title={sess.status}
               />
-              <span className="truncate max-w-[150px] tracking-tight">{phoneDisplay}</span>
+              <span className="truncate max-w-[140px]">{label}</span>
               {sessions.length > 1 && (
                 <button
                   onClick={(e) => handleDeleteSession(sess.id, e)}
-                  title="Disconnect and remove session"
-                  className="opacity-0 group-hover:opacity-100 p-0.5 hover:bg-neutral-800 rounded text-neutral-500 hover:text-red-400 transition-opacity ml-0.5"
+                  title="Disconnect and remove this account"
+                  className="opacity-0 group-hover:opacity-100 p-0.5 rounded text-[var(--wa-text-secondary)] hover:text-[var(--wa-danger)] transition-opacity"
                 >
-                  <SvgX className="w-2.5 h-2.5" />
+                  <SvgX className="w-3 h-3" />
                 </button>
               )}
             </div>
@@ -528,296 +625,236 @@ export function WhatsAppView() {
         <button
           onClick={() => handleCreateSession()}
           disabled={creatingSession}
-          title="Add New WhatsApp Account / Session"
-          className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs text-neutral-400 hover:text-emerald-400 hover:bg-[#15171d] transition-colors ml-1 border border-dashed border-[rgba(255,255,255,0.12)] hover:border-emerald-500/40 disabled:opacity-50 disabled:cursor-not-allowed"
+          title="Link another WhatsApp account"
+          className="flex items-center gap-1 px-2.5 h-7 rounded-md text-[13px] text-[var(--wa-accent-strong)] hover:bg-[var(--wa-hover)] transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
         >
           {creatingSession ? (
-            <SvgRefresh className="w-3 h-3 animate-spin" />
+            <SvgRefresh className="w-3.5 h-3.5 animate-spin" />
           ) : (
-            <SvgPlus className="w-3 h-3" />
+            <SvgPlus className="w-3.5 h-3.5" />
           )}
-          <span className="text-[11px] font-medium">{creatingSession ? "Adding..." : "+ Account"}</span>
+          <span>{creatingSession ? "Adding..." : "Account"}</span>
+        </button>
+
+        <div className="flex-1" />
+
+        {/* Connection state + bridge controls */}
+        <span
+          className={`flex items-center gap-1.5 text-[12px] shrink-0 ${
+            status.connected ? "text-[var(--wa-accent-strong)]" : "text-[var(--wa-text-secondary)]"
+          }`}
+        >
+          <span
+            className={`w-1.5 h-1.5 rounded-full ${
+              status.connected
+                ? "bg-[var(--wa-accent-strong)]"
+                : status.status === "needs_scan"
+                ? "bg-[var(--wa-warning)] animate-pulse"
+                : "bg-[var(--wa-text-secondary)]"
+            }`}
+          />
+          {connectionLabel}
+        </span>
+        <button
+          onClick={() => {
+            fetchStatus();
+            fetchChats();
+          }}
+          title="Refresh"
+          className="p-1.5 rounded-full text-[var(--wa-icon)] hover:bg-[var(--wa-hover)] transition-colors shrink-0"
+        >
+          <SvgRefresh className="w-4 h-4" />
+        </button>
+        <button
+          onClick={async () => {
+            await rpc.call("restart_bridge");
+            fetchStatus();
+          }}
+          title="Restart bridge"
+          className="p-1.5 rounded-full text-[var(--wa-icon)] hover:bg-[var(--wa-hover)] transition-colors shrink-0"
+        >
+          <SvgPower className="w-4 h-4" />
         </button>
       </div>
 
-      {/* ============================================================ */}
-      {/* 1. TOP HEADER / STATUS BAR                                  */}
-      {/* ============================================================ */}
-      <header className="h-12 px-4 bg-[#111215] border-b border-[rgba(255,255,255,0.07)] flex items-center justify-between shrink-0">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
-            <SvgWhatsApp className="w-4 h-4" />
-          </div>
-          <div className="flex flex-col">
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold text-neutral-100 tracking-wide">WhatsApp</span>
-              <span
-                className={`text-[10px] font-mono px-1.5 py-0.5 rounded-full border ${
-                  status.connected
-                    ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
-                    : status.status === "needs_scan"
-                    ? "bg-amber-500/10 text-amber-400 border-amber-500/30"
-                    : "bg-neutral-800 text-neutral-400 border-neutral-700"
-                }`}
-              >
-                ● {status.connected
-                  ? "Connected"
-                  : status.status === "needs_scan"
-                  ? "Pairing Needed"
-                  : status.status === "stopped"
-                  ? "Bridge Stopped"
-                  : status.status === "error"
-                  ? "Error"
-                  : "Connecting..."}
-              </span>
-            </div>
-            {status.phone && (
-              <span className="text-[10px] text-neutral-400 font-mono">+{status.phone}</span>
-            )}
-          </div>
-        </div>
-
-        {/* Header Actions & Tab Switch */}
-        <div className="flex items-center gap-2">
-          {status.connected && (
-            <div className="flex bg-[#18191d] p-0.5 rounded-md border border-[rgba(255,255,255,0.06)] text-xs">
-              <button
-                onClick={() => setActiveTab("chats")}
-                className={`px-3 py-1 rounded transition-colors ${
-                  activeTab === "chats"
-                    ? "bg-[#25272e] text-neutral-100 font-medium shadow-sm"
-                    : "text-neutral-400 hover:text-neutral-200"
-                }`}
-              >
-                Chats
-              </button>
-              <button
-                onClick={() => setActiveTab("tools")}
-                className={`px-3 py-1 rounded transition-colors ${
-                  activeTab === "tools"
-                    ? "bg-[#25272e] text-neutral-100 font-medium shadow-sm"
-                    : "text-neutral-400 hover:text-neutral-200"
-                }`}
-              >
-                Agent Tools ({REGISTERED_TOOLS.length})
-              </button>
-            </div>
-          )}
-
-          <button
-            onClick={() => {
-              fetchStatus();
-              fetchChats();
-            }}
-            title="Refresh Status & Chats"
-            className="p-2 rounded-md bg-[#18191d] hover:bg-[#202227] text-neutral-400 hover:text-neutral-200 border border-[rgba(255,255,255,0.06)] transition-all"
-          >
-            <SvgRefresh className="w-3.5 h-3.5" />
-          </button>
-
-          <button
-            onClick={async () => {
-              await rpc.call("restart_bridge");
-              fetchStatus();
-            }}
-            title="Restart WhatsApp Bridge"
-            className="p-2 rounded-md bg-[#18191d] hover:bg-[#202227] text-amber-400/80 hover:text-amber-400 border border-[rgba(255,255,255,0.06)] transition-all"
-          >
-            <SvgPower className="w-3.5 h-3.5" />
-          </button>
-        </div>
-      </header>
-
-      {/* ============================================================ */}
-      {/* 2. MAIN CONTENT AREA                                         */}
-      {/* ============================================================ */}
+      {/* ==================== MAIN AREA ==================== */}
       <div className="flex-1 flex overflow-hidden relative">
-        {/* VIEW A: NOT CONNECTED / PAIRING SCREEN */}
         {!status.connected ? (
-          <div className="flex-1 flex flex-col items-center justify-center p-6 bg-[#0c0d0e] overflow-y-auto">
-            <div className="max-w-md w-full bg-[#121316] border border-[rgba(255,255,255,0.08)] rounded-2xl p-6 shadow-2xl flex flex-col items-center text-center">
-              <div className="relative mb-4">
-                <div className="w-14 h-14 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shadow-[0_0_30px_rgba(37,211,102,0.15)]">
-                  <SvgWhatsApp className="w-8 h-8" />
-                </div>
+          /* ---------- PAIRING / CONNECTING SCREEN ---------- */
+          <div className="wa-chat-doodle flex-1 flex flex-col items-center justify-center p-6 overflow-y-auto">
+            <div className="max-w-sm w-full bg-[var(--wa-panel)] border border-[var(--wa-border)] rounded-lg p-8 flex flex-col items-center text-center shadow-lg">
+              <div className="w-12 h-12 rounded-full bg-[var(--wa-panel-raised)] flex items-center justify-center text-[var(--wa-accent-strong)] mb-4">
+                <SvgWhatsApp className="w-6 h-6" />
               </div>
 
-              <h2 className="text-base font-semibold text-neutral-100 tracking-tight mb-1">
-                Connect WhatsApp to Blackbox
+              <h2 className="text-lg font-light text-[var(--wa-text)] mb-1">
+                Link WhatsApp to Blackbox
               </h2>
-              <p className="text-xs text-neutral-400 mb-6 max-w-xs leading-relaxed">
-                Scan the QR code with your mobile app to enable AI agent tools, chat browsing, and message sending.
+              <p className="text-[13px] text-[var(--wa-text-secondary)] mb-6 leading-relaxed">
+                Scan the QR code with your phone to enable chats and agent tools.
               </p>
 
-              {/* QR Code Container */}
-              <div className="relative bg-white p-3 rounded-xl border border-neutral-200 shadow-inner mb-6 flex items-center justify-center min-w-[260px] min-h-[260px]">
+              <div className="bg-white p-3 rounded-lg mb-6 flex items-center justify-center w-[264px] h-[264px]">
                 {status.qrDataUrl ? (
                   <img
                     src={status.qrDataUrl}
-                    alt="WhatsApp Pairing QR Code"
-                    className="w-60 h-60 rounded-lg select-none"
+                    alt="Pairing QR code"
+                    className="w-60 h-60 select-none"
                   />
                 ) : (
-                  <div className="flex flex-col items-center justify-center gap-2 text-neutral-600 py-10">
-                    <SvgRefresh className="w-6 h-6 animate-spin text-neutral-400" />
-                    <span className="text-xs font-mono text-neutral-500">Generating pairing QR code...</span>
+                  <div className="flex flex-col items-center justify-center gap-2 text-neutral-500">
+                    <SvgRefresh className="w-6 h-6 animate-spin" />
+                    <span className="text-xs">
+                      {status.status === "stopped"
+                        ? "Bridge is stopped"
+                        : status.status === "error"
+                        ? "Bridge error"
+                        : "Requesting QR code..."}
+                    </span>
                   </div>
                 )}
               </div>
 
-              {/* Steps */}
-              <div className="w-full bg-[#18191e] border border-[rgba(255,255,255,0.05)] rounded-xl p-3.5 mb-5 text-left text-xs space-y-2 text-neutral-300">
-                <div className="flex items-center gap-2.5">
-                  <span className="w-4 h-4 rounded-full bg-emerald-500/20 text-emerald-400 font-mono text-[10px] flex items-center justify-center shrink-0">
-                    1
-                  </span>
+              {status.error && (
+                <div className="w-full mb-4 px-3 py-2 rounded-md bg-[rgba(241,92,109,0.1)] border border-[rgba(241,92,109,0.3)] text-[12px] text-[var(--wa-danger)] text-left break-words">
+                  {status.error}
+                </div>
+              )}
+
+              <div className="w-full text-left text-[13px] space-y-2.5 text-[var(--wa-text-secondary)] mb-6">
+                <div className="flex items-center gap-3">
+                  <span className="w-5 h-5 rounded-full border border-[var(--wa-accent)] text-[var(--wa-accent-strong)] text-[11px] flex items-center justify-center shrink-0">1</span>
                   <span>Open WhatsApp on your phone</span>
                 </div>
-                <div className="flex items-center gap-2.5">
-                  <span className="w-4 h-4 rounded-full bg-emerald-500/20 text-emerald-400 font-mono text-[10px] flex items-center justify-center shrink-0">
-                    2
-                  </span>
-                  <span>Tap <strong>Settings</strong> &gt; <strong>Linked Devices</strong></span>
+                <div className="flex items-center gap-3">
+                  <span className="w-5 h-5 rounded-full border border-[var(--wa-accent)] text-[var(--wa-accent-strong)] text-[11px] flex items-center justify-center shrink-0">2</span>
+                  <span>Tap Settings &gt; Linked devices</span>
                 </div>
-                <div className="flex items-center gap-2.5">
-                  <span className="w-4 h-4 rounded-full bg-emerald-500/20 text-emerald-400 font-mono text-[10px] flex items-center justify-center shrink-0">
-                    3
-                  </span>
-                  <span>Tap <strong>Link a Device</strong> and point your camera here</span>
+                <div className="flex items-center gap-3">
+                  <span className="w-5 h-5 rounded-full border border-[var(--wa-accent)] text-[var(--wa-accent-strong)] text-[11px] flex items-center justify-center shrink-0">3</span>
+                  <span>Tap Link a device and point your camera at the code</span>
                 </div>
               </div>
 
-              {/* Action Buttons */}
-              <div className="flex items-center gap-3 w-full">
+              <div className="flex items-center gap-2.5 w-full">
                 <button
                   onClick={() => fetchStatus()}
-                  className="flex-1 py-2 px-3 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-medium transition-colors shadow-sm"
+                  className="flex-1 py-2 px-4 bg-[var(--wa-accent)] hover:bg-[var(--wa-accent-strong)] text-[#111b21] rounded-full text-[14px] font-medium transition-colors"
                 >
-                  I Scanned It / Check
+                  I scanned it
                 </button>
                 <button
                   onClick={async () => {
                     await rpc.call("restart_bridge");
                     fetchStatus();
                   }}
-                  className="py-2 px-3 bg-[#1e2025] hover:bg-[#252830] text-neutral-300 rounded-lg text-xs font-medium border border-[rgba(255,255,255,0.08)] transition-colors"
+                  className="py-2 px-4 border border-[var(--wa-border)] text-[var(--wa-text-secondary)] hover:bg-[var(--wa-hover)] rounded-full text-[14px] transition-colors"
                 >
-                  Restart Bridge
+                  Restart bridge
                 </button>
               </div>
             </div>
           </div>
         ) : activeTab === "tools" ? (
-          /* VIEW B: AGENT TOOLS & DIAGNOSTICS */
-          <div className="flex-1 flex flex-col p-6 bg-[#0c0d0e] overflow-y-auto">
-            <div className="max-w-3xl w-full mx-auto space-y-6">
-              {/* Header Card */}
-              <div className="bg-[#121316] border border-[rgba(255,255,255,0.08)] rounded-xl p-5 shadow-lg">
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2 text-emerald-400 font-semibold text-sm">
-                    <SvgTerminal className="w-4 h-4" />
-                    <span>WhatsApp MCP Agent Interface</span>
+          /* ---------- AGENT TOOLS & DIAGNOSTICS ---------- */
+          <div className="flex-1 flex flex-col p-6 bg-[var(--wa-chat-bg)] overflow-y-auto">
+            <div className="max-w-3xl w-full mx-auto space-y-4">
+              <div className="bg-[var(--wa-panel)] border border-[var(--wa-border)] rounded-lg p-5">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2 text-[var(--wa-text)] font-medium text-[15px]">
+                    <SvgTerminal className="w-4 h-4 text-[var(--wa-accent-strong)]" />
+                    <span>Agent interface</span>
                   </div>
-                  <span className="text-xs font-mono text-emerald-400 bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
-                    {REGISTERED_TOOLS.length} of {REGISTERED_TOOLS.length} Tools Active
+                  <span className="text-[12px] text-[var(--wa-accent-strong)]">
+                    {REGISTERED_TOOLS.length} tools registered
                   </span>
                 </div>
-                <p className="text-xs text-neutral-400 leading-relaxed mb-4">
-                  Full suite of WhatsApp multidevice tools registered in Blackbox. Autonomous agents and threads can query chat histories, inspect media, search contacts, and dispatch notifications.
+                <p className="text-[13px] text-[var(--wa-text-secondary)] leading-relaxed mb-4">
+                  Agents in Blackbox threads can read chat history, resolve contacts and send messages through this bridge.
                 </p>
-
-                {/* Status Badges */}
-                <div className="grid grid-cols-3 gap-3 font-mono text-xs">
-                  <div className="bg-[#18191e] p-2.5 rounded-lg border border-[rgba(255,255,255,0.05)]">
-                    <div className="text-[10px] text-neutral-500 uppercase">Paired Phone</div>
-                    <div className="text-neutral-200 mt-0.5">+{status.phone || "—"}</div>
+                <div className="grid grid-cols-3 gap-2.5 text-[13px]">
+                  <div className="bg-[var(--wa-panel-raised)] p-2.5 rounded-md">
+                    <div className="text-[11px] text-[var(--wa-text-secondary)] uppercase tracking-wide">Paired phone</div>
+                    <div className="text-[var(--wa-text)] mt-0.5">+{status.phone || "—"}</div>
                   </div>
-                  <div className="bg-[#18191e] p-2.5 rounded-lg border border-[rgba(255,255,255,0.05)]">
-                    <div className="text-[10px] text-neutral-500 uppercase">Synced Chats</div>
-                    <div className="text-emerald-400 mt-0.5">{chats.length}</div>
+                  <div className="bg-[var(--wa-panel-raised)] p-2.5 rounded-md">
+                    <div className="text-[11px] text-[var(--wa-text-secondary)] uppercase tracking-wide">Synced chats</div>
+                    <div className="text-[var(--wa-accent-strong)] mt-0.5">{chats.length}</div>
                   </div>
-                  <div className="bg-[#18191e] p-2.5 rounded-lg border border-[rgba(255,255,255,0.05)]">
-                    <div className="text-[10px] text-neutral-500 uppercase">Engine Protocol</div>
-                    <div className="text-neutral-200 mt-0.5">whatsmeow (Go Daemon)</div>
+                  <div className="bg-[var(--wa-panel-raised)] p-2.5 rounded-md">
+                    <div className="text-[11px] text-[var(--wa-text-secondary)] uppercase tracking-wide">Engine</div>
+                    <div className="text-[var(--wa-text)] mt-0.5">whatsmeow</div>
                   </div>
                 </div>
               </div>
 
-              {/* Direct Message Tester */}
-              <div className="bg-[#121316] border border-[rgba(255,255,255,0.08)] rounded-xl p-5 shadow-lg">
-                <h3 className="text-xs font-semibold text-neutral-200 uppercase tracking-wider mb-3">
-                  Quick Message Dispatcher
+              <div className="bg-[var(--wa-panel)] border border-[var(--wa-border)] rounded-lg p-5">
+                <h3 className="text-[13px] font-medium text-[var(--wa-text)] uppercase tracking-wide mb-3">
+                  Quick dispatcher
                 </h3>
                 <div className="space-y-3">
                   <div>
-                    <label className="text-[11px] text-neutral-400 block mb-1">Recipient Phone or JID</label>
+                    <label className="text-[12px] text-[var(--wa-text-secondary)] block mb-1">Recipient phone or JID</label>
                     <input
                       type="text"
-                      placeholder="e.g. +1234567890 or 1234567890@s.whatsapp.net"
+                      placeholder="+1234567890 or 1234567890@s.whatsapp.net"
                       value={testRecipient}
                       onChange={(e) => setTestRecipient(e.target.value)}
-                      className="w-full bg-[#18191e] border border-[rgba(255,255,255,0.08)] rounded-lg px-3 py-2 text-xs text-neutral-100 placeholder-neutral-500 focus:outline-none focus:border-emerald-500/50 font-mono"
+                      className="w-full bg-[var(--wa-input)] border border-transparent rounded-lg px-3 py-2 text-[13px] text-[var(--wa-text)] placeholder-[var(--wa-text-secondary)] focus:outline-none focus:border-[var(--wa-accent)]"
                     />
                   </div>
                   <div>
-                    <label className="text-[11px] text-neutral-400 block mb-1">Message Text</label>
+                    <label className="text-[12px] text-[var(--wa-text-secondary)] block mb-1">Message</label>
                     <textarea
-                      placeholder="Write a test message..."
+                      placeholder="Type a test message..."
                       rows={2}
                       value={testMessage}
                       onChange={(e) => setTestMessage(e.target.value)}
-                      className="w-full bg-[#18191e] border border-[rgba(255,255,255,0.08)] rounded-lg px-3 py-2 text-xs text-neutral-100 placeholder-neutral-500 focus:outline-none focus:border-emerald-500/50 resize-none"
+                      className="w-full bg-[var(--wa-input)] border border-transparent rounded-lg px-3 py-2 text-[13px] text-[var(--wa-text)] placeholder-[var(--wa-text-secondary)] focus:outline-none focus:border-[var(--wa-accent)] resize-none"
                     />
                   </div>
                   <div className="flex items-center justify-between pt-1">
                     <button
                       onClick={handleSendTestMessage}
-                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-medium transition-colors"
+                      className="px-5 py-2 bg-[var(--wa-accent)] hover:bg-[var(--wa-accent-strong)] text-[#111b21] rounded-full text-[14px] font-medium transition-colors"
                     >
-                      Send Message
+                      Send
                     </button>
                     {testResult && (
-                      <span className="text-xs font-mono text-neutral-300">{testResult}</span>
+                      <span className="text-[12px] text-[var(--wa-text-secondary)]">{testResult}</span>
                     )}
                   </div>
                 </div>
               </div>
 
-              {/* Registered Agent Tools List (All 12 Tools) */}
-              <div className="bg-[#121316] border border-[rgba(255,255,255,0.08)] rounded-xl p-5 shadow-lg">
-                <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-xs font-semibold text-neutral-200 uppercase tracking-wider">
-                    Registered MCP Agent Tools (12)
+              <div className="bg-[var(--wa-panel)] border border-[var(--wa-border)] rounded-lg p-5">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className="text-[13px] font-medium text-[var(--wa-text)] uppercase tracking-wide">
+                    Registered agent tools
                   </h3>
-                  <span className="text-[11px] text-neutral-500">Autonomous Agent Runtime</span>
+                  <span className="text-[12px] text-[var(--wa-text-secondary)]">12 tools</span>
                 </div>
-                <div className="divide-y divide-[rgba(255,255,255,0.05)] text-xs">
-                  {REGISTERED_TOOLS.map((t, idx) => (
+                <div className="divide-y divide-[var(--wa-border)] text-[13px]">
+                  {REGISTERED_TOOLS.map((t) => (
                     <div key={t.name} className="py-2.5 flex items-start justify-between gap-4">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <span className="text-[10px] text-neutral-600 font-mono w-4">{idx + 1}.</span>
-                        <div className="flex flex-col min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="font-mono text-emerald-400 font-medium">{t.name}</span>
-                            <span
-                              className={`text-[9px] px-1.5 py-0.2 rounded font-mono uppercase ${
-                                t.category === "Write"
-                                  ? "bg-amber-500/10 text-amber-400 border border-amber-500/20"
-                                  : t.category === "Read"
-                                  ? "bg-blue-500/10 text-blue-400 border border-blue-500/20"
-                                  : "bg-purple-500/10 text-purple-400 border border-purple-500/20"
-                              }`}
-                            >
-                              {t.category}
-                            </span>
-                          </div>
-                          <span className="text-neutral-400 text-[11px] mt-0.5 leading-tight">{t.desc}</span>
+                      <div className="flex flex-col min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="font-mono text-[var(--wa-accent-strong)]">{t.name}</span>
+                          <span
+                            className={`text-[10px] px-1.5 rounded ${
+                              t.category === "Write"
+                                ? "bg-[rgba(240,179,48,0.12)] text-[var(--wa-warning)]"
+                                : t.category === "Read"
+                                ? "bg-[rgba(83,189,235,0.12)] text-[var(--wa-tick-read)]"
+                                : "bg-[var(--wa-panel-raised)] text-[var(--wa-text-secondary)]"
+                            }`}
+                          >
+                            {t.category}
+                          </span>
                         </div>
+                        <span className="text-[var(--wa-text-secondary)] text-[12px] mt-0.5 leading-snug">{t.desc}</span>
                       </div>
-                      <div className="flex items-center gap-1.5 shrink-0 pt-0.5">
-                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                        <span className="text-[10px] font-mono text-emerald-400">Ready</span>
-                      </div>
+                      <span className="w-1.5 h-1.5 rounded-full bg-[var(--wa-accent-strong)] shrink-0 mt-1.5" />
                     </div>
                   ))}
                 </div>
@@ -825,57 +862,73 @@ export function WhatsAppView() {
             </div>
           </div>
         ) : (
-          /* VIEW C: LIVE CHAT CLIENT (Left column: Chats list, Right column: Conversation) */
+          /* ---------- CHAT CLIENT ---------- */
           <>
-            {/* 2A. CHATS LIST SIDEBAR (w-80) */}
-            <div className="w-80 bg-[#101114] border-r border-[rgba(255,255,255,0.07)] flex flex-col shrink-0">
-              {/* Chat Search Bar + New Chat Trigger */}
-              <div className="p-3 border-b border-[rgba(255,255,255,0.06)] flex items-center gap-2">
-                <div className="relative flex-1 flex items-center">
-                  <SvgSearch className="w-3.5 h-3.5 absolute left-3 text-neutral-500" />
-                  <input
-                    type="text"
-                    placeholder="Search chats or contacts..."
-                    value={chatSearch}
-                    onChange={(e) => setChatSearch(e.target.value)}
-                    className="w-full bg-[#18191e] border border-[rgba(255,255,255,0.06)] rounded-lg pl-8 pr-3 py-1.5 text-xs text-neutral-200 placeholder-neutral-500 focus:outline-none focus:border-emerald-500/40 transition-colors"
-                  />
+            {/* Chat list column */}
+            <div className="w-[340px] max-w-[40%] bg-[var(--wa-panel)] border-r border-[var(--wa-border)] flex flex-col shrink-0">
+              {/* List header: title + tabs + new chat */}
+              <div className="h-[60px] px-4 bg-[var(--wa-header)] flex items-center justify-between shrink-0">
+                <div className="flex bg-[var(--wa-input)] p-0.5 rounded-full text-[13px]">
+                  <button
+                    onClick={() => setActiveTab("chats")}
+                    className={`px-3.5 py-1 rounded-full transition-colors ${
+                      isTab("chats")
+                        ? "bg-[var(--wa-active)] text-[var(--wa-text)]"
+                        : "text-[var(--wa-text-secondary)] hover:text-[var(--wa-text)]"
+                    }`}
+                  >
+                    Chats
+                  </button>
+                  <button
+                    onClick={() => setActiveTab("tools")}
+                    className={`px-3.5 py-1 rounded-full transition-colors ${
+                      isTab("tools")
+                        ? "bg-[var(--wa-active)] text-[var(--wa-text)]"
+                        : "text-[var(--wa-text-secondary)] hover:text-[var(--wa-text)]"
+                    }`}
+                  >
+                    Agent tools
+                  </button>
                 </div>
                 <button
                   onClick={() => setShowNewChatDialog(true)}
-                  title="Start New Chat"
-                  className="p-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white shrink-0 transition-colors shadow-sm"
+                  title="New chat"
+                  className="p-2 rounded-full text-[var(--wa-icon)] hover:bg-[var(--wa-hover)] transition-colors"
                 >
-                  <SvgPlus className="w-3.5 h-3.5" />
+                  <SvgPlus className="w-5 h-5" />
                 </button>
               </div>
 
-              {/* Chat Items */}
-              <div className="flex-1 overflow-y-auto divide-y divide-[rgba(255,255,255,0.03)]">
+              {/* Search */}
+              <div className="px-3 py-2 shrink-0">
+                <div className="relative flex items-center">
+                  <SvgSearch className="w-4 h-4 absolute left-3 text-[var(--wa-text-secondary)]" />
+                  <input
+                    type="text"
+                    placeholder="Search or start a new chat"
+                    value={chatSearch}
+                    onChange={(e) => setChatSearch(e.target.value)}
+                    className="w-full bg-[var(--wa-input)] border border-transparent rounded-lg pl-9 pr-3 py-1.5 text-[14px] text-[var(--wa-text)] placeholder-[var(--wa-text-secondary)] focus:outline-none"
+                  />
+                </div>
+              </div>
+
+              {/* Chat items */}
+              <div className="flex-1 overflow-y-auto">
                 {filteredChats.length === 0 ? (
-                  <div className="p-6 text-center text-xs text-neutral-500 flex flex-col items-center gap-2">
+                  <div className="p-8 text-center text-[13px] text-[var(--wa-text-secondary)] flex flex-col items-center gap-2">
                     {chats.length === 0 ? (
                       <>
-                        <SvgRefresh className="w-4 h-4 animate-spin text-neutral-600" />
-                        <span>Loading chats or synchronizing...</span>
+                        <SvgRefresh className="w-4 h-4 animate-spin" />
+                        <span>Syncing chats...</span>
                       </>
                     ) : (
-                      <>
-                        <span>No matching chats found</span>
-                        <button
-                          onClick={() => setShowNewChatDialog(true)}
-                          className="text-emerald-400 hover:underline text-[11px]"
-                        >
-                          + Start new conversation
-                        </button>
-                      </>
+                      <span>No chats found</span>
                     )}
                   </div>
                 ) : (
                   filteredChats.map((chat) => {
                     const isSelected = selectedChat?.jid === chat.jid;
-                    const initial = (chat.name || "U")[0].toUpperCase();
-
                     return (
                       <div
                         key={chat.jid}
@@ -883,35 +936,25 @@ export function WhatsAppView() {
                           setSelectedChat(chat);
                           setErrorMessage(null);
                         }}
-                        className={`p-3 cursor-pointer flex items-center gap-3 transition-colors ${
-                          isSelected
-                            ? "bg-[#1c1e24] border-l-2 border-emerald-500 text-neutral-100"
-                            : "hover:bg-[#15161a] text-neutral-300"
+                        className={`px-3 py-2 cursor-pointer flex items-center gap-3 transition-colors border-t border-[var(--wa-border)] first:border-t-0 ${
+                          isSelected ? "bg-[var(--wa-active)]" : "hover:bg-[var(--wa-hover)]"
                         }`}
                       >
-                        {/* Avatar */}
-                        <div className="w-9 h-9 rounded-full bg-[#202228] border border-[rgba(255,255,255,0.08)] flex items-center justify-center font-semibold text-xs text-emerald-400 shrink-0">
-                          {initial}
-                        </div>
-
-                        {/* Text */}
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between gap-1 mb-0.5">
-                            <span className="text-xs font-medium truncate text-neutral-200">
+                        <Avatar name={chat.name || chat.jid} />
+                        <div className="flex-1 min-w-0 py-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[16px] text-[var(--wa-text)] truncate">
                               {chat.name || chat.jid}
                             </span>
-                            {chat.last_message_time && (
-                              <span className="text-[10px] text-neutral-500 shrink-0 font-mono">
-                                {new Date(chat.last_message_time).toLocaleTimeString([], {
-                                  hour: "2-digit",
-                                  minute: "2-digit",
-                                })}
-                              </span>
-                            )}
+                            <span className="text-[12px] text-[var(--wa-text-secondary)] shrink-0">
+                              {formatListTime(chat.last_message_time)}
+                            </span>
                           </div>
-                          <p className="text-[11px] text-neutral-400 truncate">
-                            {chat.last_is_from_me ? <span className="text-neutral-500">You: </span> : null}
-                            {chat.last_message || "—"}
+                          <p className="text-[13px] text-[var(--wa-text-secondary)] truncate mt-0.5">
+                            {chat.last_is_from_me ? (
+                              <SvgCheckCheck className="w-3.5 h-3.5 inline mr-1 text-[var(--wa-tick-read)]" />
+                            ) : null}
+                            {chat.last_message || " "}
                           </p>
                         </div>
                       </div>
@@ -921,55 +964,50 @@ export function WhatsAppView() {
               </div>
             </div>
 
-            {/* 2B. ACTIVE CONVERSATION PANE */}
-            <div className="flex-1 flex flex-col bg-[#0c0d0e] overflow-hidden">
+            {/* Conversation column */}
+            <div className="flex-1 flex flex-col overflow-hidden">
               {selectedChat ? (
                 <>
-                  {/* Chat Top Header */}
-                  <div className="h-12 px-4 bg-[#111215] border-b border-[rgba(255,255,255,0.07)] flex items-center justify-between shrink-0">
-                    <div className="flex items-center gap-3">
-                      <div className="w-7 h-7 rounded-full bg-[#1e2026] text-emerald-400 font-semibold text-xs flex items-center justify-center">
-                        {(selectedChat.name || "U")[0].toUpperCase()}
-                      </div>
-                      <div>
-                        <h3 className="text-xs font-semibold text-neutral-100">{selectedChat.name}</h3>
-                        <span className="text-[10px] text-neutral-500 font-mono">{selectedChat.jid}</span>
-                      </div>
+                  {/* Conversation header */}
+                  <div className="h-[60px] px-4 bg-[var(--wa-header)] flex items-center gap-3 shrink-0">
+                    <Avatar name={selectedChat.name || selectedChat.jid} size="lg" />
+                    <div className="min-w-0">
+                      <h3 className="text-[16px] text-[var(--wa-text)] truncate leading-tight">
+                        {selectedChat.name || selectedChat.jid}
+                      </h3>
+                      <span className="text-[13px] text-[var(--wa-text-secondary)] truncate block">
+                        {selectedChat.jid.endsWith("@g.us") ? "Group" : "online"}
+                      </span>
                     </div>
                   </div>
 
-                  {/* Error Feedback Banner */}
+                  {/* Error banner */}
                   {errorMessage && (
-                    <div className="bg-red-500/10 border-b border-red-500/20 px-4 py-2 flex items-center justify-between text-xs text-red-300">
-                      <div className="flex items-center gap-2">
-                        <SvgAlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
-                        <span>{errorMessage}</span>
+                    <div className="bg-[rgba(241,92,109,0.1)] border-b border-[rgba(241,92,109,0.3)] px-4 py-2 flex items-center justify-between text-[13px] text-[var(--wa-danger)]">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <SvgAlertTriangle className="w-4 h-4 shrink-0" />
+                        <span className="truncate">{errorMessage}</span>
                       </div>
                       <button
                         onClick={() => setErrorMessage(null)}
-                        className="text-red-400 hover:text-red-200 text-xs px-1"
+                        className="text-[var(--wa-danger)] hover:opacity-70 px-1 shrink-0"
                       >
-                        <SvgX className="w-3.5 h-3.5" />
+                        <SvgX className="w-4 h-4" />
                       </button>
                     </div>
                   )}
 
-                  {/* Messages Stream */}
-                  <div className="flex-1 overflow-y-auto p-4 space-y-3">
+                  {/* Messages */}
+                  <div className="wa-chat-doodle flex-1 overflow-y-auto px-[8%] py-4 space-y-1.5">
                     {messages.length === 0 ? (
-                      <div className="h-full flex items-center justify-center text-xs text-neutral-500">
-                        No messages loaded for this chat yet.
+                      <div className="h-full flex items-center justify-center">
+                        <span className="bg-[var(--wa-panel-raised)] text-[var(--wa-text-secondary)] text-[13px] px-4 py-1.5 rounded-md">
+                          No messages here yet
+                        </span>
                       </div>
                     ) : (
                       messages.map((msg) => {
                         const isMe = msg.is_from_me;
-                        const timeStr = msg.timestamp
-                          ? new Date(msg.timestamp).toLocaleTimeString([], {
-                              hour: "2-digit",
-                              minute: "2-digit",
-                            })
-                          : "";
-
                         const dlStatus = downloadingMedia[msg.id];
                         const dlPath = downloadedPaths[msg.id];
 
@@ -979,36 +1017,37 @@ export function WhatsAppView() {
                             className={`flex flex-col ${isMe ? "items-end" : "items-start"}`}
                           >
                             <div
-                              className={`max-w-[75%] rounded-2xl px-3.5 py-2 text-xs leading-relaxed shadow-sm break-words ${
+                              className={`relative max-w-[65%] rounded-lg px-2 pt-1.5 pb-1 text-[14.2px] leading-[19px] shadow-sm break-words ${
                                 isMe
-                                  ? "bg-emerald-600/90 text-white rounded-br-sm"
-                                  : "bg-[#18191f] text-neutral-200 border border-[rgba(255,255,255,0.06)] rounded-bl-sm"
+                                  ? "bg-[var(--wa-bubble-out)] text-[var(--wa-text)] rounded-tr-none"
+                                  : "bg-[var(--wa-bubble-in)] text-[var(--wa-text)] rounded-tl-none"
                               }`}
                             >
-                              {/* Only show sender name in group chats. In 1-on-1 chats, never display raw number above bubble. */}
                               {!isMe && selectedChat?.jid?.endsWith("@g.us") && (
-                                <div className="text-[10px] text-emerald-400 font-medium mb-0.5">
+                                <div className="text-[12.5px] text-[var(--wa-tick-read)] font-medium px-1">
                                   {msg.sender_name || msg.sender.split("@")[0]}
                                 </div>
                               )}
 
-                              {msg.content && <p>{msg.content}</p>}
+                              {msg.content && (
+                                <p className="px-1 whitespace-pre-wrap">{msg.content}</p>
+                              )}
 
-                              {/* Media Attachment View & Download Trigger */}
+                              {/* Media attachment */}
                               {msg.media_type && (
-                                <div className="mt-2 pt-2 border-t border-[rgba(255,255,255,0.12)]">
-                                  <div className="flex items-center justify-between gap-3 bg-[rgba(0,0,0,0.2)] rounded-lg p-2">
+                                <div className="mx-1 mt-1.5">
+                                  <div className="flex items-center justify-between gap-3 bg-[rgba(0,0,0,0.15)] rounded-md p-2">
                                     <div className="flex items-center gap-2 min-w-0">
                                       {msg.media_type.includes("image") ? (
-                                        <SvgImage className="w-4 h-4 text-emerald-300 shrink-0" />
+                                        <SvgImage className="w-4 h-4 text-[var(--wa-accent-strong)] shrink-0" />
                                       ) : (
-                                        <SvgFile className="w-4 h-4 text-emerald-300 shrink-0" />
+                                        <SvgFile className="w-4 h-4 text-[var(--wa-accent-strong)] shrink-0" />
                                       )}
                                       <div className="min-w-0">
-                                        <p className="text-[11px] font-medium truncate text-neutral-100">
+                                        <p className="text-[13px] truncate text-[var(--wa-text)]">
                                           {msg.filename || `${msg.media_type} attachment`}
                                         </p>
-                                        <span className="text-[9px] text-neutral-400 font-mono">
+                                        <span className="text-[11px] text-[var(--wa-text-secondary)]">
                                           {msg.file_length > 0
                                             ? `${(msg.file_length / 1024).toFixed(1)} KB • `
                                             : ""}
@@ -1016,57 +1055,40 @@ export function WhatsAppView() {
                                         </span>
                                       </div>
                                     </div>
-
-                                    {/* Download Trigger */}
                                     <button
                                       onClick={() => handleDownloadMedia(msg)}
                                       disabled={dlStatus === "loading"}
-                                      title={dlPath ? `Saved to: ${dlPath}` : "Download media to local disk"}
-                                      className={`px-2 py-1 rounded text-[10px] font-medium flex items-center gap-1 shrink-0 transition-colors ${
+                                      title={dlPath ? `Saved to: ${dlPath}` : "Download to disk"}
+                                      className={`p-1.5 rounded-full shrink-0 transition-colors ${
                                         dlStatus === "downloaded"
-                                          ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
-                                          : dlStatus === "loading"
-                                          ? "bg-neutral-800 text-neutral-400"
-                                          : "bg-emerald-600 hover:bg-emerald-500 text-white"
+                                          ? "text-[var(--wa-accent-strong)]"
+                                          : dlStatus === "failed"
+                                          ? "text-[var(--wa-danger)]"
+                                          : "text-[var(--wa-icon)] hover:bg-[var(--wa-hover)]"
                                       }`}
                                     >
                                       {dlStatus === "loading" ? (
-                                        <>
-                                          <SvgRefresh className="w-3 h-3 animate-spin" />
-                                          <span>Saving...</span>
-                                        </>
+                                        <SvgRefresh className="w-4 h-4 animate-spin" />
                                       ) : dlStatus === "downloaded" ? (
-                                        <>
-                                          <SvgCheck className="w-3 h-3" />
-                                          <span>Saved</span>
-                                        </>
+                                        <SvgCheck className="w-4 h-4" />
                                       ) : (
-                                        <>
-                                          <SvgDownload className="w-3 h-3" />
-                                          <span>Download</span>
-                                        </>
+                                        <SvgDownload className="w-4 h-4" />
                                       )}
                                     </button>
                                   </div>
-
-                                  {/* Download Path preview badge */}
                                   {dlPath && (
-                                    <div className="mt-1 text-[9px] font-mono text-emerald-300/80 truncate">
+                                    <div className="mt-1 text-[11px] text-[var(--wa-text-secondary)] truncate">
                                       Saved: {dlPath}
                                     </div>
                                   )}
                                 </div>
                               )}
 
-                              {/* Timestamp and Sent Indicators */}
-                              <div
-                                className={`flex items-center justify-end gap-1 text-[9px] mt-1 font-mono ${
-                                  isMe ? "text-emerald-200/70" : "text-neutral-500"
-                                }`}
-                              >
-                                <span>{timeStr}</span>
-                                {isMe && <SvgCheckCheck className="w-3 h-3 text-emerald-300" />}
-                              </div>
+                              {/* Time + ticks */}
+                              <span className="float-right flex items-center gap-1 text-[11px] mt-1 ml-2 mr-1 text-[var(--wa-text-secondary)]">
+                                {formatTime(msg.timestamp)}
+                                {isMe && <SvgCheckCheck className="w-3.5 h-3.5 text-[var(--wa-tick-read)]" />}
+                              </span>
                             </div>
                           </div>
                         );
@@ -1075,11 +1097,11 @@ export function WhatsAppView() {
                     <div ref={messagesEndRef} />
                   </div>
 
-                  {/* Message Composer */}
-                  <div className="p-3 bg-[#111215] border-t border-[rgba(255,255,255,0.07)] flex items-center gap-2 shrink-0">
+                  {/* Composer */}
+                  <div className="px-4 py-2 bg-[var(--wa-header)] flex items-center gap-2 shrink-0">
                     <input
                       type="text"
-                      placeholder={`Message ${selectedChat.name}...`}
+                      placeholder="Type a message"
                       value={messageInput}
                       onChange={(e) => setMessageInput(e.target.value)}
                       onKeyDown={(e) => {
@@ -1088,30 +1110,34 @@ export function WhatsAppView() {
                           handleSendMessage();
                         }
                       }}
-                      className="flex-1 bg-[#18191e] border border-[rgba(255,255,255,0.08)] rounded-xl px-4 py-2 text-xs text-neutral-100 placeholder-neutral-500 focus:outline-none focus:border-emerald-500/50 transition-colors"
+                      className="flex-1 bg-[var(--wa-input)] border border-transparent rounded-lg px-4 py-2.5 text-[15px] text-[var(--wa-text)] placeholder-[var(--wa-text-secondary)] focus:outline-none"
                     />
                     <button
                       onClick={handleSendMessage}
                       disabled={!messageInput.trim() || sending}
-                      className="p-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:hover:bg-emerald-600 text-white rounded-xl transition-all shadow-sm flex items-center justify-center shrink-0"
+                      className="w-10 h-10 bg-[var(--wa-accent)] hover:bg-[var(--wa-accent-strong)] disabled:bg-[var(--wa-input)] disabled:text-[var(--wa-text-secondary)] text-[#111b21] rounded-full transition-colors flex items-center justify-center shrink-0"
                     >
                       {sending ? (
-                        <SvgRefresh className="w-3.5 h-3.5 animate-spin" />
+                        <SvgRefresh className="w-5 h-5 animate-spin" />
                       ) : (
-                        <SvgSend className="w-3.5 h-3.5" />
+                        <SvgSend className="w-5 h-5" />
                       )}
                     </button>
                   </div>
                 </>
               ) : (
-                <div className="flex-1 flex flex-col items-center justify-center text-center p-6 text-neutral-500">
-                  <SvgWhatsApp className="w-12 h-12 text-neutral-700 mb-3" />
-                  <p className="text-xs mb-3">Select a chat on the left to start messaging</p>
+                <div className="wa-chat-doodle flex-1 flex flex-col items-center justify-center text-center p-6 border-b-[6px] border-[var(--wa-accent)]">
+                  <div className="w-16 h-16 rounded-full bg-[var(--wa-panel-raised)] flex items-center justify-center text-[var(--wa-text-secondary)] mb-4">
+                    <SvgWhatsApp className="w-8 h-8" />
+                  </div>
+                  <p className="text-[14px] text-[var(--wa-text-secondary)] mb-4">
+                    Select a chat to start messaging
+                  </p>
                   <button
                     onClick={() => setShowNewChatDialog(true)}
-                    className="px-3 py-1.5 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-400 border border-emerald-500/30 rounded-lg text-xs transition-colors"
+                    className="px-5 py-2 bg-[var(--wa-accent)] hover:bg-[var(--wa-accent-strong)] text-[#111b21] rounded-full text-[14px] font-medium transition-colors"
                   >
-                    + Start New Conversation
+                    New chat
                   </button>
                 </div>
               )}
@@ -1119,18 +1145,14 @@ export function WhatsAppView() {
           </>
         )}
 
-        {/* ============================================================ */}
-        {/* NEW CHAT MODAL DIALOG                                        */}
-        {/* ============================================================ */}
+        {/* ---------- NEW CHAT MODAL ---------- */}
         {showNewChatDialog && (
-          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-            <div className="bg-[#121316] border border-[rgba(255,255,255,0.1)] rounded-xl p-5 max-w-md w-full shadow-2xl space-y-4">
-              <div className="flex items-center justify-between">
+          <div className="absolute inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+            <div className="bg-[var(--wa-panel)] border border-[var(--wa-border)] rounded-lg max-w-sm w-full shadow-xl overflow-hidden">
+              <div className="px-4 py-3 bg-[var(--wa-header)] flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <SvgPhone className="w-4 h-4 text-emerald-400" />
-                  <h3 className="text-xs font-semibold text-neutral-100 uppercase tracking-wider">
-                    Start New Conversation
-                  </h3>
+                  <SvgPhone className="w-4 h-4 text-[var(--wa-accent-strong)]" />
+                  <h3 className="text-[15px] font-medium text-[var(--wa-text)]">New chat</h3>
                 </div>
                 <button
                   onClick={() => {
@@ -1138,20 +1160,17 @@ export function WhatsAppView() {
                     setNewChatInput("");
                     setContactSearchResults([]);
                   }}
-                  className="p-1 text-neutral-400 hover:text-neutral-200"
+                  className="p-1 rounded-full text-[var(--wa-icon)] hover:bg-[var(--wa-hover)]"
                 >
                   <SvgX className="w-4 h-4" />
                 </button>
               </div>
 
-              <div>
-                <label className="text-[11px] text-neutral-400 block mb-1">
-                  Recipient Phone Number or Contact Name
-                </label>
+              <div className="p-4 space-y-3">
                 <div className="relative">
                   <input
                     type="text"
-                    placeholder="e.g. +1234567890 or John Doe"
+                    placeholder="Phone number or contact name"
                     value={newChatInput}
                     onChange={(e) => handleSearchContacts(e.target.value)}
                     onKeyDown={(e) => {
@@ -1160,55 +1179,52 @@ export function WhatsAppView() {
                       }
                     }}
                     autoFocus
-                    className="w-full bg-[#18191e] border border-[rgba(255,255,255,0.08)] rounded-lg px-3 py-2 text-xs text-neutral-100 placeholder-neutral-500 focus:outline-none focus:border-emerald-500/50 font-mono"
+                    className="w-full bg-[var(--wa-input)] border border-transparent rounded-lg px-3 py-2 text-[14px] text-[var(--wa-text)] placeholder-[var(--wa-text-secondary)] focus:outline-none focus:border-[var(--wa-accent)]"
                   />
                   {searchingContacts && (
-                    <SvgRefresh className="w-3.5 h-3.5 animate-spin absolute right-3 top-2.5 text-neutral-500" />
+                    <SvgRefresh className="w-4 h-4 animate-spin absolute right-3 top-2.5 text-[var(--wa-text-secondary)]" />
                   )}
                 </div>
-              </div>
 
-              {/* Matched Contacts List */}
-              {contactSearchResults.length > 0 && (
-                <div className="max-h-48 overflow-y-auto divide-y divide-[rgba(255,255,255,0.04)] border border-[rgba(255,255,255,0.06)] rounded-lg bg-[#15161a]">
-                  {contactSearchResults.map((contact) => (
-                    <div
-                      key={contact.jid}
-                      onClick={() => handleStartChat(contact.jid, contact.name)}
-                      className="p-2.5 hover:bg-[#1f2127] cursor-pointer flex items-center justify-between text-xs transition-colors"
-                    >
-                      <div className="flex items-center gap-2">
-                        <SvgUser className="w-3.5 h-3.5 text-emerald-400" />
-                        <div>
-                          <p className="font-medium text-neutral-200">{contact.name}</p>
-                          <span className="text-[10px] text-neutral-400 font-mono">{contact.phone_number || contact.jid}</span>
+                {contactSearchResults.length > 0 && (
+                  <div className="max-h-48 overflow-y-auto divide-y divide-[var(--wa-border)] border border-[var(--wa-border)] rounded-lg">
+                    {contactSearchResults.map((contact) => (
+                      <div
+                        key={contact.jid}
+                        onClick={() => handleStartChat(contact.jid, contact.name)}
+                        className="px-3 py-2.5 hover:bg-[var(--wa-hover)] cursor-pointer flex items-center gap-3 transition-colors"
+                      >
+                        <Avatar name={contact.name || contact.jid} size="lg" />
+                        <div className="min-w-0">
+                          <p className="text-[14px] text-[var(--wa-text)] truncate">{contact.name}</p>
+                          <span className="text-[12px] text-[var(--wa-text-secondary)]">
+                            {contact.phone_number || contact.jid}
+                          </span>
                         </div>
                       </div>
-                      <span className="text-[10px] text-emerald-400 hover:underline">Chat &rarr;</span>
-                    </div>
-                  ))}
-                </div>
-              )}
+                    ))}
+                  </div>
+                )}
 
-              {/* Actions */}
-              <div className="flex items-center justify-end gap-2 pt-2">
-                <button
-                  onClick={() => {
-                    setShowNewChatDialog(false);
-                    setNewChatInput("");
-                    setContactSearchResults([]);
-                  }}
-                  className="px-3 py-1.5 bg-[#18191e] hover:bg-[#202228] text-neutral-300 rounded-lg text-xs font-medium border border-[rgba(255,255,255,0.08)] transition-colors"
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={() => handleStartChat(newChatInput.trim())}
-                  disabled={!newChatInput.trim()}
-                  className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white rounded-lg text-xs font-medium transition-colors shadow-sm"
-                >
-                  Open Chat
-                </button>
+                <div className="flex items-center justify-end gap-2 pt-1">
+                  <button
+                    onClick={() => {
+                      setShowNewChatDialog(false);
+                      setNewChatInput("");
+                      setContactSearchResults([]);
+                    }}
+                    className="px-4 py-1.5 text-[var(--wa-accent-strong)] hover:bg-[var(--wa-hover)] rounded-full text-[14px] transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => handleStartChat(newChatInput.trim())}
+                    disabled={!newChatInput.trim()}
+                    className="px-5 py-1.5 bg-[var(--wa-accent)] hover:bg-[var(--wa-accent-strong)] disabled:opacity-40 text-[#111b21] rounded-full text-[14px] font-medium transition-colors"
+                  >
+                    Open chat
+                  </button>
+                </div>
               </div>
             </div>
           </div>

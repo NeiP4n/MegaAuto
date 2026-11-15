@@ -312,12 +312,32 @@ export function WhatsAppView() {
         } catch {}
         setSelectedChat(null);
         setMessages([]);
-        await fetchStatus(newSid);
+        setActiveTab("chats");
+        // Optimistically show the pairing screen for the new account so the
+        // user gets immediate feedback even before the bridge answers.
+        setStatus((prev) => ({
+          ...prev,
+          session_id: newSid,
+          connected: false,
+          status: "needs_scan",
+          phone: "",
+          qr: "",
+          qrDataUrl: null,
+        }));
+        const s = await fetchStatus(newSid);
+        // A stale bridge binary silently falls back to the active account for
+        // unknown session ids; detect that instead of showing "nothing happened".
+        if (s && s.session_id && s.session_id !== newSid) {
+          setErrorMessage(
+            "The bridge ignored the new account and returned the existing one. The bundled whatsapp-bridge.exe is outdated - rebuild it (in bb-plugin-whatsapp/bridge run: go build -o whatsapp-bridge.exe .) and restart the bridge."
+          );
+        }
         await fetchSessions();
       } else {
         setErrorMessage(res.message || "Failed to add a new account. Check the bridge and try again.");
       }
     } catch (e: any) {
+      console.error("create_session failed:", e);
       setErrorMessage(e?.message || "Failed to add a new account. Check the bridge and try again.");
     } finally {
       setCreatingSession(false);
@@ -677,6 +697,23 @@ export function WhatsAppView() {
         </button>
       </div>
 
+      {/* Global error banner: visible in every view (chats, tools, pairing) */}
+      {errorMessage && (
+        <div className="bg-[rgba(241,92,109,0.1)] border-b border-[rgba(241,92,109,0.3)] px-4 py-2 flex items-center justify-between gap-3 text-[13px] text-[var(--wa-danger)] shrink-0">
+          <div className="flex items-start gap-2 min-w-0">
+            <SvgAlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span className="break-words">{errorMessage}</span>
+          </div>
+          <button
+            onClick={() => setErrorMessage(null)}
+            className="text-[var(--wa-danger)] hover:opacity-70 px-1 shrink-0"
+            title="Dismiss"
+          >
+            <SvgX className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* ==================== MAIN AREA ==================== */}
       <div className="flex-1 flex overflow-hidden relative">
         {!status.connected ? (
@@ -757,8 +794,22 @@ export function WhatsAppView() {
           </div>
         ) : activeTab === "tools" ? (
           /* ---------- AGENT TOOLS & DIAGNOSTICS ---------- */
-          <div className="flex-1 flex flex-col p-6 bg-[var(--wa-chat-bg)] overflow-y-auto">
-            <div className="max-w-3xl w-full mx-auto space-y-4">
+          <div className="flex-1 flex flex-col bg-[var(--wa-chat-bg)] overflow-y-auto">
+            {/* Tools header: always-visible way back to Chats */}
+            <div className="h-[60px] px-3 bg-[var(--wa-header)] flex items-center gap-2 shrink-0 sticky top-0 z-10 border-b border-[var(--wa-border)]">
+              <button
+                onClick={() => setActiveTab("chats")}
+                title="Back to chats"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[14px] text-[var(--wa-text-secondary)] hover:bg-[var(--wa-hover)] hover:text-[var(--wa-text)] transition-colors"
+              >
+                <svg viewBox="0 0 24 24" fill="currentColor" className="w-5 h-5">
+                  <path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z" />
+                </svg>
+                <span>Chats</span>
+              </button>
+              <span className="text-[15px] font-medium text-[var(--wa-text)]">Agent tools</span>
+            </div>
+            <div className="max-w-3xl w-full mx-auto space-y-4 p-6">
               <div className="bg-[var(--wa-panel)] border border-[var(--wa-border)] rounded-lg p-5">
                 <div className="flex items-center justify-between mb-2">
                   <div className="flex items-center gap-2 text-[var(--wa-text)] font-medium text-[15px]">
@@ -980,22 +1031,6 @@ export function WhatsAppView() {
                       </span>
                     </div>
                   </div>
-
-                  {/* Error banner */}
-                  {errorMessage && (
-                    <div className="bg-[rgba(241,92,109,0.1)] border-b border-[rgba(241,92,109,0.3)] px-4 py-2 flex items-center justify-between text-[13px] text-[var(--wa-danger)]">
-                      <div className="flex items-center gap-2 min-w-0">
-                        <SvgAlertTriangle className="w-4 h-4 shrink-0" />
-                        <span className="truncate">{errorMessage}</span>
-                      </div>
-                      <button
-                        onClick={() => setErrorMessage(null)}
-                        className="text-[var(--wa-danger)] hover:opacity-70 px-1 shrink-0"
-                      >
-                        <SvgX className="w-4 h-4" />
-                      </button>
-                    </div>
-                  )}
 
                   {/* Messages */}
                   <div className="wa-chat-doodle flex-1 overflow-y-auto px-[8%] py-4 space-y-1.5">

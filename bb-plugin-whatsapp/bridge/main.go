@@ -830,9 +830,13 @@ func ResolveContactName(client *whatsmeow.Client, jid types.JID, fallbackPushNam
 			}
 		}
 
-		// 3. If LID or PN, check AltJID
-		altJID, altErr := client.Store.GetAltJID(ctx, jid)
-		if altErr == nil && !altJID.IsEmpty() {
+		// 3. If LID or PN, check AltJID (never on an unpaired device -
+		// GetAltJID nil-panics without a device ID)
+		var altJID types.JID
+		if client.Store.ID != nil {
+			altJID, _ = client.Store.GetAltJID(ctx, jid)
+		}
+		if !altJID.IsEmpty() {
 			if client.Store.Contacts != nil {
 				altContact, cErr := client.Store.Contacts.GetContact(ctx, altJID)
 				if cErr == nil && altContact.Found {
@@ -1046,9 +1050,11 @@ func scanMsgRows(sess *Session, rows *sql.Rows) []restMsgItem {
 }
 
 // altJID returns the alternate JID (LID <-> phone) for a chat JID, or "".
+// GetAltJID nil-panics on a device with no ID (unpaired, or credentials
+// cleared after a logout), so it must never be called in that state.
 func altJID(sess *Session, chatJID string) string {
 	parsed, err := types.ParseJID(chatJID)
-	if err != nil || sess.Client == nil || sess.Client.Store == nil {
+	if err != nil || sess.Client == nil || sess.Client.Store == nil || sess.Client.Store.ID == nil {
 		return ""
 	}
 	alt, err := sess.Client.Store.GetAltJID(context.Background(), parsed)
@@ -1388,7 +1394,7 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 					}
 
 					phone := jid.User
-					if !isAllDigits(phone) && jid.Server == "lid" {
+					if !isAllDigits(phone) && jid.Server == "lid" && sess.Client.Store != nil && sess.Client.Store.ID != nil {
 						alt, altErr := sess.Client.Store.GetAltJID(context.Background(), jid)
 						if altErr == nil && !alt.IsEmpty() {
 							phone = alt.User
@@ -1495,12 +1501,9 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 		}
 
 		// Check for AltJID so messages sent to LID or PN are unified
-		var altJIDStr string
-		if parsedChatJID, parseErr := types.ParseJID(chatJID); parseErr == nil && sess.Client != nil && sess.Client.Store != nil {
-			if alt, err := sess.Client.Store.GetAltJID(context.Background(), parsedChatJID); err == nil && !alt.IsEmpty() {
-				altJIDStr = alt.String()
-			}
-		}
+		// (altJID() is nil-safe on unpaired devices - calling GetAltJID
+		// directly here panicked and emptied the chat view).
+		altJIDStr := altJID(sess, chatJID)
 
 		beforeClause := ""
 		args := []interface{}{chatJID}
@@ -1521,7 +1524,7 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 			SELECT id, chat_jid, sender, content, timestamp, is_from_me,
 			       COALESCE(media_type, ''), COALESCE(filename, ''), COALESCE(url, ''), COALESCE(file_length, 0), COALESCE(push_name, '')
 			FROM (
-				SELECT id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, file_length, COALESCE(push_name, '')
+				SELECT id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, file_length, COALESCE(push_name, '') AS push_name
 				FROM messages
 				WHERE `+chatFilter+beforeClause+`
 				ORDER BY timestamp DESC LIMIT ?
@@ -1547,11 +1550,13 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 			Filename   string    `json:"filename"`
 			URL        string    `json:"url"`
 			FileLength int64     `json:"file_length"`
+			PushName   string    `json:"push_name"`
 		}
 		var msgs []MsgItem
+		var scanErr error
 		for rows.Next() {
 			var m MsgItem
-			if err := rows.Scan(&m.ID, &m.ChatJID, &m.Sender, &m.Content, &m.Timestamp, &m.IsFromMe, &m.MediaType, &m.Filename, &m.URL, &m.FileLength); err == nil {
+			if err := rows.Scan(&m.ID, &m.ChatJID, &m.Sender, &m.Content, &m.Timestamp, &m.IsFromMe, &m.MediaType, &m.Filename, &m.URL, &m.FileLength, &m.PushName); err == nil {
 				if msgQuery == "" || strings.Contains(strings.ToLower(m.Content), msgQuery) || strings.Contains(strings.ToLower(m.Sender), msgQuery) {
 					if m.IsFromMe {
 						m.SenderName = "You"
@@ -1564,15 +1569,82 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 						} else {
 							m.SenderName = m.Sender
 						}
+						// Prefer the sender's own push name over a bare number.
+						if (m.SenderName == "" || isRawNumberName(m.SenderName)) && m.PushName != "" && !isRawNumberName(m.PushName) {
+							m.SenderName = m.PushName
+						}
 					}
 					msgs = append(msgs, m)
 				}
+			} else {
+				scanErr = err
 			}
 		}
 		if msgs == nil {
 			msgs = []MsgItem{}
 		}
+		// A scan failure must never look like an empty chat again: report it.
+		if scanErr != nil && len(msgs) == 0 {
+			sess.logger.Errorf("/api/messages scan failed for %s: %v", chatJID, scanErr)
+		}
 		json.NewEncoder(w).Encode(msgs)
+	})
+
+	// 8a. Session store backup/restore: zips the session's store dir
+	// (device credentials + message db) so an account survives a reinstall.
+	mux.HandleFunc("/api/sessions/backup", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			Session string `json:"session,omitempty"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		sess := sm.LookupSession(req.Session)
+		if sess == nil {
+			http.Error(w, "session not found", http.StatusBadRequest)
+			return
+		}
+		path, err := backupSessionStore(sess)
+		if err != nil {
+			json.NewEncoder(w).Encode(map[string]any{"success": false, "message": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"success": true, "message": "Backup created", "path": path})
+	})
+
+	mux.HandleFunc("/api/sessions/restore", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			Session string `json:"session,omitempty"`
+			File    string `json:"file"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.File == "" {
+			http.Error(w, "file is required", http.StatusBadRequest)
+			return
+		}
+		sess := sm.LookupSession(req.Session)
+		if sess == nil {
+			http.Error(w, "session not found", http.StatusBadRequest)
+			return
+		}
+		// Only zips produced by backupSessionStore are restorable.
+		if err := restoreSessionStore(sess, req.File); err != nil {
+			json.NewEncoder(w).Encode(map[string]any{"success": false, "message": err.Error()})
+			return
+		}
+		// Rebuild the client on the restored credentials.
+		if _, err := sm.RestartSession(sess.ID); err != nil {
+			json.NewEncoder(w).Encode(map[string]any{"success": false, "message": "restored files but restart failed: " + err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"success": true, "message": "Backup restored, session restarting on the restored credentials"})
 	})
 
 	// 8b. On-demand history fetch: asks the paired phone for messages older

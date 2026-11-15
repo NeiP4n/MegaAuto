@@ -5,12 +5,7 @@ import {
   SvgCheckCircle,
   SvgAlertTriangle,
   SvgClock,
-  SvgTerminal,
-  SvgEdit,
-  SvgBookOpen,
   SvgVolume2,
-  SvgVolumeX,
-  SvgSparkles,
   SvgBot,
   SvgRefresh,
   SvgCheck,
@@ -27,7 +22,6 @@ interface RadarNavPanelProps {
 
 export function RadarNavPanel({ status, isLoading, onRefresh }: RadarNavPanelProps) {
   const [filter, setFilter] = useState<"all" | "tools" | "model">("all");
-  const [soundEnabled, setSoundEnabled] = useState(true);
 
   if (!status) {
     return (
@@ -96,7 +90,7 @@ export function RadarNavPanel({ status, isLoading, onRefresh }: RadarNavPanelPro
       {/* Hero Status Banner */}
       <div
         className={`p-6 rounded-2xl border backdrop-blur shadow-sm transition-all ${
-          isBusy
+          isBusy || status.state === "waiting_user"
             ? "bg-muted/40 border-border ring-1 ring-border"
             : "bg-card border-border"
         }`}
@@ -104,7 +98,15 @@ export function RadarNavPanel({ status, isLoading, onRefresh }: RadarNavPanelPro
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="flex items-start gap-4">
             <div className="relative mt-1 shrink-0">
-              {isBusy ? (
+              {status.state === "waiting_user" ? (
+                <span className="relative inline-flex rounded-full h-6 w-6 bg-primary/20 text-primary flex items-center justify-center border border-primary/40">
+                  <SvgMessageCircle className="w-3.5 h-3.5" />
+                </span>
+              ) : status.state === "background_task" ? (
+                <span className="relative inline-flex rounded-full h-6 w-6 bg-muted text-foreground flex items-center justify-center border border-border">
+                  <SvgClock className="w-3.5 h-3.5" />
+                </span>
+              ) : isBusy ? (
                 <>
                   <span className="animate-ping absolute inline-flex h-6 w-6 rounded-full bg-primary opacity-75"></span>
                   <span className="relative inline-flex rounded-full h-6 w-6 bg-primary text-primary-foreground flex items-center justify-center">
@@ -122,10 +124,20 @@ export function RadarNavPanel({ status, isLoading, onRefresh }: RadarNavPanelPro
               <div className="flex items-center gap-2">
                 <span
                   className={`inline-flex items-center gap-2 text-lg font-bold tracking-wide uppercase ${
-                    isBusy ? "text-foreground" : "text-muted-foreground"
+                    isBusy || status.state === "waiting_user" ? "text-foreground" : "text-muted-foreground"
                   }`}
                 >
-                  {isBusy ? (
+                  {status.state === "waiting_user" ? (
+                    <>
+                      <SvgMessageCircle className="w-5 h-5 text-primary" />
+                      <span>ИИ ОЖИДАЕТ ВАШЕГО ОТВЕТА</span>
+                    </>
+                  ) : status.state === "background_task" ? (
+                    <>
+                      <SvgClock className="w-5 h-5 text-primary" />
+                      <span>ФОНОВАЯ ЗАДАЧА — МОЖНО ПИСАТЬ</span>
+                    </>
+                  ) : isBusy ? (
                     <>
                       <SvgAlertTriangle className="w-5 h-5 text-primary" />
                       <span>ИИ ЗАНЯТ — ПОДОЖДИТЕ (НЕ ПИШИТЕ)</span>

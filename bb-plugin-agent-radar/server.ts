@@ -320,10 +320,15 @@ class RadarEngine {
       let toolCommand: string | undefined = undefined;
 
       if (Array.isArray(line.tool_calls) && line.tool_calls.length > 0) {
-        const tc = line.tool_calls[0];
+        // Inspect all tool calls: prefer question or schedule if present, else first tool
+        const qOrBg = line.tool_calls.find((tc: any) => {
+          const n = String(tc?.name || "").toLowerCase();
+          return n.includes("ask_question") || n.includes("askuserquestion") || n.includes("schedule");
+        });
+        const tc = qOrBg || line.tool_calls[0];
         toolName = tc.name;
         const args = tc.args || {};
-        const rawSummary = args.toolSummary || args.CommandLine || args.Path || args.query || args.Prompt || "";
+        const rawSummary = args.toolSummary || args.CommandLine || args.Path || args.query || args.Prompt || (Array.isArray(args.questions) ? args.questions.map((q: any) => q.question).join("; ") : "") || "";
         toolSummary = maskSecrets(String(rawSummary));
         toolCommand = args.CommandLine ? maskSecrets(String(args.CommandLine)) : undefined;
       }
@@ -374,11 +379,13 @@ class RadarEngine {
     let statusLabel = "ИИ готов к диалогу (МОЖНО ПИСАТЬ)";
     let statusDescription = "Ассистент завершил шаг и ожидает вашего сообщения.";
 
-    const hasTools = Array.isArray(last.tool_calls) && last.tool_calls.length > 0;
+    const toolCalls = Array.isArray(last.tool_calls) ? last.tool_calls : [];
+    const hasTools = toolCalls.length > 0;
 
     if (last.type === "PLANNER_RESPONSE" && hasTools && recentActivitySilenceSeconds < 120) {
-      const isQuestion = lastStep.toolName?.includes("ask_question") || lastStep.toolName?.includes("AskUserQuestion");
-      const isSchedule = lastStep.toolName?.includes("schedule");
+      const toolNamesLower = toolCalls.map((tc: any) => String(tc?.name || "").toLowerCase());
+      const isQuestion = toolNamesLower.some((n: string) => n.includes("ask_question") || n.includes("askuserquestion"));
+      const isSchedule = toolNamesLower.some((n: string) => n.includes("schedule"));
       if (isQuestion) {
         state = "waiting_user";
         canWrite = true;

@@ -19,12 +19,12 @@ export function ComposerStatusBanner({ status }: ComposerStatusBannerProps) {
   }, [status?.elapsedSeconds, status?.canWrite]);
 
   useEffect(() => {
-    if (!status || status.canWrite) return;
+    if (!status || (status.canWrite && status.state !== "background_task")) return;
     const timer = setInterval(() => {
       setLocalSeconds((s) => s + 1);
     }, 1000);
     return () => clearInterval(timer);
-  }, [status?.canWrite]);
+  }, [status?.canWrite, status?.state]);
 
   if (composer.scope.kind !== "thread") return null;
   if (!status) return null;
@@ -32,11 +32,19 @@ export function ComposerStatusBanner({ status }: ComposerStatusBannerProps) {
   const isBusy = !status.canWrite;
 
   const toolName = status.currentTool ? status.currentTool.slice(0, 24) : "шаг";
-  const cardTitle = isBusy
+  const cardTitle = status.state === "waiting_user"
+    ? "ИИ ожидает вашего ответа на вопрос"
+    : status.state === "background_task"
+    ? `Фоновая задача в процессе (${localSeconds}s) · Можно писать`
+    : isBusy
     ? `ИИ выполняет: ${toolName} (${localSeconds}s) · Сообщение встанет в очередь`
     : "ИИ свободен · Можно писать сообщение";
 
-  const cardIcon = isBusy
+  const cardIcon = status.state === "waiting_user"
+    ? "HelpCircle"
+    : status.state === "background_task"
+    ? "Clock"
+    : isBusy
     ? status.currentTool?.includes("command")
       ? "Terminal"
       : status.currentTool?.includes("edit") || status.currentTool?.includes("write")
@@ -50,7 +58,7 @@ export function ComposerStatusBanner({ status }: ComposerStatusBannerProps) {
         label="Статус ИИ"
         title={cardTitle}
         icon={cardIcon}
-        isActive={isBusy}
+        isActive={isBusy || status.state === "waiting_user"}
       >
         <div className="p-3 bg-muted/20 border-t border-border/40 space-y-2 text-xs">
           <div className="flex items-center justify-between text-muted-foreground font-mono text-[11px]">

@@ -1,6 +1,6 @@
 ---
 name: meta-muse
-description: "Meta Muse companion: conversation history, proactive task scheduling (cron/interval/due date), and associative long-term memory. Media generation and the VM sandbox are not connected yet - tools report that honestly instead of simulating results."
+description: "Meta Muse companion: conversation history, proactive task scheduling (cron/interval/due date), and associative long-term memory. Media generation is not connected yet, and Strict Mode blocks external network requests - tools report that honestly."
 ---
 
 # Meta Muse AI Companion & Autonomous Assistant Skill
@@ -66,4 +66,4 @@ bb muse tools
 - **Creative**: Фокус на генерации идей, медиа-промптах, дизайне, иридисцентных палитрах и сторителлинге.
 - **Analytical**: Строгий анализ данных, аудит кода, структурированные таблицы и верификация фактов.
 - **Proactive**: Автономный мониторинг, предупреждения о дедлайнах, регулярные дайджесты и авто-синхронизация.
-- **Strict Sandbox**: Локальное выполнение в изолированном процессе без исходящих фоновых запросов.
+- **Strict Sandbox**: Строгий локальный режим с блокировкой исходящих сетевых запросов.

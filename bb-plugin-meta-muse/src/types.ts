@@ -76,13 +76,13 @@ export interface VMProcess {
 }
 
 export interface VMStatus {
-  status: 'isolated' | 'running' | 'paused' | 'quarantined' | 'host_process';
+  status: 'running' | 'paused' | 'quarantined' | 'host_process';
   memoryLimitMB: number;
   memoryUsedMB: number;
   cpuQuotaPercent: number;
   secureEnclave: boolean;
   activeProcesses: VMProcess[];
-  networkPolicy: 'airgapped' | 'whitelisted' | 'proxy';
+  networkPolicy: 'whitelisted' | 'proxy' | 'local_only';
   allowedDomains: string[];
   uptimeSeconds: number;
   lastSecurityAudit: string;

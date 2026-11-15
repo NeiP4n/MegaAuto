@@ -39,7 +39,7 @@ const MODES: Array<{ mode: MuseMode; label: string; badgeColor: string; descript
     mode: "strict_sandbox",
     label: "Strict Mode",
     badgeColor: "border-amber-500/60 bg-amber-500/15 text-amber-300",
-    description: "Строгий локальный режим без исходящих сетевых запросов",
+    description: "Строгий локальный режим с блокировкой сетевых запросов",
   },
 ];
 

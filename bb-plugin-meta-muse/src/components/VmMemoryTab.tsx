@@ -114,7 +114,7 @@ export function VmMemoryTab({
 
   return (
     <div className="flex h-full w-full gap-4 overflow-hidden">
-      {/* LEFT: Honest Process Sandbox & Telemetry */}
+      {/* LEFT: Honest Host Process & Telemetry */}
       <div className="w-1/2 flex flex-col bg-[#10141E]/90 rounded-2xl border border-slate-800/80 shadow-2xl p-5 overflow-y-auto backdrop-blur-md space-y-4">
         {/* Header */}
         <div className="flex items-center justify-between pb-3 border-b border-slate-800/80">
@@ -256,7 +256,7 @@ export function VmMemoryTab({
               </div>
             </div>
 
-            {/* Active Isolated Processes */}
+            {/* Active Host Processes */}
             <div className="bg-[#161C2B] rounded-xl border border-slate-800 p-3.5 space-y-2">
               <div className="flex justify-between items-center pb-1 border-b border-slate-800/80">
                 <span className="text-[11px] font-semibold text-slate-300">

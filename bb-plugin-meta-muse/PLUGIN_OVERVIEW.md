@@ -19,7 +19,7 @@ Meta Muse AI is engineered as a multi-tier modular assistant running inside the 
 │ │  ├─ SessionManager (Chat & threads)               │ │
 │ │  ├─ MediaQueue (Async rendering jobs)              │ │
 │ │  ├─ ProactiveScheduler (Cron/Interval timers)      │ │
-│ │  ├─ VMSandboxEnclave (Isolated compute telemetry)  │ │
+│ │  ├─ HostProcessTelemetry (Node RSS & telemetry)   │ │
 │ │  └─ MemoryStore (Persistent associative storage)   │ │
 │ └────────────────────────────────────────────────────┘ │
 │  ├─ 15 Agent Tools (bb.agents.registerTool)           │
@@ -28,8 +28,8 @@ Meta Muse AI is engineered as a multi-tier modular assistant running inside the 
 └───────────────────────────┬────────────────────────────┘
                             │
 ┌───────────────────────────▼────────────────────────────┐
-│         Host Storage & Secure Isolation Layer          │
-│   ~/.bb/meta-muse/store.json & Sandboxed Environments  │
+│         Host Storage Layer                             │
+│   ~/.bb/meta-muse/state.json                           │
 └────────────────────────────────────────────────────────┘
 ```
 
@@ -57,7 +57,7 @@ Registered with Zod schemas through `bb.agents.registerTool`:
 - `muse_search_memory`: Keyword and tag search over saved facts and user preferences.
 - `muse_store_memory`: Stores user preferences or system facts.
 - `muse_get_vm_status`: Inspects host process runtime telemetry, Node memory RSS, uptime, and host environment execution status.
-- `muse_switch_mode`: Changes runtime mode between creative, analytical, proactive, and strict sandbox.
+- `muse_switch_mode`: Changes runtime mode between creative, analytical, proactive, and strict local mode.
 - `muse_get_system_status`: Inspects plugin uptime, active queues, and host hardware.
 - `muse_export_chat`: Formats thread to downloadable Markdown or JSON.
 
@@ -66,7 +66,7 @@ Under `bb muse`:
 - `status`: High-level operational overview.
 - `chat`: Direct CLI conversation with Muse.
 - `tasks`: Inspect and trigger proactive automations.
-- `vm`: Audit sandbox metrics.
+- `vm`: Inspect host process telemetry and memory.
 - `memory`: Search and store durable notes.
 - `tools`: Output documentation of registered tools.
 

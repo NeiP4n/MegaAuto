@@ -98,13 +98,13 @@ const vmProcessSchema = z.object({
 });
 
 const vmStatusSchema = z.object({
-  status: z.enum(["isolated", "running", "paused", "quarantined", "host_process"]),
+  status: z.enum(["running", "paused", "quarantined", "host_process"]),
   memoryLimitMB: z.number(),
   memoryUsedMB: z.number(),
   cpuQuotaPercent: z.number(),
   secureEnclave: z.boolean(),
   activeProcesses: z.array(vmProcessSchema),
-  networkPolicy: z.enum(["airgapped", "whitelisted", "proxy"]),
+  networkPolicy: z.enum(["whitelisted", "proxy", "local_only"]),
   allowedDomains: z.array(z.string()),
   uptimeSeconds: z.number(),
   lastSecurityAudit: z.string(),
@@ -458,11 +458,19 @@ export class MetaMuseController {
         fs.mkdirSync(this.storageDir, { recursive: true });
       }
 
+      let hadLegacyDiskKey = false;
       if (fs.existsSync(this.storageFile)) {
         const raw = fs.readFileSync(this.storageFile, "utf-8");
         const data = JSON.parse(raw);
         if (data.currentMode) this.currentMode = data.currentMode;
         if (data.config && typeof data.config === "object") {
+          if (data.config.apiKey) {
+            hadLegacyDiskKey = true;
+            if (!this.config.apiKey) {
+              this.config.apiKey = data.config.apiKey;
+            }
+            delete data.config.apiKey;
+          }
           this.config = { ...this.config, ...data.config };
         }
         if (Array.isArray(data.conversations)) {
@@ -503,7 +511,7 @@ export class MetaMuseController {
         purged = this.memories.delete(id) || purged;
         purged = this.messages.delete(id) || purged;
       }
-      if (purged) this.saveState();
+      if (purged || hadLegacyDiskKey) this.saveState();
     } catch {
       // Fallback if loading failed
     }
@@ -644,7 +652,15 @@ export class MetaMuseController {
     success: boolean;
     isConfigured: boolean;
   } {
-    if (patch.apiKey !== undefined) this.config.apiKey = patch.apiKey.trim() || undefined;
+    if (patch.apiKey !== undefined) {
+      const trimmed = patch.apiKey.trim();
+      // Protect genuine key from being overwritten by masked bullets (••••••••)
+      if (trimmed && !trimmed.includes("•")) {
+        this.config.apiKey = trimmed;
+      } else if (!trimmed) {
+        this.config.apiKey = undefined;
+      }
+    }
     if (patch.endpointUrl !== undefined) this.config.endpointUrl = patch.endpointUrl.trim() || undefined;
     if (patch.mediaEndpointUrl !== undefined) this.config.mediaEndpointUrl = patch.mediaEndpointUrl.trim() || undefined;
     this.saveState();
@@ -684,7 +700,10 @@ export class MetaMuseController {
     let reply = "";
     const suggestions: string[] = [];
 
-    if (this.config.apiKey || this.config.endpointUrl) {
+    if (mode === "strict_sandbox") {
+      reply = "Strict Mode активен: исходящие сетевые запросы заблокированы политикой режима. Выполнение ограничено локальным контекстом и базой знаний.";
+      suggestions.push("Проверить локальную память", "Телеметрия хост-процесса", "Список активных задач");
+    } else if (this.config.apiKey || this.config.endpointUrl) {
       const abortController = new AbortController();
       const timeoutId = setTimeout(() => abortController.abort(), 30000);
       try {
@@ -820,6 +839,13 @@ export class MetaMuseController {
       completedAt: now,
       error: undefined,
     };
+
+    if (this.currentMode === "strict_sandbox") {
+      job.error = "Strict Mode активен: генерация медиа отклонена, исходящие сетевые запросы заблокированы политикой режима.";
+      this.mediaJobs.set(id, job);
+      this.saveState();
+      return job;
+    }
 
     if (type === "video") {
       job.error = "Генерация видео временно недоступна в подключенном API (поддерживаются только изображения).";
@@ -1033,7 +1059,7 @@ export class MetaMuseController {
       creative: "Режим генерации идей, медиа-концептов и иридисцентного дизайна активирован.",
       analytical: "Режим строгого логического анализа, таблиц и системного аудита активирован.",
       proactive: "Режим фонового мониторинга, автономных задач и дайджестов активирован.",
-      strict_sandbox: "Режим защищенного закрытого выполнения в изолированной VM песочнице активирован.",
+      strict_sandbox: "Строгий локальный режим: исходящие сетевые запросы заблокированы.",
     };
 
     return {

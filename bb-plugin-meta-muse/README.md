@@ -53,7 +53,7 @@ bb-plugin-meta-muse/
 | `muse_cancel_task` | Pause, resume, or remove a proactive task |
 | `muse_search_memory` | Query associative memory store by keyword or category |
 | `muse_store_memory` | Store durable knowledge, user preferences, or directives |
-| `muse_get_vm_status` | Audit VM sandbox telemetry, CPU/RAM quotas, and network rules |
+| `muse_get_vm_status` | Telemetry of host process, RSS memory and uptime |
 | `muse_switch_mode` | Switch Muse operational mode (`creative`, `analytical`, `proactive`, `strict_sandbox`) |
 | `muse_get_system_status` | Retrieve system telemetry, active queues, and host stats |
 | `muse_export_chat` | Export conversation history to Markdown or JSON |
@@ -68,7 +68,7 @@ bb muse chat "Your message"          # Converse with Muse
 bb muse chat --list                 # View existing conversations
 bb muse tasks                       # List all proactive tasks
 bb muse tasks create "Title" "1h"   # Create a proactive task
-bb muse vm                          # Check VM sandbox status
+bb muse vm                          # Check host process status and memory
 bb muse memory list                 # View stored memories
 bb muse memory store "key" "value"  # Save a new memory
 bb muse tools                       # List available agent tools

@@ -35,8 +35,17 @@ export function ApiConfigModal({
     e.preventDefault();
     setIsSaving(true);
     try {
+      const trimmedKey = apiKey.trim();
+      // Protect against overwriting genuine key with masked bullets (••••••••)
+      let keyPayload: string | undefined = undefined;
+      if (trimmedKey && !trimmedKey.includes("•")) {
+        keyPayload = trimmedKey;
+      } else if (trimmedKey === "") {
+        keyPayload = "";
+      }
+
       await onSave({
-        apiKey: apiKey.trim() || undefined,
+        apiKey: keyPayload,
         endpointUrl: endpointUrl.trim() || undefined,
         mediaEndpointUrl: mediaEndpointUrl.trim() || undefined,
       });

@@ -9,6 +9,7 @@ import {
   SvgAlertCircle,
   SvgZap,
   SvgActivity,
+  SvgAlertTriangle,
 } from "../icons";
 
 interface ProactiveTasksTabProps {
@@ -23,6 +24,8 @@ interface ProactiveTasksTabProps {
   onToggleTaskStatus: (taskId: string) => Promise<void>;
   onTriggerTaskNow: (taskId: string) => Promise<void>;
   onCancelTask: (taskId: string) => Promise<void>;
+  isApiConfigured: boolean;
+  onOpenApiModal: () => void;
 }
 
 const SCHEDULE_PRESETS = [
@@ -40,6 +43,8 @@ export function ProactiveTasksTab({
   onToggleTaskStatus,
   onTriggerTaskNow,
   onCancelTask,
+  isApiConfigured,
+  onOpenApiModal,
 }: ProactiveTasksTabProps) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -48,11 +53,13 @@ export function ProactiveTasksTab({
   const [actionType, setActionType] = useState<"reminder" | "digest" | "audit" | "web_poll" | "custom_script">("digest");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const handleSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!title.trim() || isSubmitting) return;
     setIsSubmitting(true);
+    setActionError(null);
     try {
       await onCreateTask({
         title,
@@ -63,8 +70,19 @@ export function ProactiveTasksTab({
       });
       setTitle("");
       setDescription("");
+    } catch (err: any) {
+      setActionError(err?.message || "Не удалось создать задачу");
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  const handleTriggerNow = async (taskId: string) => {
+    setActionError(null);
+    try {
+      await onTriggerTaskNow(taskId);
+    } catch (err: any) {
+      setActionError(err?.message || "Ошибка при немедленном выполнении задачи");
     }
   };
 
@@ -85,6 +103,30 @@ export function ProactiveTasksTab({
             <p className="text-[10px] text-slate-400">Автономное фоновое расписание</p>
           </div>
         </div>
+
+        {/* Warning if API is not configured */}
+        {!isApiConfigured && (
+          <div className="bg-[#161C2B] rounded-xl border border-amber-900/50 p-3 space-y-1 text-xs">
+            <div className="flex items-center space-x-2 text-amber-300 font-medium">
+              <SvgAlertTriangle className="w-4 h-4 text-amber-400" />
+              <span>Рекомендация по API</span>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Задачи типа «Дайджест» обращаются к AI модели. Убедитесь, что API ключ указан в настройках.
+            </p>
+          </div>
+        )}
+
+        {/* Error notification */}
+        {actionError && (
+          <div className="bg-rose-950/40 rounded-xl border border-rose-800/60 p-3 flex items-start space-x-2.5 text-xs text-rose-200">
+            <SvgAlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+            <div className="space-y-0.5">
+              <span className="font-semibold text-rose-300">Ошибка диспетчера:</span>
+              <p className="text-[11px] text-rose-200/90 leading-relaxed">{actionError}</p>
+            </div>
+          </div>
+        )}
 
         {/* Form Fields */}
         <div className="space-y-3 text-xs">
@@ -188,12 +230,12 @@ export function ProactiveTasksTab({
 
         {/* Engine Status Banner */}
         <div className="bg-[#161C2B]/80 rounded-xl border border-slate-800 p-3 space-y-1.5 text-[11px]">
-          <div className="flex items-center space-x-2 text-emerald-400 font-medium">
+          <div className="flex items-center space-x-2 text-cyan-300 font-medium">
             <SvgCheckCircle className="w-3.5 h-3.5" />
-            <span>Диспетчер задач активен</span>
+            <span>Фоновый таймер плагина активен</span>
           </div>
           <p className="text-slate-400 text-[10px] leading-relaxed">
-            Фоновый планировщик Meta Muse непрерывно мониторит интервалы и выполняет запланированные проверки в изолированной среде.
+            Задачи запускаются в рамках хост-процесса плагина с реальной записью результатов в журнал логов.
           </p>
         </div>
       </div>
@@ -212,23 +254,24 @@ export function ProactiveTasksTab({
 
           <div className="flex items-center space-x-2 text-[11px] text-slate-400">
             <SvgActivity className="w-3.5 h-3.5 text-cyan-400" />
-            <span>Календарь и Диспетчер: Синхронизировано</span>
+            <span>Диспетчер: Готов к расписанию</span>
           </div>
         </div>
 
         {/* Tasks Scroll Area */}
         <div className="flex-1 overflow-y-auto space-y-3 pr-1">
           {tasks.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-500">
-              <SvgClock className="w-12 h-12 text-slate-700 mb-2" />
-              <p className="text-xs">Задач пока нет.</p>
-              <p className="text-[11px] text-slate-600 mt-0.5">
-                Заполните форму слева, чтобы настроить периодический аудит или дайджест.
+            <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-500 space-y-2">
+              <SvgClock className="w-12 h-12 text-slate-700" />
+              <p className="text-xs font-medium text-slate-400">Задач пока нет (чистый старт).</p>
+              <p className="text-[11px] text-slate-600 max-w-sm">
+                Создайте первую задачу слева, чтобы настроить периодический аудит, напоминание или опрос сервиса.
               </p>
             </div>
           ) : (
             tasks.map((task) => {
               const isActive = task.status === "active";
+              const isFailed = task.status === "failed";
               const isExpanded = expandedTaskId === task.id;
 
               return (
@@ -244,6 +287,8 @@ export function ProactiveTasksTab({
                           className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-medium ${
                             isActive
                               ? "bg-emerald-950/80 text-emerald-400 border border-emerald-800/60"
+                              : isFailed
+                              ? "bg-rose-950/80 text-rose-400 border border-rose-800/60"
                               : "bg-amber-950/80 text-amber-400 border border-amber-800/60"
                           }`}
                         >
@@ -275,7 +320,7 @@ export function ProactiveTasksTab({
                     <div className="flex items-center space-x-2 self-end sm:self-center">
                       <button
                         type="button"
-                        onClick={() => onTriggerTaskNow(task.id)}
+                        onClick={() => handleTriggerNow(task.id)}
                         className="flex items-center space-x-1 text-xs px-2.5 py-1.5 rounded-lg bg-[#1E2538] hover:bg-[#28324C] text-cyan-300 border border-cyan-800/60 transition shadow-sm"
                         title="Запустить немедленно"
                       >
@@ -320,7 +365,7 @@ export function ProactiveTasksTab({
                     {isExpanded && (
                       <div className="mt-2 p-2.5 rounded-xl bg-[#0B0E14] border border-slate-800/80 font-mono text-[11px] space-y-1 max-h-36 overflow-y-auto">
                         {!task.logs || task.logs.length === 0 ? (
-                          <div className="text-slate-600">Логов выполнения пока нет.</div>
+                          <div className="text-slate-600">Логов выполнения пока нет. Нажмите «Пуск», чтобы выполнить задачу.</div>
                         ) : (
                           task.logs.map((log, idx) => (
                             <div key={idx} className="flex space-x-2">

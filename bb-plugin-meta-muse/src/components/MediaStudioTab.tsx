@@ -6,8 +6,8 @@ import {
   SvgVideo,
   SvgTrash,
   SvgRefresh,
-  SvgDownload,
   SvgSparkles,
+  SvgAlertTriangle,
 } from "../icons";
 
 interface MediaStudioTabProps {
@@ -22,6 +22,9 @@ interface MediaStudioTabProps {
   }) => Promise<void>;
   onDeleteMediaJob: (jobId: string) => Promise<void>;
   isGenerating: boolean;
+  isApiConfigured: boolean;
+  onOpenApiModal: () => void;
+  lastError?: string | null;
 }
 
 const STYLE_PRESETS = [
@@ -53,6 +56,9 @@ export function MediaStudioTab({
   onGenerateMedia,
   onDeleteMediaJob,
   isGenerating,
+  isApiConfigured,
+  onOpenApiModal,
+  lastError,
 }: MediaStudioTabProps) {
   const [prompt, setPrompt] = useState("");
   const [negativePrompt, setNegativePrompt] = useState("");
@@ -62,19 +68,25 @@ export function MediaStudioTab({
   const [aspectRatio, setAspectRatio] = useState<"1:1" | "16:9" | "9:16" | "4:3" | "3:4">("16:9");
   const [seed, setSeed] = useState<number | undefined>(undefined);
   const [activePreviewJob, setActivePreviewJob] = useState<MediaJob | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
 
   const handleGenerate = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!prompt.trim() || isGenerating) return;
-    await onGenerateMedia({
-      prompt,
-      negativePrompt: negativePrompt.trim() ? negativePrompt : undefined,
-      type: mediaType,
-      stylePreset,
-      aspectRatio,
-      seed: seed || Math.floor(Math.random() * 1000000),
-    });
-    setPrompt("");
+    setLocalError(null);
+    try {
+      await onGenerateMedia({
+        prompt,
+        negativePrompt: negativePrompt.trim() ? negativePrompt : undefined,
+        type: mediaType,
+        stylePreset,
+        aspectRatio,
+        seed: seed || Math.floor(Math.random() * 1000000),
+      });
+      setPrompt("");
+    } catch (err: any) {
+      setLocalError(err?.message || "Ошибка при обращении к API генерации");
+    }
   };
 
   const handleUsePrompt = (job: MediaJob) => {
@@ -87,6 +99,8 @@ export function MediaStudioTab({
     setStylePreset(job.stylePreset);
     setAspectRatio(job.aspectRatio);
   };
+
+  const displayError = localError || lastError;
 
   return (
     <div className="flex h-full w-full gap-4 overflow-hidden">
@@ -101,7 +115,7 @@ export function MediaStudioTab({
               </div>
             </div>
             <div>
-              <h2 className="text-xs font-bold text-white tracking-wide">Параметры Генерации</h2>
+              <h2 className="text-xs font-bold text-white tracking-wide">Студия Создания Медиа</h2>
               <p className="text-[10px] text-slate-400">Iridescent Studio Engine</p>
             </div>
           </div>
@@ -135,6 +149,37 @@ export function MediaStudioTab({
           </div>
         </div>
 
+        {/* Warning if API is not configured */}
+        {!isApiConfigured && (
+          <div className="bg-[#161C2B] rounded-xl border border-amber-900/50 p-3 space-y-1.5 text-xs">
+            <div className="flex items-center space-x-2 text-amber-300 font-medium">
+              <SvgAlertTriangle className="w-4 h-4 text-amber-400" />
+              <span>API не настроен</span>
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Для генерации реальных медиа укажите действующий API ключ или эндпоинт в настройках. Без симуляций и моков.
+            </p>
+            <button
+              type="button"
+              onClick={onOpenApiModal}
+              className="text-[11px] text-cyan-300 hover:underline pt-0.5"
+            >
+              Настроить API ключ →
+            </button>
+          </div>
+        )}
+
+        {/* Error notification if any */}
+        {displayError && (
+          <div className="bg-rose-950/40 rounded-xl border border-rose-800/60 p-3 flex items-start space-x-2.5 text-xs text-rose-200">
+            <SvgAlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+            <div className="space-y-0.5">
+              <span className="font-semibold text-rose-300">Ошибка запроса:</span>
+              <p className="text-[11px] text-rose-200/90 leading-relaxed">{displayError}</p>
+            </div>
+          </div>
+        )}
+
         {/* Prompt Input Area */}
         <div className="space-y-1.5">
           <div className="flex justify-between items-center text-[11px]">
@@ -145,7 +190,7 @@ export function MediaStudioTab({
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
             rows={4}
-            placeholder="Опишите желаемую сцену, освещение, неоновые переливы, фактуру обсидиана и кинематографический стиль..."
+            placeholder="Опишите желаемую сцену, неоновые переливы, фактуру обсидиана и стиль..."
             className="w-full bg-[#161C2B] text-xs text-white rounded-xl p-3 border border-slate-700/80 focus:outline-none focus:border-pink-500/80 focus:ring-1 focus:ring-pink-500/30 transition resize-none placeholder-slate-500"
           />
 
@@ -263,7 +308,7 @@ export function MediaStudioTab({
           className="w-full py-3 rounded-xl text-xs font-bold tracking-wide bg-gradient-to-r from-[#E03E93] via-[#0866FF] to-[#00C4B4] text-white hover:brightness-110 transition-all shadow-lg shadow-pink-900/30 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
         >
           <SvgSparkles className="w-4 h-4" />
-          <span>{isGenerating ? "Отрисовка в Музе..." : "Сгенерировать в Музе"}</span>
+          <span>{isGenerating ? "Запрос к API генерации..." : "Сгенерировать в Музе"}</span>
         </button>
       </div>
 
@@ -278,18 +323,18 @@ export function MediaStudioTab({
           </div>
 
           <div className="text-[11px] text-slate-400">
-            Движок: <span className="text-cyan-300 font-mono">Meta Muse Creative v2</span>
+            Движок: <span className="text-cyan-300 font-mono">Meta Muse Creative Real API</span>
           </div>
         </div>
 
         {/* Gallery Grid */}
         <div className="flex-1 overflow-y-auto pr-1">
           {mediaJobs.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-500">
-              <SvgImage className="w-12 h-12 text-slate-700 mb-2" />
-              <p className="text-xs">Галерея пока пуста.</p>
-              <p className="text-[11px] text-slate-600 mt-0.5">
-                Введите промпт слева и нажмите «Сгенерировать в Музе».
+            <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-500 space-y-2">
+              <SvgImage className="w-12 h-12 text-slate-700" />
+              <p className="text-xs font-medium text-slate-400">Галерея пуста (нет сохраненных генераций).</p>
+              <p className="text-[11px] text-slate-600 max-w-sm">
+                Стартуем с чистого листа. Задайте промпт слева и отправьте реальный запрос к провайдеру для создания первого изображения или видео.
               </p>
             </div>
           ) : (
@@ -319,10 +364,16 @@ export function MediaStudioTab({
                         <div className="flex flex-col items-center space-y-1 p-3 text-center">
                           {isRendering ? (
                             <div className="w-6 h-6 border-2 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+                          ) : isFailed ? (
+                            <SvgAlertTriangle className="w-6 h-6 text-rose-400" />
                           ) : (
                             <SvgSparkles className="w-6 h-6 text-slate-600" />
                           )}
-                          <span className="text-[10px] text-slate-400 uppercase font-mono">
+                          <span
+                            className={`text-[10px] uppercase font-mono ${
+                              isFailed ? "text-rose-400" : "text-slate-400"
+                            }`}
+                          >
                             {job.status}
                           </span>
                         </div>
@@ -343,10 +394,17 @@ export function MediaStudioTab({
                               : "text-amber-400"
                           }
                         >
-                          {isCompleted ? "Готово" : `${job.progress}%`}
+                          {isCompleted ? "Готово" : isFailed ? "Ошибка" : `${job.progress}%`}
                         </span>
                       </div>
                     </div>
+
+                    {/* Error display if failed */}
+                    {job.error && (
+                      <div className="text-[10px] p-2 rounded-lg bg-rose-950/40 border border-rose-900/60 text-rose-300">
+                        {job.error}
+                      </div>
+                    )}
 
                     {/* Progress Bar if Rendering */}
                     {isRendering && (

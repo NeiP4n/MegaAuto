@@ -9,7 +9,7 @@ import {
   SvgTrash,
   SvgSearch,
   SvgDownload,
-  SvgImage,
+  SvgAlertTriangle,
 } from "../icons";
 
 interface ChatMuseTabProps {
@@ -23,13 +23,16 @@ interface ChatMuseTabProps {
   isSending: boolean;
   currentMode: MuseMode;
   onExportChat: (convId: string, format: "markdown" | "json") => Promise<void>;
+  isApiConfigured: boolean;
+  onOpenApiModal: () => void;
+  lastChatError?: string | null;
 }
 
 const STARTER_PROMPTS = [
-  "✦ Сгенерируй концепт интерфейса Meta Muse с иридисцентным спектром",
-  "✦ Проанализируй состояние изолированной VM песочницы",
-  "✦ Создай проактивную фоновую задачу для проверки логов каждые 30 минут",
-  "✦ Сохрани в память предпочтение по цветовой палитре обсидиана и циана",
+  "✦ Проанализируй состояние хост-процесса и памяти плагина",
+  "✦ Создай фоновую задачу для проверки логов каждые 30 минут",
+  "✦ Сохрани в долговременную память предпочтение по цветовой палитре обсидиана и циана",
+  "✦ Объясни архитектуру автономного компаньона Meta Muse",
 ];
 
 export function ChatMuseTab({
@@ -43,6 +46,9 @@ export function ChatMuseTab({
   isSending,
   currentMode,
   onExportChat,
+  isApiConfigured,
+  onOpenApiModal,
+  lastChatError,
 }: ChatMuseTabProps) {
   const [inputText, setInputText] = useState("");
   const [searchFilter, setSearchFilter] = useState("");
@@ -113,8 +119,9 @@ export function ChatMuseTab({
         {/* Conversation list */}
         <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
           {filteredConversations.length === 0 ? (
-            <div className="p-4 text-center text-xs text-slate-500">
-              Нет диалогов. Нажмите «Новый», чтобы начать.
+            <div className="p-4 text-center text-xs text-slate-500 space-y-1">
+              <p>Нет диалогов (чистый старт).</p>
+              <p className="text-[11px] text-slate-600">Нажмите «+ Новый», чтобы создать сессию.</p>
             </div>
           ) : (
             filteredConversations.map((c) => {
@@ -177,8 +184,10 @@ export function ChatMuseTab({
               </h2>
               <div className="flex items-center space-x-2 text-[11px] text-slate-400">
                 <span className="flex items-center space-x-1">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping inline-block" />
-                  <span className="text-emerald-400">Онлайн</span>
+                  <span className={`w-2 h-2 rounded-full ${isApiConfigured ? "bg-emerald-400" : "bg-amber-400"}`} />
+                  <span className={isApiConfigured ? "text-emerald-400" : "text-amber-400"}>
+                    {isApiConfigured ? "API подключен" : "API не настроен"}
+                  </span>
                 </span>
                 <span>•</span>
                 <span>Режим: <strong className="text-cyan-300 font-normal">{currentMode}</strong></span>
@@ -208,6 +217,30 @@ export function ChatMuseTab({
           </div>
         </div>
 
+        {/* Unconfigured API Banner if needed */}
+        {!isApiConfigured && (
+          <div className="bg-[#161C2B] border-b border-amber-900/40 px-5 py-2.5 flex items-center justify-between text-xs text-amber-200">
+            <div className="flex items-center space-x-2">
+              <SvgAlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+              <span>Meta Muse API не настроен. Укажите API ключ или эндпоинт в настройках для выполнения реальных диалогов.</span>
+            </div>
+            <button
+              onClick={onOpenApiModal}
+              className="text-xs px-2.5 py-1 rounded-lg bg-amber-950/60 hover:bg-amber-900/60 border border-amber-800 text-amber-300 font-medium transition shrink-0 ml-3"
+            >
+              Настроить API
+            </button>
+          </div>
+        )}
+
+        {/* Error notification if last chat error */}
+        {lastChatError && (
+          <div className="bg-rose-950/60 border-b border-rose-900/60 px-5 py-2.5 flex items-center space-x-2 text-xs text-rose-200">
+            <SvgAlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+            <span>{lastChatError}</span>
+          </div>
+        )}
+
         {/* Messages Scroll Area */}
         <div className="flex-1 overflow-y-auto p-5 space-y-4">
           {messages.length === 0 ? (
@@ -218,16 +251,16 @@ export function ChatMuseTab({
                 </div>
               </div>
               <div>
-                <h3 className="text-base font-bold text-white">Добро пожаловать в Meta Muse</h3>
+                <h3 className="text-base font-bold text-white">Диалог Meta Muse</h3>
                 <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                  Ваш персональный проактивный компаньон с возможностями генерации медиа, изолированной VM-песочницей и долговременной памятью.
+                  Без фейковых заглушек и симуляций. Все запросы направляются напрямую в сконфигурированный API провайдер.
                 </p>
               </div>
 
               {/* Starter chips */}
               <div className="w-full space-y-2 pt-2">
                 <span className="text-[11px] font-medium text-slate-400 block uppercase tracking-wider">
-                  Быстрый старт:
+                  Рекомендуемые запросы:
                 </span>
                 <div className="grid grid-cols-1 gap-2 text-left">
                   {STARTER_PROMPTS.map((starter, idx) => (

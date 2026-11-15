@@ -38,9 +38,9 @@ Meta Muse AI is engineered as a multi-tier modular assistant running inside the 
 ### 2.1 MetaMuseController
 The single source of truth for the plugin. Manages state synchronization between server, agent tools, CLI, and frontend UI.
 - **Sessions & Conversations**: Supports multiple concurrent threads, dynamic titling, automatic proactive suggestion generation, and rich message timestamps.
-- **Media Queue**: Handles generation tasks for both Still Concept Art (Images) and Dynamic Canvas (Videos), simulating realistic progression with seed determinism and style filters.
-- **Proactive Scheduler**: Maintains interval and cron-based background jobs. Automatically runs scheduled actions (digest, reminder, audit) and appends execution logs.
-- **Secure VM Isolation Enclave**: Monitors memory limits (default 2048 MB), CPU quota allocation (e.g., 75%), allowed domain whitelisting, and air-gapped policies for strict security.
+- **Media Queue**: Handles generation tasks for both Still Concept Art (Images) and Dynamic Canvas (Videos) when a media generation endpoint is configured; reports unconfigured status honestly when absent.
+- **Proactive Scheduler**: Maintains interval and cron-based background jobs with true next-run time calculation.
+- **Host Process Telemetry**: Monitors Node RSS memory usage, uptime, platform metrics, and environment execution status.
 - **Associative Memory Store**: Persists knowledge items in structured JSON format under user BB directory, supporting categorization, tag indexing, and query matching.
 
 ### 2.2 Agent Tools (15 Tools)

@@ -76,7 +76,7 @@ export interface VMProcess {
 }
 
 export interface VMStatus {
-  status: 'isolated' | 'running' | 'paused' | 'quarantined';
+  status: 'isolated' | 'running' | 'paused' | 'quarantined' | 'host_process';
   memoryLimitMB: number;
   memoryUsedMB: number;
   cpuQuotaPercent: number;
@@ -104,3 +104,10 @@ export interface SystemStatus {
     platform: string;
   };
 }
+
+export interface MuseConfig {
+  apiKey?: string;
+  endpointUrl?: string;
+  mediaEndpointUrl?: string;
+}
+

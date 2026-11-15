@@ -80,5 +80,5 @@ bb muse tools                       # List available agent tools
 
 ```bash
 # In the plugin directory:
-bb plugin install --yes "C:\Users\Isako\Desktop\MegaAuto\bb-plugin-meta-muse"
+bb plugin install --yes .
 ```

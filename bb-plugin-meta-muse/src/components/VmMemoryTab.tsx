@@ -9,7 +9,7 @@ import {
   SvgSearch,
   SvgLock,
   SvgPlus,
-  SvgActivity,
+  SvgAlertTriangle,
 } from "../icons";
 
 interface VmMemoryTabProps {
@@ -108,28 +108,29 @@ export function VmMemoryTab({
     return true;
   });
 
-  const memUsedPercent =
-    vmStatus && vmStatus.memoryLimitMB > 0
-      ? Math.min(100, Math.round((vmStatus.memoryUsedMB / vmStatus.memoryLimitMB) * 100))
-      : 0;
+  const memLimit = vmStatus?.memoryLimitMB || 2048;
+  const memUsed = vmStatus?.memoryUsedMB || 0;
+  const memUsedPercent = Math.min(100, Math.round((memUsed / memLimit) * 100));
 
   return (
     <div className="flex h-full w-full gap-4 overflow-hidden">
-      {/* LEFT: Secure VM Sandbox Telemetry */}
+      {/* LEFT: Honest Process Sandbox & Telemetry */}
       <div className="w-1/2 flex flex-col bg-[#10141E]/90 rounded-2xl border border-slate-800/80 shadow-2xl p-5 overflow-y-auto backdrop-blur-md space-y-4">
         {/* Header */}
         <div className="flex items-center justify-between pb-3 border-b border-slate-800/80">
           <div className="flex items-center space-x-2.5">
             <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-[#00C4B4] to-[#0866FF] flex items-center justify-center p-[1px]">
               <div className="w-full h-full bg-[#10141E] rounded-[6px] flex items-center justify-center">
-                <SvgShield className="w-3.5 h-3.5 text-emerald-400" />
+                <SvgShield className="w-3.5 h-3.5 text-cyan-300" />
               </div>
             </div>
             <div>
               <h2 className="text-xs font-bold text-white tracking-wide">
-                Безопасная Песочница VM (Enclave)
+                Хост-процесс (без изолированного гипервизора)
               </h2>
-              <p className="text-[10px] text-slate-400">Строгая изоляция и аудит процессов</p>
+              <p className="text-[10px] text-slate-400">
+                Честный мониторинг процесса Node.js и параметров окружения
+              </p>
             </div>
           </div>
 
@@ -137,47 +138,60 @@ export function VmMemoryTab({
             onClick={handleRefresh}
             disabled={isRefreshing}
             className="flex items-center space-x-1.5 text-xs px-2.5 py-1 rounded-lg bg-[#161C2B] hover:bg-[#1E2538] text-cyan-300 border border-slate-800 transition disabled:opacity-50"
-            title="Обновить статус VM"
+            title="Обновить метрики процесса"
           >
             <SvgRefresh className={`w-3.5 h-3.5 ${isRefreshing ? "animate-spin" : ""}`} />
             <span>Обновить</span>
           </button>
         </div>
 
-        {/* VM State Overview Cards */}
+        {/* Honest Environment Alert Banner */}
+        <div className="bg-[#161C2B] rounded-2xl border border-amber-900/40 p-3.5 flex items-start space-x-3 text-xs">
+          <SvgAlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+          <div className="space-y-1">
+            <div className="font-semibold text-amber-200">
+              Хост-процесс (без изолированного гипервизора)
+            </div>
+            <p className="text-[11px] text-slate-400 leading-relaxed">
+              Аппаратная VM-изоляция и микро-гипервизор не поддерживаются в текущем локальном Node.js окружении. Выполнение скриптов производится напрямую в рамках хост-процесса с программным ограничением времени и квот.
+            </p>
+          </div>
+        </div>
+
+        {/* Process State Overview Cards */}
         {vmStatus && (
           <div className="space-y-4 text-xs">
             {/* Status & Enclave Banner */}
-            <div className="bg-gradient-to-r from-emerald-950/40 via-[#161C2B] to-[#161C2B] rounded-2xl border border-emerald-800/40 p-3.5 flex items-center justify-between">
+            <div className="bg-gradient-to-r from-slate-900/60 via-[#161C2B] to-[#161C2B] rounded-2xl border border-slate-700/60 p-3.5 flex items-center justify-between">
               <div className="flex items-center space-x-3">
-                <div className="w-3 h-3 rounded-full bg-emerald-400 animate-ping inline-block" />
+                <div className="w-3 h-3 rounded-full bg-cyan-400 inline-block" />
                 <div>
                   <div className="font-semibold text-white flex items-center space-x-2">
-                    <span>Статус Изоляции:</span>
-                    <span className="uppercase text-emerald-400 font-mono tracking-wider">
-                      {vmStatus.status}
+                    <span>Режим среды:</span>
+                    <span className="uppercase text-cyan-300 font-mono tracking-wider">
+                      {vmStatus.status === "host_process" ? "Хост-процесс" : vmStatus.status}
                     </span>
                   </div>
                   <div className="text-[10px] text-slate-400 mt-0.5">
-                    Secure Enclave: {vmStatus.secureEnclave ? "Включен" : "Отсутствует (плагин работает в процессе хоста)"}
+                    Аппаратный Enclave: {vmStatus.secureEnclave ? "Аппаратный" : "Отсутствует (Host Node.js)"}
                   </div>
                 </div>
               </div>
 
               <div className="text-right font-mono text-[10px] text-slate-400">
                 <div>Аптайм: {Math.floor(vmStatus.uptimeSeconds / 60)} мин</div>
-                <div className="text-slate-500">Аудит: {vmStatus.lastSecurityAudit === "never" ? "не проводился" : vmStatus.lastSecurityAudit}</div>
+                <div className="text-slate-500">Node PID: {process?.pid || "host"}</div>
               </div>
             </div>
 
             {/* Gauges: RAM & CPU */}
             <div className="grid grid-cols-2 gap-3">
-              {/* RAM Usage */}
+              {/* RAM Usage (RSS) */}
               <div className="bg-[#161C2B] rounded-xl border border-slate-800 p-3.5 space-y-2">
                 <div className="flex justify-between items-center text-[11px]">
                   <span className="text-slate-400 flex items-center space-x-1">
                     <SvgDatabase className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>ОЗУ процесса (RSS)</span>
+                    <span>Память процесса (RSS)</span>
                   </span>
                   <span className="font-mono text-cyan-300 font-semibold">{memUsedPercent}%</span>
                 </div>
@@ -188,8 +202,8 @@ export function VmMemoryTab({
                   />
                 </div>
                 <div className="flex justify-between text-[10px] font-mono text-slate-500">
-                  <span>{vmStatus.memoryUsedMB} MB исп.</span>
-                  <span>{vmStatus.memoryLimitMB > 0 ? `Лимит: ${vmStatus.memoryLimitMB} MB` : "Лимит не задан"}</span>
+                  <span>{memUsed} MB (реальный RSS)</span>
+                  <span>Лимит: {memLimit} MB</span>
                 </div>
               </div>
 
@@ -198,7 +212,7 @@ export function VmMemoryTab({
                 <div className="flex justify-between items-center text-[11px]">
                   <span className="text-slate-400 flex items-center space-x-1">
                     <SvgCpu className="w-3.5 h-3.5 text-pink-400" />
-                    <span>Квота ЦП</span>
+                    <span>Выделение ЦП</span>
                   </span>
                   <span className="font-mono text-pink-300 font-semibold">{vmStatus.cpuQuotaPercent}%</span>
                 </div>
@@ -209,8 +223,8 @@ export function VmMemoryTab({
                   />
                 </div>
                 <div className="flex justify-between text-[10px] font-mono text-slate-500">
-                  <span>Выделено: {vmStatus.cpuQuotaPercent}%</span>
-                  <span>Hard Cap: 100%</span>
+                  <span>Квота потока: {vmStatus.cpuQuotaPercent}%</span>
+                  <span>Лимит: 100%</span>
                 </div>
               </div>
             </div>
@@ -227,7 +241,7 @@ export function VmMemoryTab({
                 </span>
               </div>
               <div className="text-[11px] text-slate-400">
-                Белый список доменов коннекторов:
+                Разрешенные внешние эндпоинты коннекторов:
               </div>
               <div className="flex flex-wrap gap-1.5">
                 {vmStatus.allowedDomains.map((domain, i) => (
@@ -246,7 +260,7 @@ export function VmMemoryTab({
             <div className="bg-[#161C2B] rounded-xl border border-slate-800 p-3.5 space-y-2">
               <div className="flex justify-between items-center pb-1 border-b border-slate-800/80">
                 <span className="text-[11px] font-semibold text-slate-300">
-                  Изолированные процессы в Enclave ({vmStatus.activeProcesses.length})
+                  Процессы хоста в контексте плагина ({vmStatus.activeProcesses.length})
                 </span>
                 <span className="text-[10px] text-slate-500 font-mono">PID / CPU / ОЗУ</span>
               </div>
@@ -269,12 +283,6 @@ export function VmMemoryTab({
                 ))}
               </div>
             </div>
-
-            {/* Security Audit Stamp */}
-            <div className="text-[10px] text-slate-500 flex justify-between font-mono px-1">
-              <span>Последний аудит: {new Date(vmStatus.lastSecurityAudit).toLocaleDateString()} {new Date(vmStatus.lastSecurityAudit).toLocaleTimeString()}</span>
-              <span className="text-emerald-400">SHA256: 8f9b...a10e (Verified)</span>
-            </div>
           </div>
         )}
       </div>
@@ -293,7 +301,7 @@ export function VmMemoryTab({
               <h2 className="text-xs font-bold text-white tracking-wide">
                 Долговременная Ассоциативная Память
               </h2>
-              <p className="text-[10px] text-slate-400">Векторные предпочтения, контекст и факты</p>
+              <p className="text-[10px] text-slate-400">Постоянные предпочтения, контекст и факты</p>
             </div>
           </div>
 
@@ -406,9 +414,12 @@ export function VmMemoryTab({
         {/* Memory Records List */}
         <div className="flex-1 overflow-y-auto space-y-2.5 pr-1">
           {filteredMemories.length === 0 ? (
-            <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-500">
-              <SvgDatabase className="w-10 h-10 text-slate-700 mb-2" />
-              <p className="text-xs">Записей памяти не найдено.</p>
+            <div className="h-full flex flex-col items-center justify-center text-center p-6 text-slate-500 space-y-2">
+              <SvgDatabase className="w-10 h-10 text-slate-700" />
+              <p className="text-xs">Память пуста (нет сохраненных записей).</p>
+              <p className="text-[11px] text-slate-600">
+                Заполните форму выше, чтобы сохранить директиву, предпочтение или факт.
+              </p>
             </div>
           ) : (
             filteredMemories.map((m) => (

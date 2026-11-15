@@ -17,6 +17,7 @@ import { ChatMuseTab } from "./src/components/ChatMuseTab";
 import { MediaStudioTab } from "./src/components/MediaStudioTab";
 import { ProactiveTasksTab } from "./src/components/ProactiveTasksTab";
 import { VmMemoryTab } from "./src/components/VmMemoryTab";
+import { ApiConfigModal, type ApiConfig } from "./src/components/ApiConfigModal";
 
 function downloadFile(filename: string, content: string, mime: string) {
   try {
@@ -43,6 +44,17 @@ export function MetaMuseView() {
   const [isModeChanging, setIsModeChanging] = useState(false);
   const [systemStatus, setSystemStatus] = useState<SystemStatus | null>(null);
 
+  // Honest API Config & Modal
+  const [apiConfig, setApiConfig] = useState<ApiConfig>({
+    apiKey: "",
+    endpointUrl: "",
+    mediaEndpointUrl: "",
+    isConfigured: false,
+  });
+  const [isApiModalOpen, setIsApiModalOpen] = useState(false);
+  const [lastChatError, setLastChatError] = useState<string | null>(null);
+  const [lastMediaError, setLastMediaError] = useState<string | null>(null);
+
   // Tab 1: Chat & Muse state
   const [conversations, setConversations] = useState<MuseConversation[]>([]);
   const [selectedConvId, setSelectedConvId] = useState<string>("");
@@ -60,9 +72,39 @@ export function MetaMuseView() {
   const [vmStatus, setVmStatus] = useState<VMStatus | null>(null);
   const [memories, setMemories] = useState<MemoryRecord[]>([]);
 
+  const isApiConfigured = Boolean(apiConfig.isConfigured || (apiConfig.apiKey && apiConfig.apiKey.trim().length > 0));
+
   // ==========================================================================
   // DATA FETCHING HANDLERS
   // ==========================================================================
+
+  const loadApiConfig = useCallback(async () => {
+    try {
+      const res = await rpc.call("get_api_config", {});
+      if (res) {
+        setApiConfig(res);
+      }
+    } catch {
+      // ignore
+    }
+  }, [rpc]);
+
+  const handleSaveApiConfig = async (newConfig: { apiKey?: string; endpointUrl?: string; mediaEndpointUrl?: string }) => {
+    try {
+      const res = await rpc.call("update_api_config", newConfig);
+      if (res) {
+        setApiConfig((prev) => ({
+          ...prev,
+          ...newConfig,
+          isConfigured: res.isConfigured,
+        }));
+        setLastChatError(null);
+        setLastMediaError(null);
+      }
+    } catch {
+      // ignore
+    }
+  };
 
   const loadSystemStatus = useCallback(async () => {
     try {
@@ -150,6 +192,7 @@ export function MetaMuseView() {
 
   // Initial Load & Background Polling
   useEffect(() => {
+    loadApiConfig();
     loadSystemStatus();
     loadConversations();
     loadMediaJobs();
@@ -164,7 +207,7 @@ export function MetaMuseView() {
     }, 4000);
 
     return () => clearInterval(interval);
-  }, [loadSystemStatus, loadConversations, loadMediaJobs, loadTasks, loadVMStatus, loadMemories]);
+  }, [loadApiConfig, loadSystemStatus, loadConversations, loadMediaJobs, loadTasks, loadVMStatus, loadMemories]);
 
   // Re-load messages when conversation changes
   useEffect(() => {
@@ -232,6 +275,7 @@ export function MetaMuseView() {
   const handleSendMessage = async (text: string) => {
     if (!text.trim() || isSending) return;
     setIsSending(true);
+    setLastChatError(null);
     try {
       const res = await rpc.call("send_message", {
         conversationId: selectedConvId || undefined,
@@ -245,8 +289,9 @@ export function MetaMuseView() {
         setMessages((prev) => [...prev, res.userMessage, res.assistantMessage]);
         loadConversations();
       }
-    } catch {
-      // ignore
+    } catch (err: any) {
+      const errMsg = err?.message || "Ошибка отправки сообщения в Meta Muse API";
+      setLastChatError(errMsg);
     } finally {
       setIsSending(false);
     }
@@ -279,13 +324,16 @@ export function MetaMuseView() {
     seed?: number;
   }) => {
     setIsGenerating(true);
+    setLastMediaError(null);
     try {
       const res = await rpc.call("generate_media", params);
       if (res) {
         setMediaJobs((prev) => [res, ...prev.filter((j) => j.id !== res.id)]);
       }
-    } catch {
-      // ignore
+    } catch (err: any) {
+      const errMsg = err?.message || "Ошибка при генерации медиа";
+      setLastMediaError(errMsg);
+      throw err;
     } finally {
       setIsGenerating(false);
     }
@@ -319,8 +367,8 @@ export function MetaMuseView() {
         setTasks((prev) => [res, ...prev]);
         loadSystemStatus();
       }
-    } catch {
-      // ignore
+    } catch (err: any) {
+      throw err;
     }
   };
 
@@ -341,8 +389,8 @@ export function MetaMuseView() {
       if (res && res.task) {
         setTasks((prev) => prev.map((t) => (t.id === taskId ? res.task : t)));
       }
-    } catch {
-      // ignore
+    } catch (err: any) {
+      throw err;
     }
   };
 
@@ -431,6 +479,8 @@ export function MetaMuseView() {
         currentMode={currentMode}
         onModeChange={handleModeChange}
         isModeChanging={isModeChanging}
+        apiConfig={apiConfig}
+        onOpenApiModal={() => setIsApiModalOpen(true)}
       />
 
       {/* Main View Port */}
@@ -447,6 +497,9 @@ export function MetaMuseView() {
             isSending={isSending}
             currentMode={currentMode}
             onExportChat={handleExportChat}
+            isApiConfigured={isApiConfigured}
+            onOpenApiModal={() => setIsApiModalOpen(true)}
+            lastChatError={lastChatError}
           />
         )}
 
@@ -456,6 +509,9 @@ export function MetaMuseView() {
             onGenerateMedia={handleGenerateMedia}
             onDeleteMediaJob={handleDeleteMediaJob}
             isGenerating={isGenerating}
+            isApiConfigured={isApiConfigured}
+            onOpenApiModal={() => setIsApiModalOpen(true)}
+            lastError={lastMediaError}
           />
         )}
 
@@ -466,6 +522,8 @@ export function MetaMuseView() {
             onToggleTaskStatus={handleToggleTaskStatus}
             onTriggerTaskNow={handleTriggerTaskNow}
             onCancelTask={handleCancelTask}
+            isApiConfigured={isApiConfigured}
+            onOpenApiModal={() => setIsApiModalOpen(true)}
           />
         )}
 
@@ -480,6 +538,14 @@ export function MetaMuseView() {
           />
         )}
       </main>
+
+      {/* API Configuration Modal */}
+      <ApiConfigModal
+        isOpen={isApiModalOpen}
+        onClose={() => setIsApiModalOpen(false)}
+        config={apiConfig}
+        onSave={handleSaveApiConfig}
+      />
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import React from "react";
 import type { SystemStatus, MuseMode } from "../types";
-import { SvgSparkles, SvgShield, SvgCpu, SvgActivity } from "../icons";
+import { SvgSparkles, SvgShield, SvgCpu, SvgKey } from "../icons";
+import type { ApiConfig } from "./ApiConfigModal";
 
 export type TabType = "chat" | "studio" | "tasks" | "vm";
 
@@ -11,6 +12,8 @@ interface HeaderBarProps {
   currentMode: MuseMode;
   onModeChange: (mode: MuseMode) => void;
   isModeChanging?: boolean;
+  apiConfig: ApiConfig;
+  onOpenApiModal: () => void;
 }
 
 const MODES: Array<{ mode: MuseMode; label: string; badgeColor: string; description: string }> = [
@@ -36,7 +39,7 @@ const MODES: Array<{ mode: MuseMode; label: string; badgeColor: string; descript
     mode: "strict_sandbox",
     label: "Strict VM",
     badgeColor: "border-amber-500/60 bg-amber-500/15 text-amber-300",
-    description: "Максимальная изоляция процессов и строгий сетевой аудит",
+    description: "Строгий аудит сетевых коннекторов и процессов",
   },
 ];
 
@@ -47,7 +50,11 @@ export function HeaderBar({
   currentMode,
   onModeChange,
   isModeChanging,
+  apiConfig,
+  onOpenApiModal,
 }: HeaderBarProps) {
+  const isApiConfigured = Boolean(apiConfig.apiKey && apiConfig.apiKey.trim().length > 0);
+
   return (
     <header className="flex flex-col md:flex-row items-center justify-between px-5 py-3 border-b border-slate-800/80 bg-[#10141E]/95 backdrop-blur-md gap-3 z-20">
       {/* Brand & Mode Controls */}
@@ -70,7 +77,7 @@ export function HeaderBar({
               </span>
             </div>
             <p className="text-[11px] text-slate-400 flex items-center space-x-1.5 mt-0.5">
-              <span>Iridescent Spectrum Autonomous Companion</span>
+              <span>Iridescent Autonomous Companion</span>
             </p>
           </div>
         </div>
@@ -147,20 +154,37 @@ export function HeaderBar({
           }`}
         >
           <span className="text-emerald-400">🛡️</span>
-          <span>Безопасная VM & Память</span>
+          <span>Процесс & Память</span>
         </button>
       </nav>
 
-      {/* Hardware & Sandbox Telemetry Badge */}
-      <div className="hidden xl:flex items-center space-x-3 text-[11px] font-mono">
-        <div className="flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-[#161C2B] border border-slate-800 text-slate-300">
-          <SvgShield className="w-3.5 h-3.5 text-emerald-400" />
-          <span className="text-emerald-400 font-semibold uppercase">{systemStatus?.vmStatus || "ISOLATED"}</span>
+      {/* API Key Config & Host Status */}
+      <div className="flex items-center space-x-2.5 text-[11px] font-mono">
+        {/* Honest API Status Button */}
+        <button
+          onClick={onOpenApiModal}
+          className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-xl border transition shadow-sm ${
+            isApiConfigured
+              ? "border-emerald-500/40 bg-emerald-950/40 text-emerald-300 hover:border-emerald-400"
+              : "border-amber-500/50 bg-amber-950/40 text-amber-300 hover:border-amber-400 animate-pulse"
+          }`}
+          title="Настройка API эндпоинта и ключа"
+        >
+          <SvgKey className="w-3.5 h-3.5" />
+          <span>{isApiConfigured ? "API: Подключен" : "API: Не настроен ⚠️"}</span>
+        </button>
+
+        {/* Honest Host Process / VM Badge */}
+        <div className="hidden xl:flex items-center space-x-1.5 px-2.5 py-1.5 rounded-xl bg-[#161C2B] border border-slate-800 text-slate-300">
+          <SvgShield className="w-3.5 h-3.5 text-cyan-400" />
+          <span className="text-cyan-300 font-semibold uppercase">
+            {systemStatus?.vmStatus || "host_process"}
+          </span>
         </div>
 
         {systemStatus?.hardware && (
-          <div className="flex items-center space-x-1.5 px-2.5 py-1 rounded-lg bg-[#161C2B] border border-slate-800 text-slate-400">
-            <SvgCpu className="w-3.5 h-3.5 text-cyan-400" />
+          <div className="hidden 2xl:flex items-center space-x-1.5 px-2.5 py-1.5 rounded-xl bg-[#161C2B] border border-slate-800 text-slate-400">
+            <SvgCpu className="w-3.5 h-3.5 text-pink-400" />
             <span>RAM: {Math.round((systemStatus.hardware.totalMemoryMB - systemStatus.hardware.freeMemoryMB) / 1024 * 10) / 10} / {Math.round(systemStatus.hardware.totalMemoryMB / 1024 * 10) / 10} GB</span>
           </div>
         )}

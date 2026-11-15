@@ -1,0 +1,50 @@
+name: build-whatsapp-bridge
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "bb-plugin-whatsapp/bridge/**"
+      - "!bb-plugin-whatsapp/bridge/whatsapp-bridge.exe"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      # mattn/go-sqlite3 needs CGO; windows-latest ships msys2 mingw-w64 gcc.
+      - name: Add MinGW gcc to PATH
+        shell: pwsh
+        run: Add-Content $env:GITHUB_PATH "C:\msys64\mingw64\bin"
+
+      - name: Build whatsapp-bridge.exe
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd bb-plugin-whatsapp/bridge
+          export CGO_ENABLED=1
+          export CC=gcc
+          go build -trimpath -o whatsapp-bridge.exe .
+          ls -la whatsapp-bridge.exe
+
+      - name: Commit rebuilt exe back to main
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bb-plugin-whatsapp/bridge/whatsapp-bridge.exe
+          if git diff --cached --quiet; then
+            echo "exe unchanged, nothing to commit"
+            exit 0
+          fi
+          git commit -m "chore(bridge): rebuild whatsapp-bridge.exe [skip ci]"
+          git push

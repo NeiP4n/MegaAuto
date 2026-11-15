@@ -1564,7 +1564,7 @@ async function forwardToN8n(
         const data = (await res.json().catch(() => ({}))) as any;
         return {
           ok: true,
-          reply: data.reply || data.output || data.message || "Webhook успешно принял команду",
+          reply: data.reply || data.output || data.message || `HTTP ${res.status} OK`,
         };
       }
       return { ok: false, error: `Webhook returned HTTP ${res.status}` };
@@ -1602,7 +1602,7 @@ async function forwardToN8n(
         const data = (await res.json().catch(() => ({}))) as any;
         return {
           ok: true,
-          reply: data.reply || data.output || data.message || "Команда отправлена в Telegram бот",
+          reply: data.reply || data.output || data.message || `HTTP ${res.status} OK`,
         };
       }
       return { ok: false, error: `Telegram gateway returned HTTP ${res.status}` };
@@ -1645,7 +1645,7 @@ async function forwardToN8n(
         const data = (await res.json().catch(() => ({}))) as any;
         return {
           ok: true,
-          reply: data.reply || data.output || data.message || "Выполнено успешно (n8n webhook)",
+          reply: data.reply || data.output || data.message || `HTTP ${res.status} OK`,
         };
       }
     } catch {
@@ -1740,7 +1740,9 @@ export default function (bb: BbPluginApi) {
       store.addMessage(newMsg);
 
       // Forward to n8n if reachable
+      const forwardStart = Date.now();
       const n8nResult = await forwardToN8n(store, input.projectId, input.text, input.mode);
+      const actualDurationMs = Date.now() - forwardStart;
 
       if (n8nResult.ok && n8nResult.reply) {
         const replyMsg: ChatMessage = {
@@ -1755,7 +1757,7 @@ export default function (bb: BbPluginApi) {
           metadata: {
             workflowName: "webhook_reply",
             status: "success",
-            durationMs: 320,
+            durationMs: actualDurationMs,
           },
         };
         store.addMessage(replyMsg);
@@ -2497,7 +2499,7 @@ export default function (bb: BbPluginApi) {
       }
 
       return `Message sent to ${args.projectId}: "${args.text}" (Remote result: ${
-        n8nResult.error || "queued"
+        n8nResult.error || "no reply"
       })`;
     },
   });

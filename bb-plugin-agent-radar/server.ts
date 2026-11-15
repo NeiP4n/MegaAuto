@@ -141,9 +141,18 @@ class RadarEngine {
     autoExpandOnBusy: true,
   };
 
+  private settingsFile: string;
+
   constructor() {
     const userProfile = process.env.USERPROFILE || process.env.HOME || os.homedir();
     this.brainBaseDir = path.join(userProfile, ".gemini", "antigravity-cli", "brain");
+    this.settingsFile = path.join(userProfile, ".bb", "radar-settings.json");
+    try {
+      if (fs.existsSync(this.settingsFile)) {
+        const stored = JSON.parse(fs.readFileSync(this.settingsFile, "utf-8"));
+        this.settings = { ...this.settings, ...stored };
+      }
+    } catch {}
   }
 
   getSettings(): RadarSettings {
@@ -152,6 +161,9 @@ class RadarEngine {
 
   updateSettings(patch: Partial<RadarSettings>): RadarSettings {
     this.settings = { ...this.settings, ...patch };
+    try {
+      fs.writeFileSync(this.settingsFile, JSON.stringify(this.settings, null, 2), "utf-8");
+    } catch {}
     return this.getSettings();
   }
 

@@ -273,7 +273,7 @@ class BrowserController {
 
       // Create initial tab if empty
       if (this.tabs.size === 0) {
-        await this.createTab("https://web.whatsapp.com");
+        await this.createTab("https://www.google.com");
       }
 
       return true;
@@ -287,7 +287,7 @@ class BrowserController {
   }
 
   // --- Multi-Tab Management ---
-  public async createTab(initialUrl = "https://web.whatsapp.com"): Promise<TabState> {
+  public async createTab(initialUrl = "https://www.google.com"): Promise<TabState> {
     await this.start();
     const resolvedUrl = resolveInputToUrl(initialUrl);
 
@@ -350,7 +350,7 @@ class BrowserController {
         const nextTab = this.tabs.get(this.activeTabId)!;
         await nextTab.page.bringToFront().catch(() => null);
       } else {
-        await this.createTab("https://web.whatsapp.com");
+        await this.createTab("https://www.google.com");
       }
     }
 
@@ -638,7 +638,7 @@ class BrowserController {
 
   public async switchEngine(engine: "patchright" | "chrome"): Promise<any> {
     const currentTab = this.getTab();
-    const currentUrl = currentTab?.url || "https://web.whatsapp.com";
+    const currentUrl = currentTab?.url || "https://www.google.com";
     this.log(`Switching browser engine to ${engine}...`);
     this.engineType = engine;
     this.stealth = engine === "patchright";
@@ -747,7 +747,7 @@ export default function (bb: BbPluginApi) {
     get_screenshot: async () => controller.getScreenshot(),
     navigate: async (input) => controller.navigate(input.url, input.tabId, input.stealth),
     new_tab: async (input) => {
-      await controller.createTab(input.url || "https://web.whatsapp.com");
+      await controller.createTab(input.url || "https://www.google.com");
       return controller.getActionOutput();
     },
     switch_tab: async (input) => {

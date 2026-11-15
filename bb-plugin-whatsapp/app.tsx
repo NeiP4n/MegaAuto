@@ -615,11 +615,7 @@ export function WhatsAppView() {
     }
   }, [messages, selectedChat]);
 
-  // Send message from conversation composer with full optimistic feedback & persistence
-  const handleAttachmentPick = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file) return;
+  const loadAttachmentFile = (file: File, fallbackName?: string) => {
     if (file.size > 15 * 1024 * 1024) {
       setErrorMessage("File is too large (max 15 MB).");
       return;
@@ -636,12 +632,32 @@ export function WhatsAppView() {
         dataUrl,
         base64,
         mime: file.type || "application/octet-stream",
-        filename: file.name,
+        filename: file.name || fallbackName || "file",
         size: file.size,
       });
     };
     reader.onerror = () => setErrorMessage("Could not read the selected file.");
     reader.readAsDataURL(file);
+  };
+
+  // Ctrl+V: pasting an image (screenshot, copied picture) into the composer
+  // attaches it - the caption field and preview are the existing attachment UI.
+  const handleComposerPaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
+    const file = Array.from(e.clipboardData?.files || []).find((f) =>
+      f.type.startsWith("image/")
+    ) || e.clipboardData?.files?.[0];
+    if (!file) return; // plain text paste - let the input handle it
+    e.preventDefault();
+    const ext = (file.type.split("/")[1] || "png").replace("jpeg", "jpg");
+    loadAttachmentFile(file, `pasted-${new Date().toISOString().replace(/[:.]/g, "-")}.${ext}`);
+  };
+
+  // Send message from conversation composer with full optimistic feedback & persistence
+  const handleAttachmentPick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    loadAttachmentFile(file);
   };
 
   const handleSendMessage = async () => {
@@ -1667,6 +1683,7 @@ export function WhatsAppView() {
                       placeholder={attachment ? "Add a caption..." : "Type a message"}
                       value={messageInput}
                       onChange={(e) => setMessageInput(e.target.value)}
+                      onPaste={handleComposerPaste}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && !e.shiftKey) {
                           e.preventDefault();

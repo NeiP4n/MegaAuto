@@ -39,9 +39,11 @@ import {
 function MediaImagePreview({
   msg,
   onOpen,
+  sessionId,
 }: {
   msg: WhatsAppMessage;
   onOpen: (url: string) => void;
+  sessionId?: string;
 }) {
   const rpc = useRpc<typeof rpcContract>();
   const [dataUrl, setDataUrl] = useState<string | null>(null);
@@ -51,10 +53,12 @@ function MediaImagePreview({
     let cancelled = false;
     (async () => {
       try {
-        const res = await rpc.call("get_media_preview", {
+        const previewArgs: { message_id: string; chat_jid: string; session_id?: string } = {
           message_id: msg.id,
           chat_jid: msg.chat_jid,
-        });
+        };
+        if (sessionId) previewArgs.session_id = sessionId;
+        const res = await rpc.call("get_media_preview", previewArgs);
         if (cancelled) return;
         if (res.success && res.data_url) {
           setDataUrl(res.data_url);
@@ -67,7 +71,7 @@ function MediaImagePreview({
     return () => {
       cancelled = true;
     };
-  }, [msg.id, msg.chat_jid, attempt]);
+  }, [msg.id, msg.chat_jid, attempt, sessionId]);
 
   if (failed) {
     return (
@@ -1725,7 +1729,7 @@ export function WhatsAppView() {
                               ) : msg.media_type ? (
                                 <>
                                 {msg.media_type.includes("image") && (
-                                  <MediaImagePreview msg={msg} onOpen={setLightboxUrl} />
+                                  <MediaImagePreview msg={msg} onOpen={setLightboxUrl} sessionId={activeSessionId} />
                                 )}
                                 <div className="mx-1 mt-1.5">
                                   <div className="flex items-center justify-between gap-3 bg-[rgba(0,0,0,0.15)] rounded-md p-2">
@@ -1773,7 +1777,8 @@ export function WhatsAppView() {
                                       Saved: {dlPath}
                                     </div>
                                   )}
-                                  {dlStatus === "failed" && !dlPath && (
+                                  {/* Images already carry the retry row inside the preview - keep one retry per bubble. */}
+                                  {dlStatus === "failed" && !dlPath && !msg.media_type.includes("image") && (
                                     <button
                                       onClick={() => handleDownloadMedia(msg)}
                                       className="mt-1 text-[12px] text-[var(--wa-text-secondary)] underline decoration-dotted underline-offset-2 hover:text-[var(--wa-text)] transition-colors"

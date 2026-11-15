@@ -1564,7 +1564,7 @@ async function forwardToN8n(
         const data = (await res.json().catch(() => ({}))) as any;
         return {
           ok: true,
-          reply: data.reply || data.output || data.message || `HTTP ${res.status} OK`,
+          reply: data.reply || data.output || data.message || undefined, // no canned reply: an empty 200 means accepted-with-nothing-to-say, no fake bubble
         };
       }
       return { ok: false, error: `Webhook returned HTTP ${res.status}` };
@@ -1602,7 +1602,7 @@ async function forwardToN8n(
         const data = (await res.json().catch(() => ({}))) as any;
         return {
           ok: true,
-          reply: data.reply || data.output || data.message || `HTTP ${res.status} OK`,
+          reply: data.reply || data.output || data.message || undefined, // no canned reply: an empty 200 means accepted-with-nothing-to-say, no fake bubble
         };
       }
       return { ok: false, error: `Telegram gateway returned HTTP ${res.status}` };
@@ -1645,7 +1645,7 @@ async function forwardToN8n(
         const data = (await res.json().catch(() => ({}))) as any;
         return {
           ok: true,
-          reply: data.reply || data.output || data.message || `HTTP ${res.status} OK`,
+          reply: data.reply || data.output || data.message || undefined, // no canned reply: an empty 200 means accepted-with-nothing-to-say, no fake bubble
         };
       }
     } catch {

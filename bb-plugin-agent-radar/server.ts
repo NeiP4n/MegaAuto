@@ -162,6 +162,7 @@ class RadarEngine {
   updateSettings(patch: Partial<RadarSettings>): RadarSettings {
     this.settings = { ...this.settings, ...patch };
     try {
+      fs.mkdirSync(path.dirname(this.settingsFile), { recursive: true });
       fs.writeFileSync(this.settingsFile, JSON.stringify(this.settings, null, 2), "utf-8");
     } catch {}
     return this.getSettings();
@@ -269,7 +270,10 @@ class RadarEngine {
       const parsed: any[] = [];
       for (const raw of recent) {
         try {
-          parsed.push(JSON.parse(raw));
+          const v = JSON.parse(raw);
+          // jsonl can hold null/primitive lines - keep only objects so
+          // downstream field access never crashes on them.
+          if (v && typeof v === "object") parsed.push(v);
         } catch {
           // ignore malformed line
         }
@@ -306,7 +310,7 @@ class RadarEngine {
 
     for (let i = 0; i < rawLines.length; i++) {
       const line = rawLines[i];
-      if (line.model) modelName = line.model;
+      if (line.model) modelName = String(line.model);
       if (line.input_tokens || line.output_tokens) {
         lastTokens = {
           input: line.input_tokens,
@@ -325,12 +329,17 @@ class RadarEngine {
           const n = String(tc?.name || "").toLowerCase();
           return n.includes("ask_question") || n.includes("askuserquestion") || n.includes("schedule");
         });
-        const tc = qOrBg || line.tool_calls[0];
-        toolName = tc.name;
-        const args = tc.args || {};
-        const rawSummary = args.toolSummary || args.CommandLine || args.Path || args.query || args.Prompt || (Array.isArray(args.questions) ? args.questions.map((q: any) => q.question).join("; ") : "") || "";
-        toolSummary = maskSecrets(String(rawSummary));
-        toolCommand = args.CommandLine ? maskSecrets(String(args.CommandLine)) : undefined;
+        const tc = qOrBg || line.tool_calls.find((t: any) => t && typeof t === "object");
+        if (tc) {
+          toolName = typeof tc.name === "string" ? tc.name : String(tc.name ?? "unknown");
+          const args = (tc.args && typeof tc.args === "object") ? tc.args : {};
+          const questionsText = Array.isArray(args.questions)
+            ? args.questions.map((q: any) => (q && typeof q.question === "string" ? q.question : "")).filter(Boolean).join("; ")
+            : "";
+          const rawSummary = args.toolSummary || args.CommandLine || args.Path || args.query || args.Prompt || questionsText || "";
+          toolSummary = maskSecrets(String(rawSummary));
+          toolCommand = args.CommandLine ? maskSecrets(String(args.CommandLine)) : undefined;
+        }
       }
 
       let thinkingPreview: string | undefined = undefined;

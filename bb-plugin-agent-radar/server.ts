@@ -223,6 +223,10 @@ class RadarEngine {
     let activeId = conversationId;
     if (!activeId && threadId) {
       activeId = this.findConversationIdByThreadId(threadId);
+      if (!activeId) {
+        // Brand new thread with no provider conversation yet -> stay idle, never leak other threads
+        return { convId: "", rawLines: [], mtime: 0 };
+      }
     }
     if (!activeId) {
       activeId = this.findActiveConversationId();

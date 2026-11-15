@@ -512,6 +512,12 @@ export class WhatsAppBridgeController {
         expectedSha256 = latestSha.toLowerCase();
       }
 
+      // Fail-closed: require verified SHA256 before applying any binary update
+      if (!expectedSha256) {
+        this.lastError = "Missing SHA256 checksum asset in release. Aborting update for security.";
+        return;
+      }
+
       const exeRes = await fetch(exeAsset.browser_download_url, {
         redirect: "follow",
         signal: AbortSignal.timeout(180000),

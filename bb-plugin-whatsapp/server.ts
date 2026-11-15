@@ -3,6 +3,8 @@ import { z } from "zod";
 import path from "node:path";
 import fs from "node:fs";
 import { spawn, execFileSync, type ChildProcess } from "node:child_process";
+import os from "node:os";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import QRCode from "qrcode";
 
@@ -484,9 +486,33 @@ export class WhatsAppBridgeController {
       return false;
     }
 
+    // Run the bridge from a private copy: a running exe holds a write lock
+    // on Windows, which is what made `git pull` skip whatsapp-bridge.exe
+    // ("Unlink of file ... failed") and left an outdated binary on disk.
+    // Spawning a copy keeps the repo file unlocked so pulls and the
+    // self-updater always land; the copy is keyed by content hash, so an
+    // updated binary gets a fresh copy on next start.
+    let runExe = this.bridgeExe;
+    try {
+      const hash = crypto
+        .createHash("sha1")
+        .update(fs.readFileSync(this.bridgeExe))
+        .digest("hex")
+        .slice(0, 10);
+      const copyPath = path.join(os.tmpdir(), `whatsapp-bridge-${hash}.exe`);
+      if (!fs.existsSync(copyPath)) {
+        const tmpCopy = copyPath + ".partial";
+        fs.copyFileSync(this.bridgeExe, tmpCopy);
+        fs.renameSync(tmpCopy, copyPath);
+      }
+      runExe = copyPath;
+    } catch {
+      runExe = this.bridgeExe; // copy failed (readonly tmp etc.) - run in place
+    }
+
     try {
       this.lastError = null;
-      this.process = spawn(this.bridgeExe, [], {
+      this.process = spawn(runExe, [], {
         cwd: this.bridgeDir,
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,

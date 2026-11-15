@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"go.mau.fi/whatsmeow"
@@ -152,6 +153,14 @@ type SessionManager struct {
 func NewSessionManager(logger waLog.Logger, dbLog waLog.Logger) (*SessionManager, error) {
 	if err := os.MkdirAll("store/sessions", 0755); err != nil {
 		return nil, fmt.Errorf("failed to create store directory: %v", err)
+	}
+	// Store-dir lock: the TCP port is already the first single-instance
+	// guard, but two bridges on different ports sharing this store dir would
+	// still connect the same WhatsApp device keys twice - the StreamReplaced
+	// fight ends with WhatsApp force-logging the account out. Refuse to
+	// start over a live owner's lock; take over a stale one.
+	if err := acquireStoreLock(logger); err != nil {
+		return nil, err
 	}
 
 	sm := &SessionManager{
@@ -575,4 +584,29 @@ func (sm *SessionManager) CloseAll() {
 			s.MessageStore.Close()
 		}
 	}
+	releaseStoreLock()
+}
+
+// acquireStoreLock takes exclusive ownership of the store directory for this
+// process. A live owner's lock makes startup fail; a stale one (owner PID no
+// longer exists) is replaced.
+func acquireStoreLock(logger waLog.Logger) error {
+	lockPath := "store/bridge.lock"
+	if data, err := os.ReadFile(lockPath); err == nil {
+		var pid int
+		if _, err := fmt.Sscanf(string(data), "%d", &pid); err == nil && pid != os.Getpid() && pid > 0 {
+			if p, err := os.FindProcess(pid); err == nil && p.Signal(syscall.Signal(0)) == nil {
+				return fmt.Errorf("another bridge instance (PID %d) already owns this session store - refusing to start a second copy, which would fight over the WhatsApp device keys and get the account logged out; close the other instance first", pid)
+			}
+			logger.Warnf("Replacing stale store lock from a dead bridge process (PID %d)", pid)
+		}
+	}
+	if err := os.WriteFile(lockPath, []byte(fmt.Sprintf("%d\n", os.Getpid())), 0644); err != nil {
+		return fmt.Errorf("failed to write store lock: %v", err)
+	}
+	return nil
+}
+
+func releaseStoreLock() {
+	os.Remove("store/bridge.lock")
 }

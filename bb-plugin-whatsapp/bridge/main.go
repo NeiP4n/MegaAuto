@@ -2208,7 +2208,9 @@ func main() {
 	sm, err := NewSessionManager(logger, dbLog)
 	if err != nil {
 		logger.Errorf("Failed to initialize session manager: %v", err)
-		return
+		// The plugin reads stderr for the failure reason; waLog writes stdout.
+		fmt.Fprintf(os.Stderr, "FATAL: %v\n", err)
+		os.Exit(1)
 	}
 	defer sm.CloseAll()
 

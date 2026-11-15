@@ -2,7 +2,7 @@ import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import path from "node:path";
 import fs from "node:fs";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, execFileSync, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import QRCode from "qrcode";
 
@@ -265,11 +265,18 @@ export const rpcContract = defineRpcContract({
 });
 
 // --- Bridge Process Controller ---
-class WhatsAppBridgeController {
+export class WhatsAppBridgeController {
   private process: ChildProcess | null = null;
   private bridgeDir: string;
   private bridgeExe: string;
+  /** REST port; the Go bridge reads the same env var. */
+  private bridgePort: number = (() => {
+    const n = Number(process.env.WHATSAPP_BRIDGE_PORT);
+    return Number.isInteger(n) && n > 0 && n <= 65535 ? n : 8080;
+  })();
   private lastError: string | null = null;
+  /** Rolling tail of bridge stdout+stderr, for exit-reason diagnostics. */
+  private bridgeLogTail = "";
   private cachedQR: string = "";
   private cachedQRDataUrl: string | null = null;
   private stopRequested: boolean = false;
@@ -284,16 +291,109 @@ class WhatsAppBridgeController {
     this.bridgeExe = path.join(this.bridgeDir, "whatsapp-bridge.exe");
   }
 
-  /** Check if something is already listening on the bridge port */
-  private async isPortInUse(port = 8080): Promise<boolean> {
+  /**
+   * Probe the bridge port: returns the running bridge's status payload when a
+   * real bridge answers (retried - a busy bridge can miss a single 400 ms
+   * window), null when the port is free or occupied by something else.
+   */
+  private async probeBridge(port: number = this.bridgePort): Promise<{ build: string } | null> {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/api/status`, {
+          signal: AbortSignal.timeout(400),
+        });
+        if (res.ok) {
+          const data = (await res.json()) as Record<string, unknown>;
+          // Confirm it is actually our bridge, not a random service on 8080.
+          if ("connected" in data || "sessions" in data || "status" in data) {
+            return { build: typeof data.build === "string" ? data.build : "" };
+          }
+          return null;
+        }
+      } catch {
+        // not answering right now - retry
+      }
+      await new Promise<void>((r) => setTimeout(r, 250));
+    }
+    return null;
+  }
+
+  /**
+   * Kill whatever listens on the bridge port. Last resort for stale bridge
+   * processes that predate the /api/shutdown endpoint, so the user never has
+   * to open Task Manager.
+   */
+  private killPortOwner(port: number = this.bridgePort): boolean {
     try {
-      const res = await fetch(`http://127.0.0.1:${port}/api/status`, {
-        signal: AbortSignal.timeout(500),
-      });
-      return res.ok || res.status > 0;
+      if (process.platform === "win32") {
+        const out = execFileSync("netstat", ["-ano", "-p", "tcp"], { timeout: 8000 }).toString();
+        for (const line of out.split(/\r?\n/)) {
+          if (!line.includes(`:${port}`) || !/LISTENING/i.test(line)) continue;
+          const cols = line.trim().split(/\s+/);
+          const local = cols[1] ?? "";
+          const pid = cols[cols.length - 1] ?? "";
+          if (local.endsWith(`:${port}`) && /^\d+$/.test(pid)) {
+            execFileSync("taskkill", ["/PID", pid, "/F"], { timeout: 8000 });
+            return true;
+          }
+        }
+        return false;
+      }
+      const out = execFileSync("lsof", ["-ti", `tcp:${port}`, "-sTCP:LISTEN"], { timeout: 8000 }).toString().trim();
+      if (!out) return false;
+      for (const pid of out.split(/\s+/)) {
+        if (/^\d+$/.test(pid)) execFileSync("kill", ["-9", pid], { timeout: 8000 });
+      }
+      return true;
     } catch {
       return false;
     }
+  }
+
+  /**
+   * A bridge is already answering on the port. Adopt it when it matches the
+   * binary on disk; otherwise shut it down (API first, force-kill as
+   * fallback) so start() can spawn the current one. Returns true when the
+   * running bridge was adopted and no spawn is needed.
+   */
+  private async adoptOrReplaceRunningBridge(running: { build: string }): Promise<boolean> {
+    const shaPath = path.join(this.bridgeDir, ".build-sha");
+    const onDiskSha = fs.existsSync(shaPath) ? fs.readFileSync(shaPath, "utf8").trim() : "";
+    // Same build as the exe on disk -> nothing to do. Unknown on-disk SHA with
+    // a stamped running build can happen right after git pull; replace then so
+    // the running process always ends up on the newest binary.
+    if (running.build && onDiskSha && running.build === onDiskSha) {
+      this.lastError = null;
+      return true;
+    }
+    // Stale or unstamped bridge: ask it to exit gracefully first.
+    let portFree = false;
+    try {
+      await fetch("http://127.0.0.1:${this.bridgePort}/api/shutdown", {
+        method: "POST",
+        signal: AbortSignal.timeout(2000),
+      });
+    } catch {
+      // endpoint missing on old bridges - force-kill below
+    }
+    for (let i = 0; i < 10; i++) {
+      await new Promise<void>((r) => setTimeout(r, 200));
+      if (!(await this.probeBridge())) { portFree = true; break; }
+    }
+    if (!portFree) {
+      if (this.killPortOwner()) {
+        for (let i = 0; i < 15; i++) {
+          await new Promise<void>((r) => setTimeout(r, 200));
+          if (!(await this.probeBridge())) { portFree = true; break; }
+        }
+      }
+    }
+    if (!portFree) {
+      // Could not stop the old one - better to use it than to have nothing.
+      this.lastError = null;
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -304,7 +404,7 @@ class WhatsAppBridgeController {
    */
   private async maybeUpdateBridge(): Promise<void> {
     if (this.process && !this.process.killed) return;
-    if (await this.isPortInUse()) return;
+    if (await this.probeBridge()) return;
     try {
       const rel = await fetch(
         "https://api.github.com/repos/NeiP4n/MegaAuto/releases/tags/bridge-latest",
@@ -355,9 +455,13 @@ class WhatsAppBridgeController {
       return true;
     }
 
-    // If port is already in use by another process, consider it running
-    if (await this.isPortInUse()) {
-      return true;
+    // A bridge may already be running (orphaned by a plugin reload, or an
+    // older build from before the update). Adopt it when current, replace it
+    // when stale - the user should never have to kill processes by hand.
+    const running = await this.probeBridge();
+    if (running) {
+      const adopted = await this.adoptOrReplaceRunningBridge(running);
+      if (adopted) return true;
     }
 
     // Grab the newest CI-built binary before (maybe) starting the bridge.
@@ -375,15 +479,19 @@ class WhatsAppBridgeController {
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
         detached: false,
+        env: { ...process.env, WHATSAPP_BRIDGE_PORT: String(this.bridgePort) },
       });
 
-      this.process.stdout?.on("data", (_data: Buffer) => {
-        // Bridge stdout – reserved for future structured logging
-      });
+      const appendTail = (text: string) => {
+        this.bridgeLogTail = (this.bridgeLogTail + text).slice(-2048);
+      };
+
+      this.process.stdout?.on("data", (data: Buffer) => appendTail(data.toString()));
 
       this.process.stderr?.on("data", (data: Buffer) => {
+        appendTail(data.toString());
         const text = data.toString();
-        if (text.includes("ERROR") || text.includes("error")) {
+        if (text.includes("ERROR") || text.includes("error") || text.includes("FATAL")) {
           this.lastError = text.trim().slice(0, 512);
         }
       });
@@ -396,21 +504,48 @@ class WhatsAppBridgeController {
       this.process.on("exit", (code: number | null) => {
         this.process = null;
         if (!this.stopRequested && code !== 0 && code !== null) {
-          this.lastError = `Bridge exited unexpectedly with code ${code}`;
+          const tail = this.bridgeLogTail.trim();
+          const reason = /already in use|already running|Only one usage|address already in use/i.test(tail)
+            ? `port ${this.bridgePort} is already used by another bridge instance`
+            : tail
+              ? tail.split(/\r?\n/).filter(Boolean).slice(-2).join(" | ").slice(0, 300)
+              : "";
+          this.lastError = `Bridge exited unexpectedly with code ${code}${reason ? ` - ${reason}` : ""}`;
+          // Bind race: another instance grabbed the port first. If a bridge
+          // answers now, quietly adopt it and clear the error.
+          void (async () => {
+            if (await this.probeBridge()) {
+              this.lastError = null;
+            }
+          })();
         }
       });
 
       // Wait up to 3 s for REST API to become reachable (15 × 200 ms)
       for (let i = 0; i < 15; i++) {
+        // If our process already died (e.g. port conflict with a straggler),
+        // adopt whoever answers instead of reporting a dead bridge.
+        if (!this.process) {
+          if (await this.probeBridge()) {
+            this.lastError = null;
+            return true;
+          }
+          return false;
+        }
         await new Promise<void>((r) => setTimeout(r, 200));
         try {
-          const res = await fetch("http://127.0.0.1:8080/api/status", {
+          const res = await fetch("http://127.0.0.1:${this.bridgePort}/api/status", {
             signal: AbortSignal.timeout(500),
           });
           if (res.ok) return true;
         } catch {
           // Not ready yet – keep polling
         }
+      }
+      // Never came up - but if a bridge answers anyway (slow start), use it.
+      if (await this.probeBridge()) {
+        this.lastError = null;
+        return true;
       }
       return true;
     } catch (e: unknown) {
@@ -455,7 +590,7 @@ class WhatsAppBridgeController {
   public async getSessions(): Promise<WhatsAppSessionInfo[]> {
     await this.ensureRunning();
     try {
-      const res = await fetch("http://127.0.0.1:8080/api/sessions", {
+      const res = await fetch("http://127.0.0.1:${this.bridgePort}/api/sessions", {
         signal: AbortSignal.timeout(5000),
       });
       if (res.ok) {
@@ -470,7 +605,7 @@ class WhatsAppBridgeController {
   public async createSession(name?: string): Promise<{ success: boolean; session?: WhatsAppSessionInfo; message?: string }> {
     await this.ensureRunning();
     try {
-      const res = await fetch("http://127.0.0.1:8080/api/sessions/create", {
+      const res = await fetch("http://127.0.0.1:${this.bridgePort}/api/sessions/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: name || "" }),
@@ -490,7 +625,7 @@ class WhatsAppBridgeController {
   public async restartSession(sessionId: string): Promise<{ success: boolean; message?: string }> {
     await this.ensureRunning();
     try {
-      const res = await fetch("http://127.0.0.1:8080/api/sessions/restart", {
+      const res = await fetch("http://127.0.0.1:${this.bridgePort}/api/sessions/restart", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: sessionId }),
@@ -509,7 +644,7 @@ class WhatsAppBridgeController {
   public async switchSession(sessionId: string): Promise<{ success: boolean; active?: string; message?: string }> {
     await this.ensureRunning();
     try {
-      const res = await fetch("http://127.0.0.1:8080/api/sessions/switch", {
+      const res = await fetch("http://127.0.0.1:${this.bridgePort}/api/sessions/switch", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: sessionId }),
@@ -529,7 +664,7 @@ class WhatsAppBridgeController {
   public async deleteSession(sessionId: string): Promise<{ success: boolean; message?: string }> {
     await this.ensureRunning();
     try {
-      const res = await fetch("http://127.0.0.1:8080/api/sessions/delete", {
+      const res = await fetch("http://127.0.0.1:${this.bridgePort}/api/sessions/delete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ session_id: sessionId }),
@@ -548,8 +683,8 @@ class WhatsAppBridgeController {
   public async getStatus(sessionId?: string): Promise<WhatsAppStatus> {
     try {
       const url = sessionId
-        ? `http://127.0.0.1:8080/api/status?session=${encodeURIComponent(sessionId)}`
-        : "http://127.0.0.1:8080/api/status";
+        ? `http://127.0.0.1:${this.bridgePort}/api/status?session=${encodeURIComponent(sessionId)}`
+        : "http://127.0.0.1:${this.bridgePort}/api/status";
       const res = await fetch(url, {
         signal: AbortSignal.timeout(1500),
       });
@@ -613,8 +748,8 @@ class WhatsAppBridgeController {
     await this.ensureRunning();
     try {
       const url = sessionId
-        ? `http://127.0.0.1:8080/api/chats?session=${encodeURIComponent(sessionId)}`
-        : "http://127.0.0.1:8080/api/chats";
+        ? `http://127.0.0.1:${this.bridgePort}/api/chats?session=${encodeURIComponent(sessionId)}`
+        : "http://127.0.0.1:${this.bridgePort}/api/chats";
       const res = await fetch(url, {
         signal: AbortSignal.timeout(5000),
       });
@@ -637,7 +772,7 @@ class WhatsAppBridgeController {
   public async getMessages(chatJid: string, limit = 50, sessionId?: string): Promise<WhatsAppMessage[]> {
     await this.ensureRunning();
     try {
-      let url = `http://127.0.0.1:8080/api/messages?chat_jid=${encodeURIComponent(chatJid)}&limit=${limit}`;
+      let url = `http://127.0.0.1:${this.bridgePort}/api/messages?chat_jid=${encodeURIComponent(chatJid)}&limit=${limit}`;
       if (sessionId) {
         url += `&session=${encodeURIComponent(sessionId)}`;
       }
@@ -654,7 +789,7 @@ class WhatsAppBridgeController {
   public async searchContacts(query: string, sessionId?: string): Promise<WhatsAppContact[]> {
     await this.ensureRunning();
     try {
-      let url = `http://127.0.0.1:8080/api/contacts?query=${encodeURIComponent(query)}`;
+      let url = `http://127.0.0.1:${this.bridgePort}/api/contacts?query=${encodeURIComponent(query)}`;
       if (sessionId) {
         url += `&session=${encodeURIComponent(sessionId)}`;
       }
@@ -676,7 +811,7 @@ class WhatsAppBridgeController {
   ): Promise<{ success: boolean; message: string; id?: string; timestamp?: string; chat_jid?: string }> {
     await this.ensureRunning();
     try {
-      const res = await fetch("http://127.0.0.1:8080/api/send", {
+      const res = await fetch("http://127.0.0.1:${this.bridgePort}/api/send", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -713,7 +848,7 @@ class WhatsAppBridgeController {
   ): Promise<{ success: boolean; message: string; id?: string; timestamp?: string; chat_jid?: string }> {
     await this.ensureRunning();
     try {
-      const res = await fetch("http://127.0.0.1:8080/api/send-media", {
+      const res = await fetch("http://127.0.0.1:${this.bridgePort}/api/send-media", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -750,7 +885,7 @@ class WhatsAppBridgeController {
   ): Promise<{ success: boolean; message: string; filename?: string; path?: string }> {
     await this.ensureRunning();
     try {
-      const res = await fetch("http://127.0.0.1:8080/api/download", {
+      const res = await fetch("http://127.0.0.1:${this.bridgePort}/api/download", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -782,7 +917,7 @@ class WhatsAppBridgeController {
     // Try dedicated endpoint first
     try {
       const res = await fetch(
-        `http://127.0.0.1:8080/api/chat?jid=${encodeURIComponent(jid)}`,
+        `http://127.0.0.1:${this.bridgePort}/api/chat?jid=${encodeURIComponent(jid)}`,
         { signal: AbortSignal.timeout(5000) }
       );
       if (res.ok) {
@@ -814,7 +949,7 @@ class WhatsAppBridgeController {
     // Try bridge endpoint
     try {
       const res = await fetch(
-        `http://127.0.0.1:8080/api/chat?jid=${encodeURIComponent(candidateJid)}`,
+        `http://127.0.0.1:${this.bridgePort}/api/chat?jid=${encodeURIComponent(candidateJid)}`,
         { signal: AbortSignal.timeout(5000) }
       );
       if (res.ok) {
@@ -848,7 +983,7 @@ class WhatsAppBridgeController {
 
     try {
       const res = await fetch(
-        `http://127.0.0.1:8080/api/contact-chats?jid=${encodeURIComponent(contactJidOrPhone)}`,
+        `http://127.0.0.1:${this.bridgePort}/api/contact-chats?jid=${encodeURIComponent(contactJidOrPhone)}`,
         { signal: AbortSignal.timeout(5000) }
       );
       if (res.ok) {
@@ -885,7 +1020,7 @@ class WhatsAppBridgeController {
     // Try bridge endpoint
     try {
       const res = await fetch(
-        `http://127.0.0.1:8080/api/last-interaction?jid=${encodeURIComponent(candidateJid)}`,
+        `http://127.0.0.1:${this.bridgePort}/api/last-interaction?jid=${encodeURIComponent(candidateJid)}`,
         { signal: AbortSignal.timeout(5000) }
       );
       if (res.ok) {
@@ -917,7 +1052,7 @@ class WhatsAppBridgeController {
 
     // Try bridge endpoint
     try {
-      const url = `http://127.0.0.1:8080/api/message-context?message_id=${encodeURIComponent(messageId)}&chat_jid=${encodeURIComponent(chatJid)}&context=${contextSize}`;
+      const url = `http://127.0.0.1:${this.bridgePort}/api/message-context?message_id=${encodeURIComponent(messageId)}&chat_jid=${encodeURIComponent(chatJid)}&context=${contextSize}`;
       const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
       if (res.ok) {
         const data = (await res.json()) as {

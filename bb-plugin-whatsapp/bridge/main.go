@@ -1066,6 +1066,23 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 
 	mux := http.NewServeMux()
 
+	// 0. Graceful shutdown: the plugin uses this to replace a stale bridge
+	// binary without asking the user to kill processes by hand.
+	mux.HandleFunc("/api/shutdown", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"success": true, "message": "bridge shutting down"})
+		go func() {
+			time.Sleep(300 * time.Millisecond)
+			fmt.Println("Shutdown requested via API, closing all sessions...")
+			sm.CloseAll()
+			os.Exit(0)
+		}()
+	})
+
 	// 1. Sessions list endpoint
 	mux.HandleFunc("/api/sessions", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1976,6 +1993,8 @@ func main() {
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
 	if err != nil {
 		logger.Errorf("Cannot bind 127.0.0.1:%d (%v). Is another bridge instance already running? Refusing to start to protect WhatsApp sessions.", port, err)
+		// The plugin reads stderr for the failure reason; waLog writes stdout.
+		fmt.Fprintf(os.Stderr, "FATAL: port %d already in use, another bridge instance is already running\n", port)
 		os.Exit(1)
 	}
 

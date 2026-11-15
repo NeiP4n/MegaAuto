@@ -1,5 +1,7 @@
 # Meta Muse AI: Deep Dive & Technical Overview
 
+> **Honest status (after de-mock review):** the LLM backend, the media generator and the isolated VM enclave described in this document are design intent, not current reality. Chat returns an explicit "no AI backend connected" reply, media jobs fail with a clear error, and VM metrics show real host-process data (RSS, uptime) with no fabricated sandbox. The scheduler (cron/interval/due date) and the local memory store are real.
+
 ## 1. System Architecture
 
 Meta Muse AI is engineered as a multi-tier modular assistant running inside the Blackbox (BB) host ecosystem.

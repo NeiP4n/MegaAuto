@@ -9,7 +9,7 @@
   },
   "bb": {
     "name": "Meta Muse AI",
-    "description": "Next-generation proactive AI companion with creative generation studio, secure VM isolation sandbox, long-term memory, and autonomous task scheduling.",
+    "description": "Proactive companion with chat history, cron/interval task scheduling, and long-term memory. No LLM backend, media generator, or VM sandbox is connected yet - those states are reported honestly.",
     "branding": {
       "icon": "Sparkles"
     },

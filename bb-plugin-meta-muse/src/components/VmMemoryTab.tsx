@@ -108,9 +108,10 @@ export function VmMemoryTab({
     return true;
   });
 
-  const memUsedPercent = vmStatus
-    ? Math.min(100, Math.round((vmStatus.memoryUsedMB / vmStatus.memoryLimitMB) * 100))
-    : 0;
+  const memUsedPercent =
+    vmStatus && vmStatus.memoryLimitMB > 0
+      ? Math.min(100, Math.round((vmStatus.memoryUsedMB / vmStatus.memoryLimitMB) * 100))
+      : 0;
 
   return (
     <div className="flex h-full w-full gap-4 overflow-hidden">
@@ -158,14 +159,14 @@ export function VmMemoryTab({
                     </span>
                   </div>
                   <div className="text-[10px] text-slate-400 mt-0.5">
-                    Аппаратный Secure Enclave: {vmStatus.secureEnclave ? "Включен (Hardware Active)" : "Эмулирован"}
+                    Secure Enclave: {vmStatus.secureEnclave ? "Включен" : "Отсутствует (плагин работает в процессе хоста)"}
                   </div>
                 </div>
               </div>
 
               <div className="text-right font-mono text-[10px] text-slate-400">
                 <div>Аптайм: {Math.floor(vmStatus.uptimeSeconds / 60)} мин</div>
-                <div className="text-emerald-400/80">0 уязвимостей</div>
+                <div className="text-slate-500">Аудит: {vmStatus.lastSecurityAudit === "never" ? "не проводился" : vmStatus.lastSecurityAudit}</div>
               </div>
             </div>
 
@@ -176,7 +177,7 @@ export function VmMemoryTab({
                 <div className="flex justify-between items-center text-[11px]">
                   <span className="text-slate-400 flex items-center space-x-1">
                     <SvgDatabase className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>ОЗУ Песочницы</span>
+                    <span>ОЗУ процесса (RSS)</span>
                   </span>
                   <span className="font-mono text-cyan-300 font-semibold">{memUsedPercent}%</span>
                 </div>
@@ -188,7 +189,7 @@ export function VmMemoryTab({
                 </div>
                 <div className="flex justify-between text-[10px] font-mono text-slate-500">
                   <span>{vmStatus.memoryUsedMB} MB исп.</span>
-                  <span>Лимит: {vmStatus.memoryLimitMB} MB</span>
+                  <span>{vmStatus.memoryLimitMB > 0 ? `Лимит: ${vmStatus.memoryLimitMB} MB` : "Лимит не задан"}</span>
                 </div>
               </div>
 

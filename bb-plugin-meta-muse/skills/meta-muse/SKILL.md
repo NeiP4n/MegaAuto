@@ -1,6 +1,6 @@
 ---
 name: meta-muse
-description: "Meta Muse AI companion: creative studio, autonomous proactive tasks, secure VM isolation sandbox, and associative long-term memory. Use when generating media concepts, scheduling proactive background jobs, inspecting VM sandboxes, or storing and querying long-term memories."
+description: "Meta Muse companion: conversation history, proactive task scheduling (cron/interval/due date), and associative long-term memory. Media generation and the VM sandbox are not connected yet - tools report that honestly instead of simulating results."
 ---
 
 # Meta Muse AI Companion & Autonomous Assistant Skill

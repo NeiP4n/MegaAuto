@@ -1,6 +1,8 @@
 # bb-plugin-meta-muse: Meta Muse AI
 
-> **Meta Muse AI** is a next-generation proactive AI companion plugin for the Blackbox (BB) environment. It features an iridescent dynamic UI, creative media generation studio, secure VM isolation sandbox, autonomous proactive tasks, and associative long-term memory.
+> **Meta Muse AI** is a proactive companion plugin for the Blackbox (BB) environment: conversation threads, a proactive task scheduler (cron / interval / due date) and associative long-term memory persisted locally.
+>
+> **Honest status:** there is no LLM backend, media generator, or isolated VM wired into this plugin yet. Chat replies state that no AI backend is connected, media jobs fail immediately with a clear error, and the VM tab shows real host-process metrics (RSS memory, uptime) instead of fabricated sandbox telemetry.
 
 ---
 
@@ -8,9 +10,9 @@
 
 - **Iridescent Dynamic Spectrum UI**: Deep obsidian theme (#0B0E14) accented by electric blue, vibrant magenta/violet, and fluid cyan glowing gradients with frosted glass cards.
 - **Interactive Chat & Muse Timeline**: Context-aware conversation threads with proactive suggestion chips, rich markdown, media card embeds, and quick export.
-- **Media Generation Studio**: Image and video prompt engineering studio with real-time rendering status, aspect ratio presets (`1:1`, `16:9`, `9:16`, `4:3`, `3:4`), style filters, and seed controls.
+- **Media Studio (no generator connected yet)**: prompt engineering UI with aspect ratio presets, style filters and seed controls; jobs currently fail immediately with an honest "generator not connected" error instead of simulated progress.
 - **Autonomous Proactive Tasks**: Background task scheduler supporting cron expressions, intervals, and due dates for automated summaries, system audits, and reminder notifications.
-- **Secure VM Isolation Enclave**: Sandboxed execution metrics, strict memory and CPU quotas, whitelisted network policies, and active process tracking.
+- **VM Tab (no sandbox yet)**: reports real host-process metrics (RSS memory, uptime) and explicitly states that no isolated enclave exists.
 - **Associative Long-Term Memory**: Persistent local JSON memory bank with categorization (preference, fact, project, instruction) and full-text keyword retrieval.
 - **15 Agent Tools & Comprehensive CLI**: Full programmatic and terminal control for agents and power users alike.
 

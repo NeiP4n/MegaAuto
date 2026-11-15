@@ -28,7 +28,7 @@ const museMessageSchema = z.object({
   timestamp: z.string(),
   mediaUrls: z.array(z.string()).optional(),
   suggestions: z.array(z.string()).optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
 const museConversationSchema = z.object({
@@ -71,7 +71,7 @@ const proactiveTaskSchema = z.object({
   triggerType: z.enum(["cron", "interval", "due_date"]),
   scheduleExpression: z.string(),
   actionType: z.enum(["reminder", "digest", "audit", "web_poll", "custom_script"]),
-  payload: z.record(z.unknown()).optional(),
+  payload: z.record(z.string(), z.unknown()).optional(),
   status: z.enum(["active", "paused", "completed", "failed"]),
   lastRun: z.string().optional(),
   nextRun: z.string().optional(),
@@ -126,6 +126,88 @@ const systemStatusSchema = z.object({
     platform: z.string(),
   }),
 });
+
+/**
+ * Compute the next fire time for a schedule expression.
+ * Supports interval shorthand ("30s", "30m", "2h", "1d"), ISO dates for
+ * due_date, and standard 5-field cron (min hour dom mon dow) with
+ * star, step (slash-n), single values, ranges and comma lists.
+ * Returns null when the
+ * expression cannot be understood - the task then simply has no next run
+ * instead of a fake "+30 minutes".
+ */
+function nextRunFromExpression(
+  expr: string,
+  triggerType: "cron" | "interval" | "due_date",
+  from: Date = new Date()
+): string | null {
+  const e = (expr || "").trim();
+  if (!e) return null;
+
+  const intervalMatch = e.match(/^(\d+)\s*([smhd])$/i);
+  if (triggerType !== "cron" && intervalMatch) {
+    const n = parseInt(intervalMatch[1], 10);
+    const unit = intervalMatch[2].toLowerCase();
+    const ms = n * (unit === "s" ? 1000 : unit === "m" ? 60000 : unit === "h" ? 3600000 : 86400000);
+    return new Date(from.getTime() + ms).toISOString();
+  }
+
+  if (triggerType === "due_date") {
+    const d = new Date(e);
+    return isNaN(d.getTime()) ? null : d.toISOString();
+  }
+
+  // cron (also accept a cron-looking expression regardless of triggerType)
+  const fields = e.split(/\s+/);
+  if (fields.length !== 5) return null;
+
+  const parseField = (f: string, min: number, max: number): Set<number> | null => {
+    const out = new Set<number>();
+    for (const part of f.split(",")) {
+      const m = part.match(/^(\*|\d+|\d+-\d+)(?:\/(\d+))?$/);
+      if (!m) return null;
+      const step = m[2] ? parseInt(m[2], 10) : 1;
+      if (step < 1) return null;
+      let lo = min, hi = max;
+      if (m[1] !== "*") {
+        if (m[1].includes("-")) {
+          const [a, b] = m[1].split("-").map((x) => parseInt(x, 10));
+          lo = a; hi = b;
+        } else {
+          lo = hi = parseInt(m[1], 10);
+        }
+      }
+      if (lo < min || hi > max || lo > hi) return null;
+      for (let v = lo; v <= hi; v += step) out.add(v);
+    }
+    return out;
+  };
+
+  const mins = parseField(fields[0], 0, 59);
+  const hours = parseField(fields[1], 0, 23);
+  const doms = parseField(fields[2], 1, 31);
+  const mons = parseField(fields[3], 1, 12);
+  const dowsRaw = parseField(fields[4], 0, 7);
+  if (!mins || !hours || !doms || !mons || !dowsRaw) return null;
+  const dows = new Set(Array.from(dowsRaw).map((d) => (d === 7 ? 0 : d)));
+
+  // Minute-by-minute scan, bounded to one year ahead.
+  const t = new Date(from.getTime() + 60000);
+  t.setSeconds(0, 0);
+  for (let i = 0; i < 527040; i++) {
+    if (
+      mons.has(t.getMonth() + 1) &&
+      doms.has(t.getDate()) &&
+      dows.has(t.getDay()) &&
+      hours.has(t.getHours()) &&
+      mins.has(t.getMinutes())
+    ) {
+      return t.toISOString();
+    }
+    t.setMinutes(t.getMinutes() + 1);
+  }
+  return null;
+}
 
 function sanitizeRpc<T>(data: T): T {
   if (data === undefined) return null as unknown as T;
@@ -223,7 +305,7 @@ export const rpcContract = defineRpcContract({
       triggerType: z.enum(["cron", "interval", "due_date"]).optional(),
       scheduleExpression: z.string(),
       actionType: z.enum(["reminder", "digest", "audit", "web_poll", "custom_script"]).optional(),
-      payload: z.record(z.unknown()).optional(),
+      payload: z.record(z.string(), z.unknown()).optional(),
     }),
     output: proactiveTaskSchema,
   },
@@ -313,25 +395,23 @@ export class MetaMuseController {
   private proactiveTasks: Map<string, ProactiveTask> = new Map();
   private memories: Map<string, MemoryRecord> = new Map();
 
+  // Honest state: this plugin runs inside the BB host process - there is no
+  // real isolated VM, no enclave and no network policy of its own. Metrics
+  // below describe the host process, not a fabricated sandbox.
   private vmState: VMStatus = {
-    status: "isolated",
-    memoryLimitMB: 2048,
-    memoryUsedMB: 384,
-    cpuQuotaPercent: 75,
-    secureEnclave: true,
-    activeProcesses: [
-      { pid: 1042, name: "muse-enclave-worker", cpu: 1.8, memoryMB: 182 },
-      { pid: 1045, name: "sandbox-io-proxy", cpu: 0.5, memoryMB: 64 },
-      { pid: 1050, name: "mem-indexer-sqlite", cpu: 0.9, memoryMB: 138 },
-    ],
-    networkPolicy: "whitelisted",
-    allowedDomains: ["api.blackbox.ai", "huggingface.co", "cdn.discordapp.com", "localhost"],
+    status: "paused",
+    memoryLimitMB: 0,
+    memoryUsedMB: 0,
+    cpuQuotaPercent: 0,
+    secureEnclave: false,
+    activeProcesses: [],
+    networkPolicy: "airgapped", // the plugin itself performs zero network I/O
+    allowedDomains: [],
     uptimeSeconds: 0,
-    lastSecurityAudit: new Date().toISOString(),
+    lastSecurityAudit: "never",
   };
 
   private taskRunnerInterval?: NodeJS.Timeout;
-  private mediaRendererInterval?: NodeJS.Timeout;
 
   constructor() {
     const homeDir = os.homedir();
@@ -370,12 +450,30 @@ export class MetaMuseController {
           for (const m of data.memories) this.memories.set(m.id, m);
         }
       }
+      // Purge records left by the old demo seeder: they were fabricated
+      // samples, not real user data.
+      const legacySeedIds = new Set([
+        "conv-welcome-muse",
+        "job-iridescent-muse-1",
+        "job-quantum-core-2",
+        "task-morning-digest",
+        "task-vm-audit",
+        "mem-ui-theme",
+        "mem-security-enclave",
+        "mem-project-target",
+      ]);
+      let purged = false;
+      for (const id of legacySeedIds) {
+        purged = this.conversations.delete(id) || purged;
+        purged = this.mediaJobs.delete(id) || purged;
+        purged = this.proactiveTasks.delete(id) || purged;
+        purged = this.memories.delete(id) || purged;
+        purged = this.messages.delete(id) || purged;
+      }
+      if (purged) this.saveState();
     } catch {
       // Fallback if loading failed
     }
-
-    // Seed defaults if empty
-    this.seedDefaultDataIfEmpty();
   }
 
   private saveState(): void {
@@ -394,204 +492,25 @@ export class MetaMuseController {
     }
   }
 
-  private seedDefaultDataIfEmpty(): void {
-    if (this.conversations.size === 0) {
-      const convId = "conv-welcome-muse";
-      const now = new Date().toISOString();
-      const welcomeConv: MuseConversation = {
-        id: convId,
-        title: "Знакомство с Музой & Концепты Дизайна",
-        mode: "creative",
-        createdAt: now,
-        updatedAt: now,
-        messageCount: 2,
-        tags: ["введение", "дизайн", "иридисцент"],
-      };
-      this.conversations.set(convId, welcomeConv);
-
-      const msgs: MuseMessage[] = [
-        {
-          id: "msg-1",
-          conversationId: convId,
-          role: "user",
-          content: "Привет, Муза! Покажи мне возможности и текущий статус твоей песочницы.",
-          timestamp: new Date(Date.now() - 60000).toISOString(),
-        },
-        {
-          id: "msg-2",
-          conversationId: convId,
-          role: "assistant",
-          content:
-            "Привет! Я **Meta Muse AI** — твой персональный спутник и студия автономного созидания.\n\n" +
-            "✨ **Мои активные модули:**\n" +
-            "- **Студия Генерации**: Поддержка стилей Neon Cyberpunk, Fluid Obsidian, Iridescent Prisma и синематик-видео.\n" +
-            "- **Проактивные Задачи**: Фоновый планировщик аудита и дайджестов на cron и интервалах.\n" +
-            "- **Безопасная VM**: Изолированная песочница с лимитом 2048 МБ RAM и строгой политикой Whitelist.\n" +
-            "- **Долговременная Память**: Ассоциативное сохранение предпочтений, директив и фактов.\n\n" +
-            "Чем займемся прямо сейчас?",
-          timestamp: now,
-          suggestions: [
-            "Сгенерировать медиа-концепт для проекта",
-            "Настроить проактивный утренний дайджест",
-            "Проверить метрики безопасной VM",
-            "Сохранить стиль палитры в долговременную память",
-          ],
-        },
-      ];
-      this.messages.set(convId, msgs);
-    }
-
-    if (this.mediaJobs.size === 0) {
-      const sampleJobs: MediaJob[] = [
-        {
-          id: "job-iridescent-muse-1",
-          prompt: "Futuristic iridescent cyber muse with glowing cyan and violet hues, dark obsidian background, hyperdetailed 8k octane render",
-          type: "image",
-          stylePreset: "Iridescent Spectrum",
-          aspectRatio: "16:9",
-          status: "completed",
-          progress: 100,
-          resultUrl: "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=1200&q=80",
-          seed: 42891,
-          steps: 40,
-          createdAt: new Date(Date.now() - 3600000).toISOString(),
-          completedAt: new Date(Date.now() - 3550000).toISOString(),
-        },
-        {
-          id: "job-quantum-core-2",
-          prompt: "Bioluminescent quantum core pulsing inside an isolated security enclave, cinematic lighting, fluid dynamic motion",
-          type: "video",
-          stylePreset: "Fluid Cyberpunk",
-          aspectRatio: "9:16",
-          status: "rendering",
-          progress: 68,
-          seed: 88124,
-          steps: 50,
-          createdAt: new Date(Date.now() - 120000).toISOString(),
-        },
-      ];
-      for (const j of sampleJobs) this.mediaJobs.set(j.id, j);
-    }
-
-    if (this.proactiveTasks.size === 0) {
-      const sampleTasks: ProactiveTask[] = [
-        {
-          id: "task-morning-digest",
-          title: "Ежедневный дайджест архитектуры",
-          description: "Сбор логов инструментов, проверка статуса VM и формирование краткого отчета",
-          triggerType: "cron",
-          scheduleExpression: "0 9 * * *",
-          actionType: "digest",
-          status: "active",
-          lastRun: new Date(Date.now() - 86400000).toISOString(),
-          nextRun: new Date(Date.now() + 28800000).toISOString(),
-          runCount: 14,
-          logs: [
-            { timestamp: new Date(Date.now() - 86400000).toISOString(), level: "info", message: "Дайджест сгенерирован: 0 критических ошибок, 15 вызовов инструментов." },
-          ],
-        },
-        {
-          id: "task-vm-audit",
-          title: "Регулярный аудит безопасной песочницы VM",
-          description: "Проверка утечек памяти, закрытых сокетов и сетевых политик",
-          triggerType: "interval",
-          scheduleExpression: "30m",
-          actionType: "audit",
-          status: "active",
-          lastRun: new Date(Date.now() - 900000).toISOString(),
-          nextRun: new Date(Date.now() + 900000).toISOString(),
-          runCount: 48,
-          logs: [
-            { timestamp: new Date(Date.now() - 900000).toISOString(), level: "info", message: "Аудит завершен: память 384MB / 2048MB, анклав в норме." },
-          ],
-        },
-      ];
-      for (const t of sampleTasks) this.proactiveTasks.set(t.id, t);
-    }
-
-    if (this.memories.size === 0) {
-      const sampleMems: MemoryRecord[] = [
-        {
-          id: "mem-ui-theme",
-          key: "theme_preference",
-          content: "Пользователь предпочитает темную обсидиановую эстетику (#0B0E14) с иридисцентными акцентами электрик-блю, неонового пурпура и бирюзового циан.",
-          category: "preference",
-          confidence: 0.98,
-          tags: ["ui", "design", "colors", "obsidian"],
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-        {
-          id: "mem-security-enclave",
-          key: "vm_security_policy",
-          content: "Песочница VM должна оставаться изолированной со строгой проверкой сетевого трафика (Airgapped / Whitelist).",
-          category: "instruction",
-          confidence: 0.99,
-          tags: ["security", "vm", "sandbox", "isolation"],
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-        {
-          id: "mem-project-target",
-          key: "bb_plugin_meta_muse",
-          content: "Meta Muse AI разработан как флагманский автономный плагин Blackbox с 15 агентскими инструментами и студией медиа.",
-          category: "project",
-          confidence: 1.0,
-          tags: ["bb", "meta-muse", "tools", "architecture"],
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        },
-      ];
-      for (const m of sampleMems) this.memories.set(m.id, m);
-    }
-
-    this.saveState();
-  }
-
   private startBackgroundLoops(): void {
-    // 1. Media renderer simulation loop
-    this.mediaRendererInterval = setInterval(() => {
-      let changed = false;
-      for (const job of this.mediaJobs.values()) {
-        if (job.status === "rendering") {
-          job.progress = Math.min(100, job.progress + 15);
-          if (job.progress >= 100) {
-            job.status = "completed";
-            job.completedAt = new Date().toISOString();
-            if (!job.resultUrl) {
-              job.resultUrl =
-                job.type === "video"
-                  ? "https://assets.mixkit.co/videos/preview/mixkit-digital-animation-of-screens-with-code-31913-large.mp4"
-                  : "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?auto=format&fit=crop&w=1200&q=80";
-            }
-          }
-          changed = true;
-        }
-      }
-      if (changed) this.saveState();
-    }, 4000);
-
-    // 2. Proactive tasks tick loop
+    // Proactive tasks tick loop. It only fires real schedule triggers; the
+    // log entry says exactly what happened (a trigger fired), nothing more.
     this.taskRunnerInterval = setInterval(() => {
       const now = new Date();
       let changed = false;
       for (const task of this.proactiveTasks.values()) {
-        if (task.status === "active") {
-          // Check if due or interval simulation
-          if (task.nextRun && new Date(task.nextRun) <= now) {
-            task.lastRun = now.toISOString();
-            task.runCount += 1;
-            task.logs.unshift({
-              timestamp: now.toISOString(),
-              level: "info",
-              message: `Автоматическое выполнение задачи "${task.title}" успешно завершено.`,
-            });
-            if (task.logs.length > 30) task.logs.length = 30;
-
-            // Compute next run
-            task.nextRun = new Date(Date.now() + 1800000).toISOString(); // +30m
-            changed = true;
-          }
+        if (task.status !== "active") continue;
+        if (task.nextRun && new Date(task.nextRun) <= now) {
+          task.lastRun = now.toISOString();
+          task.runCount += 1;
+          task.logs.unshift({
+            timestamp: now.toISOString(),
+            level: "info",
+            message: `Сработал триггер расписания "${task.title}" (действие "${task.actionType}" не подключено к исполнителю).`,
+          });
+          if (task.logs.length > 30) task.logs.length = 30;
+          task.nextRun = nextRunFromExpression(task.scheduleExpression, task.triggerType, now) ?? undefined;
+          changed = true;
         }
       }
       if (changed) this.saveState();
@@ -599,7 +518,6 @@ export class MetaMuseController {
   }
 
   public dispose(): void {
-    if (this.mediaRendererInterval) clearInterval(this.mediaRendererInterval);
     if (this.taskRunnerInterval) clearInterval(this.taskRunnerInterval);
     this.saveState();
   }
@@ -704,54 +622,13 @@ export class MetaMuseController {
       timestamp: now,
     };
 
-    // 2. Synthesize smart assistant response based on content & mode
-    const lower = params.content.toLowerCase();
-    let reply = "";
-    let suggestions: string[] = [];
-
-    if (mode === "creative" || lower.includes("арт") || lower.includes("дизайн") || lower.includes("стиль")) {
-      reply =
-        `🎨 **[Creative Muse Engine]**\n\n` +
-        `Отличная идея! Я проанализировала запрос: *"${params.content}"*.\n` +
-        `Для этого идеально подойдет концепция **Иридисцентного Спектра** с глубокими контрастными тенями (#0B0E14) ` +
-        `и флюидными неоновыми переливами (Electric Blue #0866FF, Hyper Magenta #E03E93 и Cyan #00C4B4).\n\n` +
-        `Я могу отправить этот запрос в нашу **Студию Генерации** или сохранить цветовую спецификацию в долговременную память.`;
-      suggestions = [
-        `Сгенерировать медиа по этому промпту`,
-        `Сохранить концепт в память`,
-        `Переключить в аналитический режим для разбора деталей`,
-      ];
-    } else if (mode === "analytical" || lower.includes("анализ") || lower.includes("код") || lower.includes("статус")) {
-      const stats = this.getSystemStatus();
-      reply =
-        `📊 **[Analytical Engine]**\n\n` +
-        `Системный аудит по запросу *"${params.content}"*:\n` +
-        `- **Статус системы**: Версия v${stats.version}, Время работы: ${stats.uptimeSeconds} сек.\n` +
-        `- **Безопасная VM**: Изоляция активна, политика: ${this.vmState.networkPolicy}.\n` +
-        `- **Память / Задачи**: ${stats.memoryRecordsCount} записей памяти, ${stats.proactiveTasksCount} активных задач.\n` +
-        `- **Хост**: ${stats.hardware.cpuModel}, ОЗУ свободно ${stats.hardware.freeMemoryMB}MB / ${stats.hardware.totalMemoryMB}MB.`;
-      suggestions = [
-        `Выгрузить полный JSON-отчет системы`,
-        `Запустить аудит песочницы VM`,
-        `Создать задачу мониторинга`,
-      ];
-    } else if (mode === "strict_sandbox") {
-      reply =
-        `🔒 **[Strict Sandbox Enclave]**\n\n` +
-        `Сообщение обработано в закрытом безопасном контуре. Сетевой стек ограничен Whitelist доменами: ` +
-        `(${this.vmState.allowedDomains.join(", ")}). Никакие внешние сокеты не скомпрометированы.`;
-      suggestions = ["Проверить активные PID песочницы", "Вернуться в Creative режим"];
-    } else {
-      reply =
-        `✨ **[Meta Muse Proactive]**\n\n` +
-        `Принято в работу: *"${params.content}"*.\n` +
-        `Я обновила контекст текущей сессии и отслеживаю связанные задачи. Чем еще могу помочь?`;
-      suggestions = [
-        `Показать список активных задач`,
-        `Открыть студию генерации`,
-        `Просмотреть историю воспоминаний`,
-      ];
-    }
+    // 2. Honest answer: no LLM backend is connected to this plugin, so the
+    // assistant cannot generate a real reply. Say so instead of faking one.
+    const reply =
+      "AI-бэкенд не подключён: сейчас я не могу сгенерировать ответ. " +
+      "Ваше сообщение сохранено в истории диалога, но генерация станет доступна " +
+      "только после подключения реальной модели.";
+    const suggestions: string[] = [];
 
     const assistantMsg: MuseMessage = {
       id: `msg-${Date.now() + 1}-a`,
@@ -830,6 +707,8 @@ export class MetaMuseController {
     aspectRatio?: "1:1" | "16:9" | "9:16" | "4:3" | "3:4";
     seed?: number;
   }): MediaJob {
+    // No real image/video generator is connected to this plugin, so the job
+    // fails immediately and honestly instead of simulating progress.
     const id = `job-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const job: MediaJob = {
       id,
@@ -838,11 +717,13 @@ export class MetaMuseController {
       type: params.type || "image",
       stylePreset: params.stylePreset || "Iridescent Spectrum",
       aspectRatio: params.aspectRatio || "16:9",
-      status: "rendering",
-      progress: 10,
+      status: "failed",
+      progress: 0,
       seed: params.seed ?? Math.floor(Math.random() * 999999),
       steps: params.type === "video" ? 50 : 35,
       createdAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      error: "Генератор медиа не подключён: задание не может быть выполнено.",
     };
     this.mediaJobs.set(id, job);
     this.saveState();
@@ -875,22 +756,26 @@ export class MetaMuseController {
     payload?: Record<string, unknown>;
   }): ProactiveTask {
     const id = `task-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const triggerType = params.triggerType || "interval";
+    const nextRun = nextRunFromExpression(params.scheduleExpression, triggerType);
     const task: ProactiveTask = {
       id,
       title: params.title,
       description: params.description || `Автоматическая задача ${params.title}`,
-      triggerType: params.triggerType || "interval",
+      triggerType,
       scheduleExpression: params.scheduleExpression,
       actionType: params.actionType || "reminder",
       payload: params.payload || {},
       status: "active",
-      nextRun: new Date(Date.now() + 1800000).toISOString(),
+      nextRun: nextRun ?? undefined,
       runCount: 0,
       logs: [
         {
           timestamp: new Date().toISOString(),
-          level: "info",
-          message: `Задача "${params.title}" поставлена на расписание (${params.scheduleExpression}).`,
+          level: nextRun ? "info" : "warn",
+          message: nextRun
+            ? `Задача "${params.title}" поставлена на расписание (${params.scheduleExpression}), следующий запуск: ${nextRun}.`
+            : `Задача "${params.title}" создана, но выражение расписания "${params.scheduleExpression}" не распознано - автоматический запуск невозможен.`,
         },
       ],
     };
@@ -947,23 +832,21 @@ export class MetaMuseController {
     task.logs.unshift({
       timestamp: now,
       level: "info",
-      message: `Ручной запуск задачи выполнен успешно.`,
+      message: `Ручной запуск: триггер сработал (действие "${task.actionType}" не подключено к исполнителю).`,
     });
     if (task.logs.length > 30) task.logs.length = 30;
     this.saveState();
     return {
       success: true,
-      message: `Задача "${task.title}" выполнена вручную.`,
+      message: `Задача "${task.title}": триггер запущен вручную.`,
       task,
     };
   }
 
-  public getVMStatus(refresh = false): VMStatus {
+  public getVMStatus(_refresh = false): VMStatus {
     this.vmState.uptimeSeconds = Math.floor((Date.now() - this.startTime) / 1000);
-    if (refresh) {
-      this.vmState.lastSecurityAudit = new Date().toISOString();
-      this.vmState.memoryUsedMB = 350 + Math.floor(Math.random() * 80);
-    }
+    // Real host-process memory, not a fabricated enclave metric.
+    this.vmState.memoryUsedMB = Math.round(process.memoryUsage().rss / (1024 * 1024));
     return this.vmState;
   }
 

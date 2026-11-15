@@ -190,7 +190,7 @@ export const rpcContract = defineRpcContract({
     ),
   },
   get_messages: {
-    input: z.object({ chat_jid: z.string(), limit: z.number().optional(), session_id: z.string().optional() }),
+    input: z.object({ chat_jid: z.string(), limit: z.number().optional(), before: z.string().optional(), session_id: z.string().optional() }),
     output: z.array(
       z.object({
         id: z.string(),
@@ -206,6 +206,10 @@ export const rpcContract = defineRpcContract({
         file_length: z.number(),
       })
     ),
+  },
+  fetch_chat_history: {
+    input: z.object({ chat_jid: z.string(), count: z.number().optional(), session_id: z.string().optional() }),
+    output: z.object({ success: z.boolean(), message: z.string() }),
   },
   send_message: {
     input: z.object({
@@ -769,10 +773,13 @@ export class WhatsAppBridgeController {
     return [];
   }
 
-  public async getMessages(chatJid: string, limit = 50, sessionId?: string): Promise<WhatsAppMessage[]> {
+  public async getMessages(chatJid: string, limit = 50, sessionId?: string, before?: string): Promise<WhatsAppMessage[]> {
     await this.ensureRunning();
     try {
       let url = `http://127.0.0.1:${this.bridgePort}/api/messages?chat_jid=${encodeURIComponent(chatJid)}&limit=${limit}`;
+      if (before) {
+        url += `&before=${encodeURIComponent(before)}`;
+      }
       if (sessionId) {
         url += `&session=${encodeURIComponent(sessionId)}`;
       }
@@ -784,6 +791,26 @@ export class WhatsAppBridgeController {
       this.lastError = String(e);
     }
     return [];
+  }
+
+  /** Ask the paired phone for messages older than the oldest stored one. */
+  public async fetchChatHistory(chatJid: string, count = 50, sessionId?: string): Promise<{ success: boolean; message: string }> {
+    await this.ensureRunning();
+    try {
+      const res = await fetch(`http://127.0.0.1:${this.bridgePort}/api/history/fetch`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session: sessionId || "", chat_jid: chatJid, count }),
+        signal: AbortSignal.timeout(15000),
+      });
+      const data = (await res.json()) as Record<string, unknown>;
+      return {
+        success: Boolean(data.success),
+        message: typeof data.message === "string" ? data.message : "",
+      };
+    } catch (e: unknown) {
+      return { success: false, message: e instanceof Error ? e.message : String(e) };
+    }
   }
 
   public async searchContacts(query: string, sessionId?: string): Promise<WhatsAppContact[]> {
@@ -1159,7 +1186,10 @@ export default async function plugin(bb: BbPluginApi) {
       return await bridge.getChats(input?.query, input?.session_id);
     },
     async get_messages(input) {
-      return await bridge.getMessages(input.chat_jid, input.limit ?? 50, input.session_id);
+      return await bridge.getMessages(input.chat_jid, input.limit ?? 50, input.session_id, input.before);
+    },
+    async fetch_chat_history(input) {
+      return await bridge.fetchChatHistory(input.chat_jid, input.count ?? 50, input.session_id);
     },
     async send_message(input) {
       return await bridge.sendMessage(input.recipient, input.message, input.media_path, input.session_id);

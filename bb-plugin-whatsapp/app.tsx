@@ -176,6 +176,12 @@ export function WhatsAppView() {
   const [chats, setChats] = useState<WhatsAppChat[]>([]);
   const [selectedChat, setSelectedChat] = useState<WhatsAppChat | null>(null);
   const [messages, setMessages] = useState<WhatsAppMessage[]>([]);
+  const [hasMoreHistory, setHasMoreHistory] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [historyNote, setHistoryNote] = useState<string | null>(null);
+  const msgListRef = useRef<HTMLDivElement>(null);
+  const lastMsgKeyRef = useRef<string>("");
+  const chatOpenedAtRef = useRef<number>(0);
   const [chatSearch, setChatSearch] = useState("");
   const [messageInput, setMessageInput] = useState("");
   const [attachment, setAttachment] = useState<{
@@ -265,7 +271,8 @@ export function WhatsAppView() {
     [rpc, activeSessionId]
   );
 
-  // Fetch messages with optimistic preservation so sent messages never disappear
+  // Fetch the recent window and MERGE it into the list: pages of older
+  // history loaded by scrolling up must survive the 2.5s poll.
   const fetchMessages = useCallback(
     async (chatJid: string, sid?: string) => {
       const targetSid = sid || activeSessionId;
@@ -276,18 +283,31 @@ export function WhatsAppView() {
           session_id: targetSid,
         });
         if (Array.isArray(msgs)) {
+          const fetched = msgs as WhatsAppMessage[];
           setMessages((prev) => {
             const now = Date.now();
+            const fetchedIds = new Set(fetched.map((m) => m.id));
+            const oldestFetchedTs = fetched.length > 0 ? new Date(fetched[0].timestamp).getTime() : Number.MAX_SAFE_INTEGER;
+            // Keep older-than-window pages the user loaded by scrolling up.
+            const olderPages = prev.filter(
+              (p) =>
+                p.chat_jid === chatJid &&
+                !p.id.startsWith("opt-") &&
+                !fetchedIds.has(p.id) &&
+                new Date(p.timestamp).getTime() < oldestFetchedTs
+            );
             // Retain recent optimistic unconfirmed messages (< 15s) not yet in msgs
             const pendingOptimistic = prev.filter(
               (p) =>
                 p.chat_jid === chatJid &&
                 p.id.startsWith("opt-") &&
                 now - new Date(p.timestamp).getTime() < 15000 &&
-                !msgs.some((m) => m.content === p.content && m.is_from_me)
+                !fetched.some((m) => m.content === p.content && m.is_from_me)
             );
-            return [...msgs, ...pendingOptimistic];
+            return [...olderPages, ...fetched, ...pendingOptimistic];
           });
+          // A full page means there may be more history behind it.
+          setHasMoreHistory(fetched.length >= 50);
         }
       } catch (e) {
         console.error("fetchMessages error:", e);
@@ -295,6 +315,70 @@ export function WhatsAppView() {
     },
     [rpc, activeSessionId]
   );
+
+  // Scroll-up pagination: load the next 50 older than our oldest message.
+  const loadOlderMessages = useCallback(async () => {
+    if (!selectedChat || loadingOlder || !hasMoreHistory) return;
+    const oldest = messages.find((m) => !m.id.startsWith("opt-"));
+    if (!oldest) return;
+    setLoadingOlder(true);
+    setHistoryNote(null);
+    const el = msgListRef.current;
+    const prevHeight = el?.scrollHeight ?? 0;
+    const prevTop = el?.scrollTop ?? 0;
+    try {
+      const older = await rpc.call("get_messages", {
+        chat_jid: selectedChat.jid,
+        limit: 50,
+        before: oldest.timestamp,
+        session_id: activeSessionId,
+      });
+      if (Array.isArray(older)) {
+        if (older.length < 50) setHasMoreHistory(false);
+        if (older.length > 0) {
+          setMessages((prev) => {
+            const ids = new Set(prev.map((p) => p.id));
+            return [...(older as WhatsAppMessage[]).filter((o) => !ids.has(o.id)), ...prev];
+          });
+          // Keep the viewport where it was instead of jumping.
+          requestAnimationFrame(() => {
+            if (el) el.scrollTop = el.scrollHeight - prevHeight + prevTop;
+          });
+        }
+      }
+    } catch (e) {
+      console.error("loadOlderMessages error:", e);
+    }
+    setLoadingOlder(false);
+  }, [selectedChat, loadingOlder, hasMoreHistory, messages, rpc, activeSessionId]);
+
+  // When local history runs out, ask the paired phone for older messages
+  // (whatsmeow on-demand history sync). They land in the store shortly;
+  // re-enable paging so the next scroll-up picks them up.
+  const askPhoneForHistory = useCallback(async () => {
+    if (!selectedChat) return;
+    setLoadingOlder(true);
+    setHistoryNote(null);
+    try {
+      const res = await rpc.call("fetch_chat_history", {
+        chat_jid: selectedChat.jid,
+        count: 50,
+        session_id: activeSessionId,
+      });
+      setHistoryNote(res?.message || "Requested older messages from the phone.");
+      if (res?.success) {
+        setHasMoreHistory(true);
+        setTimeout(() => {
+          setLoadingOlder(false);
+          loadOlderMessages();
+        }, 4000);
+        return;
+      }
+    } catch (e) {
+      setHistoryNote(e instanceof Error ? e.message : String(e));
+    }
+    setLoadingOlder(false);
+  }, [selectedChat, rpc, activeSessionId, loadOlderMessages]);
 
   // Multi-account session actions
   const handleSwitchSession = async (sessionId: string) => {
@@ -494,6 +578,11 @@ export function WhatsAppView() {
   // When selected chat changes, load its messages and poll them
   useEffect(() => {
     if (!selectedChat) return;
+    setHasMoreHistory(false);
+    setHistoryNote(null);
+    setLoadingOlder(false);
+    lastMsgKeyRef.current = "";
+    chatOpenedAtRef.current = Date.now();
     fetchMessages(selectedChat.jid, activeSessionId);
     const msgTimer = setInterval(() => {
       fetchMessages(selectedChat.jid, activeSessionId);
@@ -501,10 +590,16 @@ export function WhatsAppView() {
     return () => clearInterval(msgTimer);
   }, [selectedChat, fetchMessages, activeSessionId]);
 
-  // Scroll to bottom of message list on new messages
+  // Scroll to bottom only when a new message lands at the end (or the chat
+  // changed) - prepending older history must not yank the viewport down.
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+    const last = messages[messages.length - 1];
+    const key = last ? `${selectedChat?.jid}:${last.id}` : "";
+    if (key && key !== lastMsgKeyRef.current) {
+      lastMsgKeyRef.current = key;
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [messages, selectedChat]);
 
   // Send message from conversation composer with full optimistic feedback & persistence
   const handleAttachmentPick = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -1293,7 +1388,50 @@ export function WhatsAppView() {
                   </div>
 
                   {/* Messages */}
-                  <div className="wa-chat-doodle flex-1 overflow-y-auto px-[8%] py-4 space-y-1.5">
+                  <div
+                    ref={msgListRef}
+                    onScroll={(e) => {
+                      // Ignore the smooth scroll-to-bottom that runs right
+                      // after opening a chat - it passes through the top.
+                      if (Date.now() - chatOpenedAtRef.current < 2000) return;
+                      const el = e.currentTarget;
+                      if (el.scrollTop < 80 && hasMoreHistory && !loadingOlder) {
+                        loadOlderMessages();
+                      }
+                    }}
+                    className="wa-chat-doodle flex-1 overflow-y-auto px-[8%] py-4 space-y-1.5"
+                  >
+                    {messages.length > 0 && (
+                      <div className="flex justify-center pb-2">
+                        {loadingOlder ? (
+                          <span className="bg-[var(--wa-panel-raised)] text-[var(--wa-text-secondary)] text-[12px] px-3 py-1 rounded-full">
+                            Loading older messages...
+                          </span>
+                        ) : hasMoreHistory ? (
+                          <button
+                            onClick={loadOlderMessages}
+                            className="bg-[var(--wa-panel-raised)] text-[var(--wa-accent)] text-[12px] px-3 py-1 rounded-full hover:brightness-110 transition"
+                          >
+                            Load older messages
+                          </button>
+                        ) : (
+                          <button
+                            onClick={askPhoneForHistory}
+                            title="WhatsApp delivers full history on first pairing; afterwards the phone can backfill older messages on request"
+                            className="bg-[var(--wa-panel-raised)] text-[var(--wa-accent)] text-[12px] px-3 py-1 rounded-full hover:brightness-110 transition"
+                          >
+                            Ask phone for older messages
+                          </button>
+                        )}
+                      </div>
+                    )}
+                    {historyNote && (
+                      <div className="flex justify-center pb-1">
+                        <span className="bg-[var(--wa-panel-raised)] text-[var(--wa-text-secondary)] text-[12px] px-3 py-1 rounded-full">
+                          {historyNote}
+                        </span>
+                      </div>
+                    )}
                     {messages.length === 0 ? (
                       <div className="h-full flex items-center justify-center">
                         <span className="bg-[var(--wa-panel-raised)] text-[var(--wa-text-secondary)] text-[13px] px-4 py-1.5 rounded-md">

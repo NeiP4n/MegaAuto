@@ -1483,6 +1483,17 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 
 		msgQuery := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("query")))
 
+		// Pagination: 'before' pages older messages. Accepts RFC3339 or unix
+		// seconds; compared against the stored timestamp.
+		var before time.Time
+		if beforeStr := strings.TrimSpace(r.URL.Query().Get("before")); beforeStr != "" {
+			if ts, parseErr := time.Parse(time.RFC3339, beforeStr); parseErr == nil {
+				before = ts
+			} else if unix, parseErr := strconv.ParseInt(beforeStr, 10, 64); parseErr == nil {
+				before = time.Unix(unix, 0)
+			}
+		}
+
 		// Check for AltJID so messages sent to LID or PN are unified
 		var altJIDStr string
 		if parsedChatJID, parseErr := types.ParseJID(chatJID); parseErr == nil && sess.Client != nil && sess.Client.Store != nil {
@@ -1491,33 +1502,32 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 			}
 		}
 
-		var rows *sql.Rows
-		var err error
+		beforeClause := ""
+		args := []interface{}{chatJID}
 		if altJIDStr != "" {
-			rows, err = sess.MessageStore.db.Query(`
-				SELECT id, chat_jid, sender, content, timestamp, is_from_me, 
-				       COALESCE(media_type, ''), COALESCE(filename, ''), COALESCE(url, ''), COALESCE(file_length, 0), COALESCE(push_name, '')
-				FROM (
-					SELECT id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, file_length, COALESCE(push_name, '')
-					FROM messages
-					WHERE chat_jid = ? OR chat_jid = ?
-					ORDER BY timestamp DESC LIMIT ?
-				)
-				ORDER BY timestamp ASC
-			`, chatJID, altJIDStr, limit)
-		} else {
-			rows, err = sess.MessageStore.db.Query(`
-				SELECT id, chat_jid, sender, content, timestamp, is_from_me, 
-				       COALESCE(media_type, ''), COALESCE(filename, ''), COALESCE(url, ''), COALESCE(file_length, 0), COALESCE(push_name, '')
-				FROM (
-					SELECT id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, file_length, COALESCE(push_name, '')
-					FROM messages
-					WHERE chat_jid = ?
-					ORDER BY timestamp DESC LIMIT ?
-				)
-				ORDER BY timestamp ASC
-			`, chatJID, limit)
+			args = append(args, altJIDStr)
 		}
+		if !before.IsZero() {
+			beforeClause = " AND timestamp < ?"
+			args = append(args, before)
+		}
+		args = append(args, limit)
+
+		chatFilter := "chat_jid = ?"
+		if altJIDStr != "" {
+			chatFilter = "(chat_jid = ? OR chat_jid = ?)"
+		}
+		rows, err := sess.MessageStore.db.Query(`
+			SELECT id, chat_jid, sender, content, timestamp, is_from_me,
+			       COALESCE(media_type, ''), COALESCE(filename, ''), COALESCE(url, ''), COALESCE(file_length, 0), COALESCE(push_name, '')
+			FROM (
+				SELECT id, chat_jid, sender, content, timestamp, is_from_me, media_type, filename, url, file_length, COALESCE(push_name, '')
+				FROM messages
+				WHERE `+chatFilter+beforeClause+`
+				ORDER BY timestamp DESC LIMIT ?
+			)
+			ORDER BY timestamp ASC
+		`, args...)
 
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -1563,6 +1573,82 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 			msgs = []MsgItem{}
 		}
 		json.NewEncoder(w).Encode(msgs)
+	})
+
+	// 8b. On-demand history fetch: asks the paired phone for messages older
+	// than the oldest one we have stored (whatsmeow HISTORY_SYNC_ON_DEMAND).
+	// The phone answers asynchronously with an ON_DEMAND history sync, which
+	// handleHistorySync stores like any other sync. WhatsApp only serves
+	// history this way for chats the phone still has, and full-chat history
+	// arrives on first pairing - this backfills older pages on request.
+	mux.HandleFunc("/api/history/fetch", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		var req struct {
+			Session string `json:"session,omitempty"`
+			ChatJID string `json:"chat_jid"`
+			Count   int    `json:"count,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request format", http.StatusBadRequest)
+			return
+		}
+		if req.ChatJID == "" {
+			http.Error(w, `{"error":"chat_jid is required"}`, http.StatusBadRequest)
+			return
+		}
+		if req.Count <= 0 || req.Count > 100 {
+			req.Count = 50
+		}
+		sess := sm.LookupSession(req.Session)
+		if sess == nil || sess.Client == nil || sess.MessageStore == nil {
+			http.Error(w, `{"error":"session not found or not started"}`, http.StatusBadRequest)
+			return
+		}
+		if !sess.Client.IsConnected() {
+			json.NewEncoder(w).Encode(map[string]any{"success": false, "message": "Not connected to WhatsApp"})
+			return
+		}
+		chatJID, err := types.ParseJID(req.ChatJID)
+		if err != nil {
+			http.Error(w, `{"error":"invalid chat_jid"}`, http.StatusBadRequest)
+			return
+		}
+
+		// Anchor the request on the oldest stored message for this chat.
+		var oldestID string
+		var oldestTS time.Time
+		var oldestFromMe bool
+		row := sess.MessageStore.db.QueryRow(
+			"SELECT id, timestamp, is_from_me FROM messages WHERE chat_jid = ? ORDER BY timestamp ASC LIMIT 1",
+			req.ChatJID,
+		)
+		if err := row.Scan(&oldestID, &oldestTS, &oldestFromMe); err != nil {
+			json.NewEncoder(w).Encode(map[string]any{
+				"success": false,
+				"message": "No messages stored for this chat yet - on-demand history needs one local message to anchor on. Full history arrives on first pairing.",
+			})
+			return
+		}
+
+		info := &types.MessageInfo{
+			MessageSource: types.MessageSource{Chat: chatJID, IsFromMe: oldestFromMe},
+			ID:            oldestID,
+			Timestamp:     oldestTS,
+		}
+		_, err = sess.Client.SendPeerMessage(r.Context(), sess.Client.BuildHistorySyncRequest(info, req.Count))
+		if err != nil {
+			json.NewEncoder(w).Encode(map[string]any{"success": false, "message": "History request failed: " + err.Error()})
+			return
+		}
+		sess.logger.Infof("Requested %d older messages for %s from phone (before %s)", req.Count, req.ChatJID, oldestTS)
+		json.NewEncoder(w).Encode(map[string]any{
+			"success": true,
+			"message": fmt.Sprintf("Asked the phone for up to %d older messages. They will appear here shortly if the phone still has them.", req.Count),
+		})
 	})
 
 	// 9. Send message endpoint

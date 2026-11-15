@@ -46,7 +46,7 @@ export function ComposerStatusBanner({ status }: ComposerStatusBannerProps) {
       <StackCard
         label="Статус ИИ"
         title={cardTitle}
-        icon={cardIcon as any}
+        icon={cardIcon}
         isActive={isBusy}
       >
         <div className="p-3 bg-muted/20 border-t border-border/40 space-y-2 text-xs">

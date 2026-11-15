@@ -59,7 +59,7 @@ export function RadarNavPanel({ status, isLoading, onRefresh }: RadarNavPanelPro
           <div>
             <h1 className="text-xl font-bold tracking-tight text-foreground flex items-center gap-2">
               <span>Agent Radar</span>
-              <span className="text-xs px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/30 font-mono">
+              <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary border border-primary/20 font-mono">
                 v0.1.0
               </span>
             </h1>
@@ -77,7 +77,7 @@ export function RadarNavPanel({ status, isLoading, onRefresh }: RadarNavPanelPro
             }}
             className="px-3 py-1.5 rounded-lg border border-border bg-card hover:bg-accent text-xs font-medium flex items-center gap-1.5 transition-colors"
           >
-            <SvgVolume2 className="w-3.5 h-3.5 text-cyan-400" />
+            <SvgVolume2 className="w-3.5 h-3.5 text-primary" />
             <span>Тест звука</span>
           </button>
 
@@ -158,7 +158,7 @@ export function RadarNavPanel({ status, isLoading, onRefresh }: RadarNavPanelPro
               <span className="font-bold text-foreground text-sm">{status.elapsedSeconds}s</span>
             </div>
             <div className="text-[11px] font-mono text-muted-foreground">
-              Модель: <span className="text-cyan-400">{status.model}</span>
+              Модель: <span className="text-foreground font-medium">{status.model}</span>
             </div>
           </div>
         </div>
@@ -219,7 +219,7 @@ export function RadarNavPanel({ status, isLoading, onRefresh }: RadarNavPanelPro
                 <div className="flex items-center justify-between text-xs font-mono text-muted-foreground">
                   <div className="flex items-center gap-2">
                     <span className="text-foreground font-semibold">#{step.stepIndex}</span>
-                    <span className="px-1.5 py-0.5 rounded bg-muted text-[10px] uppercase font-bold text-cyan-400">
+                    <span className="px-1.5 py-0.5 rounded bg-muted text-[10px] uppercase font-bold text-foreground">
                       {step.toolName || step.type}
                     </span>
                     <span className="text-[11px] text-muted-foreground">{step.status}</span>

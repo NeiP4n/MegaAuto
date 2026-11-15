@@ -7,6 +7,18 @@ description: "Send WhatsApp messages, read and search chat history, look up cont
 
 Connects one or more WhatsApp accounts via the official multi-device protocol (`whatsmeow` bridge). Everything goes through the registered agent tools below or the `bb whatsapp` CLI.
 
+## Cheat sheet (covers ~90% of requests - no other reading needed)
+
+```bash
+bb whatsapp send --to "Mom" "привет"                          # send to a chat BY NAME, active account
+bb whatsapp send --account 16838505031 --to "Mom" "привет"     # pick account by phone/name, no session_id
+bb whatsapp say --all "текст" --dry-run                        # preview a broadcast (count + recipients)
+bb whatsapp say --all "текст" --yes                           # broadcast to all chats (groups excluded)
+bb whatsapp messages "Mom" 20                                 # read a chat by name (jid also works)
+bb whatsapp accounts                                          # list accounts: id, name, phone, status
+```
+For anything else (media, contacts, history search, claims) use the agent tools below. `send`/`say` never need a session_id or chat JID - names and phone numbers resolve automatically.
+
 **NEVER do these - they are slow, fragile, and unsafe:**
 - Do NOT open or query the SQLite stores (`bridge/store/**.db`) directly.
 - Do NOT call `http://127.0.0.1:8080/api/...` by hand with curl/Invoke-RestMethod/python.

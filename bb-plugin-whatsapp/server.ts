@@ -1885,7 +1885,8 @@ export default async function plugin(bb: BbPluginApi) {
       { name: "chats", summary: "List recent chats", usage: "bb whatsapp chats" },
       { name: "contacts", summary: "Search contacts", usage: "bb whatsapp contacts <query>" },
       { name: "messages", summary: "List messages in a chat", usage: "bb whatsapp messages <chat_jid> [limit]" },
-      { name: "send", summary: "Send a message", usage: "bb whatsapp send <recipient> <message>" },
+      { name: "send", summary: "Send a message (recipient or --to chat name)", usage: "bb whatsapp send --account <name|phone> --to <chat name> <message>  |  bb whatsapp send <recipient> <message>" },
+      { name: "say", summary: "Broadcast a message to all chats (dry-run first)", usage: "bb whatsapp say --all [--groups] [--limit N] [--dry-run] [--yes] <message>" },
       { name: "send-file", summary: "Send a file", usage: "bb whatsapp send-file <recipient> <path> [caption]" },
       { name: "start", summary: "Start the WhatsApp bridge daemon", usage: "bb whatsapp start" },
       { name: "stop", summary: "Stop the WhatsApp bridge daemon", usage: "bb whatsapp stop" },
@@ -1905,6 +1906,51 @@ export default async function plugin(bb: BbPluginApi) {
         return { sessionId, rest };
       };
       const { sessionId: cliSession, rest: restArgs } = takeSessionFlag(argv.slice(1));
+
+      // Generic --flag <value> extractor (flags are removed from the rest).
+      const takeFlag = (args: string[], name: string): { value?: string; rest: string[] } => {
+        const i = args.indexOf(name);
+        if (i === -1) return { rest: args };
+        const rest = [...args];
+        rest.splice(i, 1);
+        const value = rest.splice(i, 1)[0];
+        return { value, rest };
+      };
+      const hasFlag = (args: string[], name: string): boolean => args.includes(name);
+      const dropFlag = (args: string[], name: string): string[] => args.filter((a) => a !== name);
+
+      // Resolve an account by session id, phone digits, or (case-insensitive) name.
+      const resolveAccount = async (token: string): Promise<{ sessionId?: string; error?: string }> => {
+        const sessions = await bridge.getSessions();
+        const digits = token.replace(/[^0-9]/g, "");
+        const lower = token.toLowerCase();
+        const match =
+          sessions.find((s) => s.id === token) ||
+          (digits ? sessions.find((s) => s.phone === digits || s.phone.endsWith(digits)) : undefined) ||
+          sessions.find((s) => (s.name || "").toLowerCase() === lower) ||
+          sessions.find((s) => (s.name || "").toLowerCase().includes(lower));
+        if (!match) {
+          return { error: `No account matches "${token}". Run: bb whatsapp accounts` };
+        }
+        return { sessionId: match.id };
+      };
+
+      // Resolve a chat by exact/partial name or JID/number on one account.
+      const resolveChat = async (
+        query: string,
+        sessionId?: string
+      ): Promise<{ jid?: string; name?: string; error?: string }> => {
+        if (query.includes("@")) return { jid: query, name: query };
+        if (/^\+?[0-9]{5,}$/.test(query.replace(/[\s-]/g, ""))) return { jid: query, name: query };
+        const chats = await bridge.getChats(query, sessionId);
+        if (chats.length === 0) {
+          return { error: `No chat matches "${query}". Check the name with: bb whatsapp chats` };
+        }
+        const lower = query.toLowerCase();
+        const exact = chats.find((c) => (c.name || "").toLowerCase() === lower);
+        const chosen = exact || chats[0];
+        return { jid: chosen.jid, name: chosen.name || chosen.jid };
+      };
 
       if (sub === "accounts") {
         const sessions = await bridge.getSessions();
@@ -1967,12 +2013,16 @@ export default async function plugin(bb: BbPluginApi) {
       }
 
       if (sub === "messages") {
-        const chatJid = restArgs[0];
+        const rawChat = restArgs[0];
         const limit = Number(restArgs[1]) || 20;
-        if (!chatJid) {
-          return { exitCode: 1, stderr: "Usage: bb whatsapp messages <chat_jid> [limit] [--session <id>]" };
+        if (!rawChat) {
+          return { exitCode: 1, stderr: "Usage: bb whatsapp messages <chat name|jid> [limit] [--session <id>]" };
         }
-        const msgs = await bridge.getMessages(chatJid, limit, cliSession);
+        const chat = await resolveChat(rawChat, cliSession);
+        if (!chat.jid) {
+          return { exitCode: 1, stderr: chat.error };
+        }
+        const msgs = await bridge.getMessages(chat.jid, limit, cliSession);
         if (msgs.length === 0) {
           return { exitCode: 0, stdout: "No messages found in this chat." };
         }
@@ -1996,13 +2046,105 @@ export default async function plugin(bb: BbPluginApi) {
       }
 
       if (sub === "send") {
-        const recipient = restArgs[0];
-        const message = restArgs.slice(1).join(" ");
-        if (!recipient || !message) {
-          return { exitCode: 1, stderr: "Usage: bb whatsapp send <recipient> <message> [--session <id>]" };
+        const accountF = takeFlag(restArgs, "--account");
+        const toF = takeFlag(accountF.rest, "--to");
+        const args = toF.rest;
+
+        let sessionId = cliSession;
+        if (accountF.value) {
+          const acc = await resolveAccount(accountF.value);
+          if (!acc.sessionId) return { exitCode: 1, stderr: acc.error };
+          sessionId = acc.sessionId;
         }
-        const res = await bridge.sendMessage(recipient, message, undefined, cliSession, undefined, "cli");
+
+        let recipient: string;
+        let message: string;
+        if (toF.value) {
+          const chat = await resolveChat(toF.value, sessionId);
+          if (!chat.jid) return { exitCode: 1, stderr: chat.error };
+          recipient = chat.jid;
+          message = args.join(" ");
+        } else {
+          const raw = args[0];
+          if (raw && !raw.includes("@") && !/^\+?[0-9]{5,}$/.test(raw.replace(/[\s-]/g, ""))) {
+            // Positional recipient that is not a number/JID: treat as a chat name.
+            const chat = await resolveChat(raw, sessionId);
+            if (!chat.jid) return { exitCode: 1, stderr: chat.error };
+            recipient = chat.jid;
+          } else {
+            recipient = raw;
+          }
+          message = args.slice(1).join(" ");
+        }
+        if (!recipient || !message) {
+          return { exitCode: 1, stderr: "Usage: bb whatsapp send [--account <name|phone>] [--to <chat name>] <recipient> <message>" };
+        }
+        const res = await bridge.sendMessage(recipient, message, undefined, sessionId, undefined, "cli");
         return { exitCode: res.success ? 0 : 1, stdout: res.message };
+      }
+
+      // Broadcast one message to existing chats only (never to new numbers).
+      // The bridge's per-account send limits still apply and abort the run.
+      if (sub === "say") {
+        if (!hasFlag(restArgs, "--all")) {
+          return { exitCode: 1, stderr: "Usage: bb whatsapp say --all [--groups] [--account <name|phone>] [--limit N] [--dry-run] [--yes] <message>" };
+        }
+        let args = dropFlag(restArgs, "--all");
+        const includeGroups = hasFlag(args, "--groups");
+        args = dropFlag(args, "--groups");
+        const dryRun = hasFlag(args, "--dry-run");
+        args = dropFlag(args, "--dry-run");
+        const yes = hasFlag(args, "--yes");
+        args = dropFlag(args, "--yes");
+        const accountF = takeFlag(args, "--account");
+        args = accountF.rest;
+        const limitF = takeFlag(args, "--limit");
+        args = limitF.rest;
+        const message = args.join(" ").trim();
+        if (!message) {
+          return { exitCode: 1, stderr: "Usage: bb whatsapp say --all [--groups] [--account <name|phone>] [--limit N] [--dry-run] [--yes] <message>" };
+        }
+
+        let sessionId = cliSession;
+        if (accountF.value) {
+          const acc = await resolveAccount(accountF.value);
+          if (!acc.sessionId) return { exitCode: 1, stderr: acc.error };
+          sessionId = acc.sessionId;
+        }
+
+        const maxLimit = Math.min(Math.max(Number(limitF.value) || 20, 1), 50);
+        const chats = await bridge.getChats("", sessionId);
+        const targets = chats.filter((c) => includeGroups || !c.jid.endsWith("@g.us")).slice(0, maxLimit);
+        if (targets.length === 0) {
+          return { exitCode: 1, stderr: "No chats to broadcast to." };
+        }
+        const preview = targets.map((c, i) => `${i + 1}. ${c.name || c.jid}`).join("\n");
+        if (dryRun) {
+          return { exitCode: 0, stdout: `DRY RUN - would send to ${targets.length} chat(s):\n${preview}` };
+        }
+        if (targets.length > 5 && !yes) {
+          return {
+            exitCode: 1,
+            stderr: `Broadcast to ${targets.length} chats needs confirmation. Preview: bb whatsapp say --all --dry-run <message>  |  Confirm: add --yes`,
+          };
+        }
+
+        let sent = 0;
+        const failed: string[] = [];
+        for (const chat of targets) {
+          const res = await bridge.sendMessage(chat.jid, message, undefined, sessionId, undefined, "cli");
+          if (res.success) {
+            sent += 1;
+          } else {
+            failed.push(`${chat.name || chat.jid}: ${res.message}`);
+            break; // a limit (429) or disconnect aborts the run
+          }
+        }
+        const failText = failed.length ? `\nStopped: ${failed[0]}` : "";
+        return {
+          exitCode: failed.length ? 1 : 0,
+          stdout: `Broadcast done: ${sent}/${targets.length} sent.${failText}`,
+        };
       }
 
       if (sub === "start") {
@@ -2034,7 +2176,7 @@ export default async function plugin(bb: BbPluginApi) {
         return { exitCode: res.success ? 0 : 1, stdout: res.message };
       }
 
-      return { exitCode: 1, stderr: `Unknown subcommand: ${sub}. Available: status, accounts, qr, chats, contacts, messages, send, send-file, start, stop, restart, backup, restore. Most accept --session <id>.` };
+      return { exitCode: 1, stderr: `Unknown subcommand: ${sub}. Available: status, accounts, qr, chats, contacts, messages, send, say, send-file, start, stop, restart, backup, restore. Most accept --session <id>; send/say accept --account <name|phone> and --to <chat name>.` };
     },
   });
 }

@@ -855,13 +855,10 @@ func extractDirectPathFromURL(url string) string {
 		return url // Return original URL if parsing fails
 	}
 
-	pathPart := parts[1]
-
-	// Remove query parameters
-	pathPart = strings.SplitN(pathPart, "?", 2)[0]
-
-	// Create proper direct path format
-	return "/" + pathPart
+	// Keep the query string: it carries the CDN signature (ccb/oh/oe/_nc_hot),
+	// and whatsmeow appends &hash=...&mms-type=... onto the direct path it is
+	// given. Stripping the query makes every download come back 403.
+	return "/" + parts[1]
 }
 
 // Helper: check if string is empty or contains only numeric digits

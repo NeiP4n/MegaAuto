@@ -1155,7 +1155,9 @@ export class WhatsAppBridgeController {
       if (sessionId) {
         url += `&session=${encodeURIComponent(sessionId)}`;
       }
-      const res = await fetch(url, { signal: AbortSignal.timeout(30000) });
+      // Media retry (asking the phone for a fresh path after a 403) can take
+      // ~20s on top of the actual download - give the bridge room to finish.
+      const res = await fetch(url, { signal: AbortSignal.timeout(75000) });
       if (!res.ok) {
         let msg = `media unavailable (HTTP ${res.status})`;
         try {

@@ -10,6 +10,9 @@ interface InstanceListProps {
   onDeleteAccount: (id: string) => void;
   onPingAccount: (id: string) => void;
   pingingId?: string | null;
+  onToggleServer?: () => void;
+  isServerRunning?: boolean;
+  isServerBusy?: boolean;
 }
 
 export function InstanceList({
@@ -20,6 +23,9 @@ export function InstanceList({
   onDeleteAccount,
   onPingAccount,
   pingingId,
+  onToggleServer,
+  isServerRunning,
+  isServerBusy,
 }: InstanceListProps) {
   return (
     <aside className="w-64 border-r border-border/40 bg-card/40 flex flex-col shrink-0 h-full select-none">
@@ -93,6 +99,25 @@ export function InstanceList({
 
                   {/* Actions */}
                   <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    {(acc.url.includes("localhost") || acc.url.includes("127.0.0.1")) && onToggleServer && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onToggleServer();
+                        }}
+                        disabled={isServerBusy}
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition-all ${
+                          isServerBusy
+                            ? "bg-amber-500/10 text-amber-400 border border-amber-500/20 animate-pulse"
+                            : isOnline
+                            ? "bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20"
+                            : "bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20"
+                        }`}
+                        title={isOnline ? "Остановить n8n" : "Запустить n8n"}
+                      >
+                        {isServerBusy ? "..." : isOnline ? "Стоп" : "Старт"}
+                      </button>
+                    )}
                     <button
                       onClick={(e) => {
                         e.stopPropagation();

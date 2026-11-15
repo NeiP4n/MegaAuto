@@ -108,3 +108,12 @@ export interface PingInstanceResult {
   version?: string;
   error?: string;
 }
+
+export interface LocalServerStatus {
+  ok: boolean;
+  running: boolean;
+  managedByPlugin: boolean;
+  pid?: number;
+  logs: string[];
+  error?: string;
+}

@@ -7,7 +7,7 @@ import { WorkflowList } from "./src/components/WorkflowList";
 import { ExecutionLog } from "./src/components/ExecutionLog";
 import { WebhookConsole } from "./src/components/WebhookConsole";
 import { AddInstanceModal } from "./src/components/AddInstanceModal";
-import { SvgZap, SvgActivity, SvgRefresh, SvgCheckCircle, SvgAlertCircle } from "./src/icons";
+import { SvgZap, SvgActivity, SvgRefresh, SvgCheckCircle, SvgAlertCircle, SvgPlay, SvgSquare } from "./src/icons";
 
 export function ProjectHubView() {
   const rpc = useRpc<typeof rpcContract>();
@@ -16,6 +16,11 @@ export function ProjectHubView() {
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState<string>("");
   const [pingingId, setPingingId] = useState<string | null>(null);
+
+  // State: Local n8n server process
+  const [isServerBusy, setIsServerBusy] = useState(false);
+  const [isServerRunning, setIsServerRunning] = useState(false);
+  const [serverLogs, setServerLogs] = useState<string[]>([]);
 
   // State: Workflows & Executions
   const [workflows, setWorkflows] = useState<N8nWorkflow[]>([]);
@@ -32,9 +37,33 @@ export function ProjectHubView() {
     return accounts.find((a) => a.id === selectedAccountId) || accounts[0] || null;
   }, [accounts, selectedAccountId]);
 
+  const isLocalActive = useMemo(() => {
+    if (!activeAccount) return false;
+    return activeAccount.url.includes("localhost") || activeAccount.url.includes("127.0.0.1");
+  }, [activeAccount]);
+
   const activeWorkflow = useMemo(() => {
     return workflows.find((w) => w.id === selectedWorkflowId) || workflows[0] || null;
   }, [workflows, selectedWorkflowId]);
+
+  // Poll Local Server Status
+  const pollServerStatus = useCallback(async () => {
+    try {
+      const res = await rpc.call("get_local_server_status", {});
+      if (res?.ok) {
+        setIsServerRunning(res.running);
+        if (res.logs) setServerLogs(res.logs);
+      }
+    } catch {
+      // ignore
+    }
+  }, [rpc]);
+
+  useEffect(() => {
+    pollServerStatus();
+    const interval = setInterval(pollServerStatus, 5000);
+    return () => clearInterval(interval);
+  }, [pollServerStatus]);
 
   // Load Accounts / Instances
   const loadAccounts = useCallback(async () => {
@@ -63,6 +92,9 @@ export function ProjectHubView() {
             : a
         )
       );
+      if (res.status === "online") {
+        setIsServerRunning(true);
+      }
     } catch {
       setAccounts((prev) =>
         prev.map((a) => (a.id === accountId ? { ...a, status: "offline", latencyMs: undefined } : a))
@@ -116,12 +148,13 @@ export function ProjectHubView() {
     loadAccounts();
   }, [loadAccounts]);
 
-  // When active account changes, load workflows
+  // When active account changes, ping it and load its workflows
   useEffect(() => {
     if (activeAccount?.id) {
+      handlePingAccount(activeAccount.id);
       loadWorkflows(activeAccount.id);
     }
-  }, [activeAccount?.id, loadWorkflows]);
+  }, [activeAccount?.id, handlePingAccount, loadWorkflows]);
 
   // When active workflow changes, load executions
   useEffect(() => {
@@ -132,7 +165,7 @@ export function ProjectHubView() {
     }
   }, [activeAccount?.id, activeWorkflow?.id, loadExecutions]);
 
-  // Background ping interval (every 30s as advised by Instinct)
+  // Auto-refresh ping every 30s
   useEffect(() => {
     if (!activeAccount?.id) return;
     const interval = setInterval(() => {
@@ -140,6 +173,54 @@ export function ProjectHubView() {
     }, 30000);
     return () => clearInterval(interval);
   }, [activeAccount?.id, handlePingAccount]);
+
+  // Toggle local server start/stop
+  const handleToggleLocalServer = async () => {
+    setIsServerBusy(true);
+    try {
+      if (isServerRunning) {
+        await rpc.call("stop_local_server", {});
+        setIsServerRunning(false);
+        if (activeAccount?.id) {
+          handlePingAccount(activeAccount.id);
+        }
+      } else {
+        await rpc.call("start_local_server", {});
+        let attempts = 0;
+        const checkInterval = setInterval(async () => {
+          attempts++;
+          try {
+            const statusRes = await rpc.call("get_local_server_status", {});
+            if (statusRes?.logs) setServerLogs(statusRes.logs);
+            if (statusRes?.running) {
+              clearInterval(checkInterval);
+              setIsServerRunning(true);
+              setIsServerBusy(false);
+              if (activeAccount?.id) {
+                handlePingAccount(activeAccount.id);
+                loadWorkflows(activeAccount.id);
+              }
+              return;
+            }
+          } catch {
+            // keep checking
+          }
+          if (attempts >= 15) {
+            clearInterval(checkInterval);
+            setIsServerBusy(false);
+            if (activeAccount?.id) handlePingAccount(activeAccount.id);
+          }
+        }, 1000);
+        return;
+      }
+    } catch {
+      // ignore
+    } finally {
+      if (isServerRunning) {
+        setIsServerBusy(false);
+      }
+    }
+  };
 
   // Add Instance
   const handleAddInstance = async (name: string, url: string, apiKey?: string) => {
@@ -204,7 +285,7 @@ export function ProjectHubView() {
           </span>
         </div>
 
-        {/* Global Connection Badge */}
+        {/* Global Connection Badge & Server Control */}
         <div className="flex items-center gap-3">
           {activeAccount && (
             <div className="flex items-center gap-2 text-xs font-mono">
@@ -229,15 +310,49 @@ export function ProjectHubView() {
             </div>
           )}
 
+          {/* Quick Start / Stop Server Button in Header */}
+          {isLocalActive && (
+            <button
+              onClick={handleToggleLocalServer}
+              disabled={isServerBusy}
+              className={`px-2.5 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition-all cursor-pointer ${
+                isServerBusy
+                  ? "bg-amber-500/15 text-amber-400 border border-amber-500/30 animate-pulse"
+                  : isServerRunning
+                  ? "bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20"
+                  : "bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/30 shadow-[0_0_12px_rgba(52,211,153,0.15)]"
+              }`}
+              title={isServerRunning ? "Остановить локальный n8n" : "Запустить локальный n8n на порту 5678"}
+            >
+              {isServerBusy ? (
+                <>
+                  <SvgActivity className="w-3.5 h-3.5 animate-spin" />
+                  <span>Запуск...</span>
+                </>
+              ) : isServerRunning ? (
+                <>
+                  <SvgSquare className="w-3 h-3 text-rose-400" />
+                  <span>Остановить n8n</span>
+                </>
+              ) : (
+                <>
+                  <SvgPlay className="w-3 h-3 text-emerald-400" />
+                  <span>Запустить n8n</span>
+                </>
+              )}
+            </button>
+          )}
+
           <button
             onClick={() => {
               if (activeAccount?.id) {
                 handlePingAccount(activeAccount.id);
                 loadWorkflows(activeAccount.id);
                 if (activeWorkflow?.id) loadExecutions(activeAccount.id, activeWorkflow.id);
+                pollServerStatus();
               }
             }}
-            className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+            className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors cursor-pointer"
             title="Обновить всё"
           >
             <SvgRefresh className="w-3.5 h-3.5" />
@@ -259,6 +374,9 @@ export function ProjectHubView() {
           onDeleteAccount={handleDeleteInstance}
           onPingAccount={handlePingAccount}
           pingingId={pingingId}
+          onToggleServer={handleToggleLocalServer}
+          isServerRunning={isServerRunning}
+          isServerBusy={isServerBusy}
         />
 
         {/* Column 2: Workflows List */}
@@ -271,17 +389,23 @@ export function ProjectHubView() {
           }}
           isLoading={isLoadingWorkflows}
           instanceName={activeAccount?.name || ""}
+          isLocalInstance={isLocalActive}
+          isOffline={activeAccount?.status !== "online"}
+          onStartServer={handleToggleLocalServer}
+          isServerStarting={isServerBusy}
         />
 
-        {/* Column 3: Detail Workspace (Top: Executions, Bottom: Webhook Console) */}
+        {/* Column 3: Detail Workspace (Top: Execution/Server Log, Bottom: Webhook Console) */}
         <section className="flex-1 flex flex-col h-full overflow-hidden bg-background">
           {activeWorkflow ? (
             <>
-              {/* Upper Section: Execution Log */}
+              {/* Upper Section: Execution Log + Server Terminal */}
               <div className="flex-1 flex flex-col min-h-[220px] overflow-hidden">
                 <ExecutionLog
                   executions={executions}
                   isLoading={isLoadingExecutions}
+                  serverLogs={serverLogs}
+                  isServerRunning={isServerRunning}
                 />
               </div>
 
@@ -296,12 +420,13 @@ export function ProjectHubView() {
               </div>
             </>
           ) : (
-            <div className="flex-1 flex flex-col items-center justify-center text-xs text-muted-foreground py-16 px-6 text-center">
-              <SvgZap className="w-10 h-10 opacity-20 mb-3" />
-              <p className="font-medium text-foreground">Выберите воркфлоу из списка</p>
-              <p className="text-[11px] opacity-70 mt-1 max-w-sm">
-                Здесь отображаются логи запусков, ошибки в узлах и интерактивная консоль для отправки вебхук-команд.
-              </p>
+            <div className="flex-1 flex flex-col h-full overflow-hidden">
+              <ExecutionLog
+                executions={[]}
+                isLoading={false}
+                serverLogs={serverLogs}
+                isServerRunning={isServerRunning}
+              />
             </div>
           )}
         </section>
@@ -317,6 +442,7 @@ export function ProjectHubView() {
   );
 }
 
+// Register ProjectHubView into Blackbox UI slots
 export default definePluginApp((app) => {
   app.slots.navPanel({
     id: "project-hub",

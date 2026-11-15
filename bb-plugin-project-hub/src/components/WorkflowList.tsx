@@ -9,6 +9,10 @@ interface WorkflowListProps {
   onRefresh: () => void;
   isLoading: boolean;
   instanceName: string;
+  isLocalInstance?: boolean;
+  isOffline?: boolean;
+  onStartServer?: () => void;
+  isServerStarting?: boolean;
 }
 
 export function WorkflowList({
@@ -18,6 +22,10 @@ export function WorkflowList({
   onRefresh,
   isLoading,
   instanceName,
+  isLocalInstance,
+  isOffline,
+  onStartServer,
+  isServerStarting,
 }: WorkflowListProps) {
   const [search, setSearch] = useState("");
   const [filterActive, setFilterActive] = useState<"all" | "active" | "inactive">("all");
@@ -87,8 +95,31 @@ export function WorkflowList({
       {/* List */}
       <div className="flex-1 overflow-y-auto p-2 space-y-1">
         {filtered.length === 0 ? (
-          <div className="text-center py-12 px-3 text-xs text-muted-foreground">
-            {workflows.length === 0 ? "Воркфлоу не найдены или инстанс оффлайн." : "Ничего не найдено по фильтру."}
+          <div className="flex-1 flex flex-col items-center justify-center text-center py-12 px-4 text-xs text-muted-foreground">
+            {isLocalInstance && isOffline ? (
+              <div className="p-4 rounded-xl border border-border/40 bg-card/60 max-w-xs text-center space-y-3">
+                <div className="w-9 h-9 rounded-full bg-rose-500/10 text-rose-400 mx-auto flex items-center justify-center font-bold text-sm">
+                  !
+                </div>
+                <div>
+                  <div className="font-semibold text-foreground text-xs">Локальный сервер выключен</div>
+                  <div className="text-[11px] text-muted-foreground mt-1">
+                    Запустите n8n для загрузки сценариев и отправки вебхук-команд.
+                  </div>
+                </div>
+                {onStartServer && (
+                  <button
+                    onClick={onStartServer}
+                    disabled={isServerStarting}
+                    className="w-full py-2 px-3 rounded-md bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-400 border border-emerald-500/30 text-xs font-medium transition-all flex items-center justify-center gap-1.5 shadow-[0_0_12px_rgba(52,211,153,0.15)] cursor-pointer"
+                  >
+                    {isServerStarting ? "Запуск сервера..." : "▶ Запустить локальный n8n"}
+                  </button>
+                )}
+              </div>
+            ) : (
+              workflows.length === 0 ? "Воркфлоу не найдены или инстанс оффлайн." : "Ничего не найдено по фильтру."
+            )}
           </div>
         ) : (
           filtered.map((w) => {

@@ -3,6 +3,7 @@ import { z } from "zod";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { spawn, type ChildProcess } from "node:child_process";
 import type { Account, Project, ChatMessage, HubStatus } from "./src/types";
 
 // ESM has no __dirname - the plugin server crashes on load without this shim
@@ -272,6 +273,38 @@ export const rpcContract = defineRpcContract({
       statusCode: z.number().optional(),
       durationMs: z.number().optional(),
       response: z.unknown().optional(),
+      error: z.string().optional(),
+    }),
+  },
+  start_local_server: {
+    input: z.object({
+      accountId: z.string().optional(),
+    }),
+    output: z.object({
+      ok: z.boolean(),
+      message: z.string(),
+      pid: z.number().optional(),
+    }),
+  },
+  stop_local_server: {
+    input: z.object({
+      accountId: z.string().optional(),
+    }),
+    output: z.object({
+      ok: z.boolean(),
+      message: z.string(),
+    }),
+  },
+  get_local_server_status: {
+    input: z.object({
+      accountId: z.string().optional(),
+    }),
+    output: z.object({
+      ok: z.boolean(),
+      running: z.boolean(),
+      managedByPlugin: z.boolean(),
+      pid: z.number().optional(),
+      logs: z.array(z.string()),
       error: z.string().optional(),
     }),
   },
@@ -652,6 +685,18 @@ class HubStore {
 
 function isLocalUrl(u: string): boolean {
   return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?(\/|$)/i.test(u.trim());
+}
+
+// --- LOCAL N8N SERVER PROCESS MANAGEMENT ---
+let localN8nProcess: ChildProcess | null = null;
+const serverLogs: string[] = [];
+
+function appendServerLog(msg: string) {
+  const line = `[${new Date().toLocaleTimeString()}] ${msg.trim()}`;
+  serverLogs.push(line);
+  if (serverLogs.length > 200) {
+    serverLogs.shift();
+  }
 }
 
 // Single-pass n8n probe: tries health/version endpoints in parallel, first OK wins.
@@ -1295,6 +1340,123 @@ export default function (bb: BbPluginApi) {
       } catch (err: any) {
         return { ok: false, durationMs: Date.now() - start, error: err?.message || "Ошибка вызова вебхука" };
       }
+    },
+
+    start_local_server: async () => {
+      const health = await checkN8nHealth("http://localhost:5678");
+      if (health.connected) {
+        return {
+          ok: true,
+          message: "Сервер n8n уже работает",
+          pid: localN8nProcess?.pid,
+        };
+      }
+
+      if (localN8nProcess && !localN8nProcess.killed) {
+        return {
+          ok: true,
+          message: "Сервер n8n уже запускается...",
+          pid: localN8nProcess.pid,
+        };
+      }
+
+      appendServerLog("Запуск локального сервера n8n (порт 5678)...");
+      const isWin = process.platform === "win32";
+      const cmd = isWin ? "n8n.cmd" : "n8n";
+
+      try {
+        localN8nProcess = spawn(cmd, ["start"], {
+          shell: true,
+          stdio: ["ignore", "pipe", "pipe"],
+          env: {
+            ...process.env,
+            N8N_PORT: "5678",
+            N8N_HOST: "localhost",
+            N8N_PROTOCOL: "http",
+          },
+        });
+
+        localN8nProcess.stdout?.on("data", (chunk: any) => {
+          const str = chunk.toString();
+          for (const line of str.split("\n")) {
+            if (line.trim()) appendServerLog(line);
+          }
+        });
+
+        localN8nProcess.stderr?.on("data", (chunk: any) => {
+          const str = chunk.toString();
+          for (const line of str.split("\n")) {
+            if (line.trim()) appendServerLog(line);
+          }
+        });
+
+        localN8nProcess.on("exit", (code: any) => {
+          appendServerLog(`Сервер n8n завершил работу (код ${code})`);
+          localN8nProcess = null;
+        });
+
+        localN8nProcess.on("error", (err: any) => {
+          appendServerLog(`Ошибка процесса n8n: ${err.message}`);
+          localN8nProcess = null;
+        });
+
+        return {
+          ok: true,
+          message: "Команда запуска n8n передана",
+          pid: localN8nProcess.pid,
+        };
+      } catch (err: any) {
+        appendServerLog(`Не удалось запустить n8n: ${err?.message}`);
+        return {
+          ok: false,
+          message: err?.message || "Ошибка запуска n8n",
+        };
+      }
+    },
+
+    stop_local_server: async () => {
+      appendServerLog("Остановка локального сервера n8n...");
+      if (localN8nProcess) {
+        const pid = localN8nProcess.pid;
+        if (pid) {
+          try {
+            if (process.platform === "win32") {
+              spawn("taskkill", ["/pid", String(pid), "/f", "/t"]);
+            } else {
+              localN8nProcess.kill("SIGKILL");
+            }
+          } catch (e: any) {
+            appendServerLog(`Ошибка при остановке процесса: ${e?.message}`);
+          }
+        }
+        localN8nProcess = null;
+        healthCache.delete("http://localhost:5678|");
+        healthCache.delete("http://127.0.0.1:5678|");
+        appendServerLog("Сервер n8n остановлен");
+        return { ok: true, message: "Сервер n8n остановлен" };
+      }
+
+      const health = await checkN8nHealth("http://localhost:5678");
+      if (health.connected) {
+        return {
+          ok: false,
+          message: "Сервер запущен внешне, плагин управляет только собственным процессом",
+        };
+      }
+
+      return { ok: true, message: "Сервер не запущен" };
+    },
+
+    get_local_server_status: async () => {
+      const health = await checkN8nHealth("http://localhost:5678");
+      const isManaged = localN8nProcess !== null && !localN8nProcess.killed;
+      return {
+        ok: true,
+        running: health.connected,
+        managedByPlugin: isManaged,
+        pid: localN8nProcess?.pid,
+        logs: serverLogs.slice(-40),
+      };
     },
   });
 

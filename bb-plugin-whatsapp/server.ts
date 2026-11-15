@@ -570,20 +570,29 @@ export class WhatsAppBridgeController {
       let logStream: fs.WriteStream | null = null;
       try {
         const logPath = path.join(this.bridgeDir, "bridge.log");
+        let isNewLog = false;
         try {
           const sz = fs.statSync(logPath).size;
           if (sz > 8 * 1024 * 1024) {
             try { fs.unlinkSync(logPath + ".old"); } catch { /* none */ }
             fs.renameSync(logPath, logPath + ".old");
+            isNewLog = true;
           }
-        } catch { /* no log yet */ }
+        } catch { isNewLog = true; /* no log yet */ }
         logStream = fs.createWriteStream(logPath, { flags: "a" });
+        // UTF-8 BOM so Windows editors (Notepad etc.) don't misread the
+        // log as cp1251 and show mojibake on Cyrillic chat names.
+        if (isNewLog) logStream.write("\uFEFF");
         logStream.write(`\n===== bridge started ${new Date().toISOString()} pid=${this.process?.pid} =====\n`);
       } catch { /* logging is best-effort */ }
 
+      // waLog writes ANSI color codes for the console; strip them from the
+      // file copy, which is what users open and send us.
+      const stripAnsi = (t: string) => t.replace(/\x1b\[[0-9;]*m/g, "");
+
       const appendTail = (text: string) => {
         this.bridgeLogTail = (this.bridgeLogTail + text).slice(-2048);
-        try { logStream?.write(text); } catch { /* ignore */ }
+        try { logStream?.write(stripAnsi(text)); } catch { /* ignore */ }
       };
 
       this.process.stdout?.on("data", (data: Buffer) => appendTail(data.toString()));

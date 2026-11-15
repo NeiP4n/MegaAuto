@@ -27,6 +27,7 @@ import (
 
 	"go.mau.fi/whatsmeow"
 	waProto "go.mau.fi/whatsmeow/binary/proto"
+	"go.mau.fi/whatsmeow/store"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
 	waLog "go.mau.fi/whatsmeow/util/log"
@@ -2339,6 +2340,26 @@ func main() {
 	logger := waLog.Stdout("Bridge", "INFO", true)
 	logger.Infof("Starting WhatsApp Multi-Account Bridge...")
 
+	// Sync the WhatsApp Web client version with the live one (upstream-
+	// recommended: whatsmeow.GetLatestVersion + store.SetWAVersion). A
+	// stale version can get freshly paired devices rejected by the server.
+	// Best-effort: on any failure the version built into the library is used.
+	builtIn := store.GetWAVersion()
+	func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		latest, err := whatsmeow.GetLatestVersion(ctx, nil)
+		if err != nil {
+			logger.Warnf("Could not fetch the live WhatsApp Web version (%v); using built-in %v", err, builtIn)
+			return
+		}
+		if *latest != builtIn {
+			logger.Infof("Updating WhatsApp Web version %v -> %v", builtIn, *latest)
+			store.SetWAVersion(*latest)
+		} else {
+			logger.Infof("WhatsApp Web version %v is current", builtIn)
+		}
+	}()
 
 	dbLog := waLog.Stdout("Database", "ERROR", true)
 
@@ -2451,8 +2472,7 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 					mediaType, filename, url, mediaKey, fileSHA256, fileEncSHA256, fileLength = extractMediaInfo(msg.Message.Message)
 				}
 
-				// Log the message content for debugging
-				logger.Infof("Message content: %v, Media Type: %v", content, mediaType)
+				// (logged after sender resolution below)
 
 				// Skip messages with no content and no media
 				if content == "" && mediaType == "" {
@@ -2476,6 +2496,9 @@ func handleHistorySync(client *whatsmeow.Client, messageStore *MessageStore, his
 				} else {
 					sender = jid.User
 				}
+
+				// Log metadata only: message bodies never go to the log file.
+				logger.Infof("Message stored: chat=%s sender=%s from_me=%v media=%v body_len=%d", chatJID, sender, isFromMe, mediaType, len(content))
 
 				// Store message
 				msgID := ""

@@ -67,7 +67,15 @@ export default definePluginApp((app) => {
     summary: ThreadContextSegmentSummary,
   });
 
-  // 3. Left Navigation Bar Panel
+  // 3. Thread Context Card Row (visible in thread pane details)
+  app.slots.experimental_threadContextCardRow({
+    id: "agent-radar-card-row",
+    group: "activity",
+    order: 0,
+    component: ThreadContextSegmentSummary,
+  });
+
+  // 4. Left Navigation Bar Panel
   app.slots.navPanel({
     id: "agent-radar",
     title: "Agent Radar",

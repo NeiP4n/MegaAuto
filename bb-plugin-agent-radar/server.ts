@@ -66,18 +66,29 @@ const radarSettingsSchema = z.object({
   position: z.enum(["top-right", "bottom-right", "top-center", "bottom-center"]),
 });
 
+function sanitizeRpc<T>(data: T): T {
+  if (data === undefined) return null as unknown as T;
+  return JSON.parse(JSON.stringify(data));
+}
+
 export const rpcContract = defineRpcContract({
   get_radar_status: {
-    input: z.object({
-      conversationId: z.string().optional(),
-    }).optional(),
+    input: z
+      .object({
+        conversationId: z.string().optional(),
+      })
+      .nullable()
+      .optional(),
     output: agentRadarStatusSchema,
   },
   get_radar_timeline: {
-    input: z.object({
-      conversationId: z.string().optional(),
-      limit: z.number().optional(),
-    }).optional(),
+    input: z
+      .object({
+        conversationId: z.string().optional(),
+        limit: z.number().optional(),
+      })
+      .nullable()
+      .optional(),
     output: z.object({
       ok: z.boolean(),
       conversationId: z.string(),
@@ -85,7 +96,7 @@ export const rpcContract = defineRpcContract({
     }),
   },
   get_radar_settings: {
-    input: z.object({}).optional(),
+    input: z.null().optional(),
     output: radarSettingsSchema,
   },
   update_radar_settings: {
@@ -348,29 +359,29 @@ export default function (bb: BbPluginApi) {
   // 1. REGISTER RPC METHODS
   bb.rpc.register(rpcContract, {
     get_radar_status: async (input) => {
-      return radarEngine.getStatus(input?.conversationId);
+      return sanitizeRpc(radarEngine.getStatus(input?.conversationId));
     },
 
     get_radar_timeline: async (input) => {
       const status = radarEngine.getStatus(input?.conversationId);
       const limit = input?.limit || 20;
-      return {
+      return sanitizeRpc({
         ok: true,
         conversationId: status.conversationId,
         steps: status.recentSteps.slice(0, limit),
-      };
+      });
     },
 
     get_radar_settings: async () => {
-      return radarEngine.getSettings();
+      return sanitizeRpc(radarEngine.getSettings());
     },
 
     update_radar_settings: async (patch) => {
       const updated = radarEngine.updateSettings(patch);
-      return {
+      return sanitizeRpc({
         ok: true,
         settings: updated,
-      };
+      });
     },
   });
 

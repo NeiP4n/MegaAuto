@@ -146,6 +146,14 @@ export const rpcContract = defineRpcContract({
       message: z.string().optional(),
     }),
   },
+  backup_session: {
+    input: z.object({ session_id: z.string() }),
+    output: z.object({ success: z.boolean(), message: z.string(), path: z.string().optional() }),
+  },
+  restore_session: {
+    input: z.object({ session_id: z.string(), file: z.string() }),
+    output: z.object({ success: z.boolean(), message: z.string() }),
+  },
   get_agent_activity: {
     input: z.object({}).nullish(),
     output: z.object({
@@ -640,6 +648,45 @@ export class WhatsAppBridgeController {
       }
       const errText = await res.text();
       return { success: false, message: errText };
+    } catch (e: unknown) {
+      return { success: false, message: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  public async backupSession(sessionId: string): Promise<{ success: boolean; message: string; path?: string }> {
+    await this.ensureRunning();
+    try {
+      const res = await fetch(`http://127.0.0.1:${this.bridgePort}/api/sessions/backup`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session: sessionId }),
+        signal: AbortSignal.timeout(30000),
+      });
+      const data = (await res.json()) as Record<string, unknown>;
+      return {
+        success: Boolean(data.success),
+        message: typeof data.message === "string" ? data.message : "",
+        path: typeof data.path === "string" ? data.path : undefined,
+      };
+    } catch (e: unknown) {
+      return { success: false, message: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  public async restoreSession(sessionId: string, file: string): Promise<{ success: boolean; message: string }> {
+    await this.ensureRunning();
+    try {
+      const res = await fetch(`http://127.0.0.1:${this.bridgePort}/api/sessions/restore`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session: sessionId, file }),
+        signal: AbortSignal.timeout(60000),
+      });
+      const data = (await res.json()) as Record<string, unknown>;
+      return {
+        success: Boolean(data.success),
+        message: typeof data.message === "string" ? data.message : "",
+      };
     } catch (e: unknown) {
       return { success: false, message: e instanceof Error ? e.message : String(e) };
     }
@@ -1164,6 +1211,12 @@ export default async function plugin(bb: BbPluginApi) {
     async delete_session(input) {
       return await bridge.deleteSession(input.session_id);
     },
+    async backup_session(input) {
+      return await bridge.backupSession(input.session_id);
+    },
+    async restore_session(input) {
+      return await bridge.restoreSession(input.session_id, input.file);
+    },
     async restart_session(input) {
       return await bridge.restartSession(input.session_id);
     },
@@ -1681,7 +1734,21 @@ export default async function plugin(bb: BbPluginApi) {
         return { exitCode: ok ? 0 : 1, stdout: ok ? "WhatsApp bridge restarted." : "Failed to restart bridge." };
       }
 
-      return { exitCode: 1, stderr: `Unknown subcommand: ${sub}. Available: status, qr, chats, contacts, messages, send, send-file, start, stop, restart.` };
+      if (sub === "backup") {
+        const sessions = await bridge.getSessions();
+        const target = argv[1] || sessions.find((s) => s.is_active)?.id || "default";
+        const res = await bridge.backupSession(target);
+        return { exitCode: res.success ? 0 : 1, stdout: res.success ? `Backup saved: ${res.path}` : res.message };
+      }
+      if (sub === "restore") {
+        if (!argv[1] || !argv[2]) {
+          return { exitCode: 1, stderr: "Usage: bb whatsapp restore <session_id> <backup-file.zip>" };
+        }
+        const res = await bridge.restoreSession(argv[1], argv[2]);
+        return { exitCode: res.success ? 0 : 1, stdout: res.message };
+      }
+
+      return { exitCode: 1, stderr: `Unknown subcommand: ${sub}. Available: status, qr, chats, contacts, messages, send, send-file, start, stop, restart, backup, restore.` };
     },
   });
 }

@@ -101,7 +101,6 @@ const vmStatusSchema = z.object({
   status: z.enum(["running", "paused", "quarantined", "host_process"]),
   memoryLimitMB: z.number(),
   memoryUsedMB: z.number(),
-  cpuQuotaPercent: z.number(),
   secureEnclave: z.boolean(),
   activeProcesses: z.array(vmProcessSchema),
   networkPolicy: z.enum(["whitelisted", "proxy", "local_only"]),
@@ -440,7 +439,6 @@ export class MetaMuseController {
     status: "host_process",
     memoryLimitMB: Math.round(os.totalmem() / (1024 * 1024)),
     memoryUsedMB: Math.round(process.memoryUsage().rss / (1024 * 1024)),
-    cpuQuotaPercent: 100,
     secureEnclave: false,
     activeProcesses: [
       { pid: process.pid, name: "bb-host-node", cpu: 0, memoryMB: Math.round(process.memoryUsage().rss / (1024 * 1024)) },
@@ -664,6 +662,7 @@ export class MetaMuseController {
     success: boolean;
     isConfigured: boolean;
   } {
+    const backup = { ...this.config };
     if (patch.clearApiKey) {
       this.config.apiKey = undefined;
     } else if (patch.apiKey !== undefined) {
@@ -676,7 +675,12 @@ export class MetaMuseController {
     if (patch.endpointUrl !== undefined) this.config.endpointUrl = patch.endpointUrl.trim() || undefined;
     if (patch.mediaEndpointUrl !== undefined) this.config.mediaEndpointUrl = patch.mediaEndpointUrl.trim() || undefined;
     const saved = this.saveState();
-    return { success: saved, isConfigured: Boolean(this.config.apiKey || this.config.endpointUrl) };
+    if (!saved) {
+      // Rollback in-memory config so state doesn't desync on disk write failure
+      this.config = backup;
+      return { success: false, isConfigured: Boolean(this.config.apiKey || this.config.endpointUrl) };
+    }
+    return { success: true, isConfigured: Boolean(this.config.apiKey || this.config.endpointUrl) };
   }
 
   public async sendMessage(params: {
@@ -1050,7 +1054,8 @@ export class MetaMuseController {
     this.vmState.uptimeSeconds = Math.floor((Date.now() - this.startTime) / 1000);
     this.vmState.memoryUsedMB = usedMB;
     this.vmState.memoryLimitMB = totalMB;
-    const cpuMs = Math.round(process.cpuUsage().user / 1000);
+    const usage = process.cpuUsage();
+    const cpuMs = Math.round((usage.user + usage.system) / 1000);
     this.vmState.activeProcesses = [
       { pid: process.pid, name: "bb-host-node", cpu: cpuMs, memoryMB: usedMB },
     ];

@@ -207,14 +207,16 @@ export function VmMemoryTab({
                 </div>
               </div>
 
-              {/* CPU Quota */}
+              {/* Process CPU Time (user+system) */}
               <div className="bg-[#161C2B] rounded-xl border border-slate-800 p-3.5 space-y-2">
                 <div className="flex justify-between items-center text-[11px]">
                   <span className="text-slate-400 flex items-center space-x-1">
                     <SvgCpu className="w-3.5 h-3.5 text-pink-400" />
-                    <span>Доступность ЦП хоста</span>
+                    <span>Время ЦП процесса (user+sys)</span>
                   </span>
-                  <span className="font-mono text-pink-300 font-semibold">100%</span>
+                  <span className="font-mono text-pink-300 font-semibold">
+                    {vmStatus.activeProcesses[0]?.cpu || 0} мс
+                  </span>
                 </div>
                 <div className="w-full bg-[#0B0E14] rounded-full h-2 overflow-hidden border border-slate-800">
                   <div
@@ -223,8 +225,8 @@ export function VmMemoryTab({
                   />
                 </div>
                 <div className="flex justify-between text-[10px] font-mono text-slate-500">
-                  <span>Ограничения квот: отсутствуют</span>
-                  <span>Доступно: 100% ЦП хоста</span>
+                  <span>Квота ЦП не измеряется</span>
+                  <span>Накопленное время Node.js</span>
                 </div>
               </div>
             </div>
@@ -262,7 +264,7 @@ export function VmMemoryTab({
                 <span className="text-[11px] font-semibold text-slate-300">
                   Процессы хоста в контексте плагина ({vmStatus.activeProcesses.length})
                 </span>
-                <span className="text-[10px] text-slate-500 font-mono">PID / ЦП (мс) / ОЗУ</span>
+                <span className="text-[10px] text-slate-500 font-mono">PID / ЦП user+sys (мс) / ОЗУ</span>
               </div>
 
               <div className="space-y-1.5">
@@ -276,7 +278,7 @@ export function VmMemoryTab({
                       <span className="text-cyan-300 font-medium">{p.name}</span>
                     </div>
                     <div className="flex items-center space-x-3 text-slate-400">
-                      <span>{p.cpu} ms CPU</span>
+                      <span>{p.cpu} мс (накопл. ЦП)</span>
                       <span className="text-pink-300 font-semibold">{p.memoryMB} MB</span>
                     </div>
                   </div>

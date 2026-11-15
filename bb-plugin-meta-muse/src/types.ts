@@ -79,7 +79,6 @@ export interface VMStatus {
   status: 'running' | 'paused' | 'quarantined' | 'host_process';
   memoryLimitMB: number;
   memoryUsedMB: number;
-  cpuQuotaPercent: number;
   secureEnclave: boolean;
   activeProcesses: VMProcess[];
   networkPolicy: 'whitelisted' | 'proxy' | 'local_only';

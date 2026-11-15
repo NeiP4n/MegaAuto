@@ -35,6 +35,7 @@ export function ApiConfigModal({
   const [clearRequested, setClearRequested] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   React.useEffect(() => {
     if (isOpen) {
@@ -43,6 +44,7 @@ export function ApiConfigModal({
       setMediaEndpointUrl(config.mediaEndpointUrl || "");
       setShowKey(false);
       setClearRequested(false);
+      setErrorMessage(null);
     }
   }, [isOpen, config]);
 
@@ -51,6 +53,7 @@ export function ApiConfigModal({
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSaving(true);
+    setErrorMessage(null);
     try {
       const trimmedKey = apiKey.trim();
       // Protect genuine key from accidental empty overwrite or masked bullets (••••••••)
@@ -70,8 +73,9 @@ export function ApiConfigModal({
         setSavedSuccess(false);
         onClose();
       }, 600);
-    } catch {
+    } catch (err: any) {
       setSavedSuccess(false);
+      setErrorMessage(err?.message || "Ошибка: не удалось сохранить конфигурацию на диск.");
     } finally {
       setIsSaving(false);
     }
@@ -119,6 +123,14 @@ export function ApiConfigModal({
             Meta Muse работает без симуляций. При отсутствии настроенного ключа все запросы к модели честно возвращают ошибку конфигурации.
           </p>
         </div>
+
+        {/* Error Banner if saving failed */}
+        {errorMessage && (
+          <div className="bg-rose-950/50 rounded-xl border border-rose-500/80 p-3 flex items-start space-x-2.5 text-xs text-rose-200">
+            <SvgAlertTriangle className="w-4 h-4 text-rose-400 shrink-0 mt-0.5" />
+            <p className="text-[11px] leading-relaxed font-mono">{errorMessage}</p>
+          </div>
+        )}
 
         {/* Settings Form */}
         <form onSubmit={handleSave} className="space-y-3.5 text-xs">

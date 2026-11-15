@@ -40,13 +40,33 @@ function maskAccount(acc: Account): Account {
   return JSON.parse(JSON.stringify(copy));
 }
 
+function sanitizeRpcOutput<T>(obj: T): T {
+  if (obj === undefined) return null as unknown as T;
+  return JSON.parse(JSON.stringify(obj));
+}
+
+function sanitizeHandlers<T extends Record<string, any>>(handlers: T): T {
+  const sanitized: any = {};
+  for (const [key, fn] of Object.entries(handlers)) {
+    if (typeof fn === "function") {
+      sanitized[key] = async (...args: any[]) => {
+        const res = await fn(...args);
+        return sanitizeRpcOutput(res);
+      };
+    } else {
+      sanitized[key] = fn;
+    }
+  }
+  return sanitized;
+}
+
 const projectSchema = z.object({
   id: z.string(),
   accountId: z.string(),
   name: z.string(),
   channel: z.enum(["n8n", "telegram", "webhook"]),
   status: z.enum(["online", "idle", "offline"]),
-  workflowId: z.string().optional(),
+  workflowId: z.string().nullable().optional(),
   unreadCount: z.number(),
   lastMessageTime: z.string(),
   lastMessagePreview: z.string(),
@@ -57,7 +77,7 @@ const projectSchema = z.object({
 const chatMessageSchema = z.object({
   id: z.string(),
   projectId: z.string(),
-  accountId: z.string().optional(),
+  accountId: z.string().nullable().optional(),
   sender: z.enum(["system", "agent", "user", "webhook"]),
   senderName: z.string(),
   text: z.string(),
@@ -65,12 +85,13 @@ const chatMessageSchema = z.object({
   status: z.enum(["sent", "delivered", "read"]),
   metadata: z
     .object({
-      workflowName: z.string().optional(),
-      executionId: z.string().optional(),
-      status: z.enum(["success", "running", "error"]).optional(),
-      durationMs: z.number().optional(),
-      payload: z.record(z.unknown()).optional(),
+      workflowName: z.string().nullable().optional(),
+      executionId: z.string().nullable().optional(),
+      status: z.enum(["success", "running", "error"]).nullable().optional(),
+      durationMs: z.number().nullable().optional(),
+      payload: z.record(z.unknown()).nullable().optional(),
     })
+    .nullable()
     .optional(),
 });
 
@@ -111,7 +132,7 @@ export const rpcContract = defineRpcContract({
     }),
     output: z.object({
       ok: z.boolean(),
-      account: accountSchema.optional(),
+      account: accountSchema.nullable().optional(),
     }),
   },
   delete_account: {
@@ -145,7 +166,7 @@ export const rpcContract = defineRpcContract({
     output: z.object({
       ok: z.boolean(),
       message: chatMessageSchema,
-      error: z.string().optional(),
+      error: z.string().nullable().optional(),
     }),
   },
   get_status: {
@@ -164,7 +185,7 @@ export const rpcContract = defineRpcContract({
       ok: z.boolean(),
       syncedProjects: z.number(),
       syncedMessages: z.number(),
-      error: z.string().optional(),
+      error: z.string().nullable().optional(),
     }),
   },
   toggle_ai: {
@@ -174,7 +195,7 @@ export const rpcContract = defineRpcContract({
     }),
     output: z.object({
       ok: z.boolean(),
-      project: projectSchema.optional(),
+      project: projectSchema.nullable().optional(),
     }),
   },
   mark_as_read: {
@@ -213,7 +234,7 @@ export const rpcContract = defineRpcContract({
     }),
     output: z.object({
       ok: z.boolean(),
-      project: projectSchema.optional(),
+      project: projectSchema.nullable().optional(),
     }),
   },
   ping_instance: {
@@ -222,8 +243,8 @@ export const rpcContract = defineRpcContract({
       ok: z.boolean(),
       status: z.enum(["online", "offline"]),
       latencyMs: z.number(),
-      version: z.string().optional(),
-      error: z.string().optional(),
+      version: z.string().nullable().optional(),
+      error: z.string().nullable().optional(),
     }),
   },
   get_workflows: {
@@ -235,20 +256,21 @@ export const rpcContract = defineRpcContract({
           id: z.string(),
           name: z.string(),
           active: z.boolean(),
-          tags: z.array(z.string()).optional(),
-          createdAt: z.string().optional(),
-          updatedAt: z.string().optional(),
+          tags: z.array(z.string()).nullable().optional(),
+          createdAt: z.string().nullable().optional(),
+          updatedAt: z.string().nullable().optional(),
           lastExecution: z
             .object({
               id: z.string(),
               status: z.enum(["success", "running", "error"]),
               startedAt: z.string(),
-              durationMs: z.number().optional(),
+              durationMs: z.number().nullable().optional(),
             })
+            .nullable()
             .optional(),
         })
       ),
-      error: z.string().optional(),
+      error: z.string().nullable().optional(),
     }),
   },
   get_executions: {
@@ -262,17 +284,17 @@ export const rpcContract = defineRpcContract({
         z.object({
           id: z.string(),
           workflowId: z.string(),
-          workflowName: z.string().optional(),
+          workflowName: z.string().nullable().optional(),
           status: z.enum(["success", "running", "error", "waiting", "canceled"]),
           startedAt: z.string(),
-          stoppedAt: z.string().optional(),
-          durationMs: z.number().optional(),
+          stoppedAt: z.string().nullable().optional(),
+          durationMs: z.number().nullable().optional(),
           mode: z.enum(["manual", "trigger", "webhook", "retry", "integrated"]),
-          errorMessage: z.string().optional(),
-          errorNodeName: z.string().optional(),
+          errorMessage: z.string().nullable().optional(),
+          errorNodeName: z.string().nullable().optional(),
         })
       ),
-      error: z.string().optional(),
+      error: z.string().nullable().optional(),
     }),
   },
   dispatch_webhook: {
@@ -284,10 +306,10 @@ export const rpcContract = defineRpcContract({
     }),
     output: z.object({
       ok: z.boolean(),
-      statusCode: z.number().optional(),
-      durationMs: z.number().optional(),
-      response: z.unknown().optional(),
-      error: z.string().optional(),
+      statusCode: z.number().nullable().optional(),
+      durationMs: z.number().nullable().optional(),
+      response: z.unknown().nullable().optional(),
+      error: z.string().nullable().optional(),
     }),
   },
   start_local_server: {
@@ -297,7 +319,7 @@ export const rpcContract = defineRpcContract({
     output: z.object({
       ok: z.boolean(),
       message: z.string(),
-      pid: z.number().optional(),
+      pid: z.number().nullable().optional(),
     }),
   },
   stop_local_server: {
@@ -317,9 +339,9 @@ export const rpcContract = defineRpcContract({
       ok: z.boolean(),
       running: z.boolean(),
       managedByPlugin: z.boolean(),
-      pid: z.number().optional(),
+      pid: z.number().nullable().optional(),
       logs: z.array(z.string()),
-      error: z.string().optional(),
+      error: z.string().nullable().optional(),
     }),
   },
 });
@@ -784,7 +806,11 @@ function isLocalUrl(u: string): boolean {
 }
 
 function isLocalPort5678(u: string): boolean {
-  return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]):5678(\/|\?|$)/i.test(u.trim());
+  const clean = (u || "").trim();
+  return (
+    /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]):5678(\/|\?|$)/i.test(clean) ||
+    /^(localhost|127\.0\.0\.1|\[::1\]):5678(\/|\?|$)/i.test(clean)
+  );
 }
 
 function buildSafeWebhookUrl(baseUrl: string, rawPath: string): string | null {
@@ -1502,31 +1528,38 @@ async function forwardToN8n(
 }
 
 export default function (bb: BbPluginApi) {
-  const storePath = path.join(__dirname, "data");
+  const pluginRoot = path.basename(__dirname) === "dist" ? path.dirname(__dirname) : __dirname;
+  const storePath = path.join(pluginRoot, "data");
   const store = new HubStore(storePath);
 
-  // 1. REGISTER RPC IMPLEMENTATIONS
-  bb.rpc.register(rpcContract, {
-    get_accounts: async () => {
-      const masked = store.getAccounts().map(maskAccount);
-      return {
-        ok: true,
-        accounts: masked,
-      };
-    },
+  // 1. REGISTER RPC IMPLEMENTATIONS (wrapped with strict JSON sanitizer)
+  bb.rpc.register(
+    rpcContract,
+    sanitizeHandlers({
+      get_accounts: async () => {
+        const masked = store.getAccounts().map(maskAccount);
+        return {
+          ok: true,
+          accounts: masked,
+        };
+      },
 
-    create_account: async (input) => {
-      const acc = store.addAccount({
-        name: input.name,
-        channel: input.channel,
-        url: input.url,
-        apiKey: input.apiKey || undefined,
-      });
-      return {
-        ok: true,
-        account: maskAccount(acc),
-      };
-    },
+      create_account: async (input) => {
+        let cleanUrl = input.url.trim();
+        if (!/^https?:\/\//i.test(cleanUrl)) {
+          cleanUrl = "http://" + cleanUrl;
+        }
+        const acc = store.addAccount({
+          name: input.name,
+          channel: input.channel,
+          url: cleanUrl,
+          apiKey: input.apiKey || undefined,
+        });
+        return {
+          ok: true,
+          account: maskAccount(acc),
+        };
+      },
 
     disconnect_account: async (input) => {
       const acc = store.disconnectAccount(input.accountId);
@@ -1900,11 +1933,11 @@ export default function (bb: BbPluginApi) {
         ok: true,
         running: health.connected,
         managedByPlugin: isManaged,
-        pid: localN8nProcess?.pid || undefined,
+        pid: localN8nProcess?.pid ?? undefined,
         logs: serverLogs.slice(-50),
       };
     },
-  });
+  }));
 
   // 2. REGISTER CLI COMMAND
   bb.cli.register({

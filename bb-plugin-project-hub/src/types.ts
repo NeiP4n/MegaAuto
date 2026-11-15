@@ -37,29 +37,29 @@ export type ExecutionStatus = "success" | "running" | "error";
 export interface N8nExecution {
   id: string;
   workflowId: string;
-  workflowName?: string;
+  workflowName?: string | null;
   status: ExecutionStatus | "waiting" | "canceled";
   startedAt: string;
-  stoppedAt?: string;
-  durationMs?: number;
+  stoppedAt?: string | null;
+  durationMs?: number | null;
   mode: "manual" | "trigger" | "webhook" | "retry" | "integrated";
-  errorMessage?: string;
-  errorNodeName?: string;
+  errorMessage?: string | null;
+  errorNodeName?: string | null;
 }
 
 export interface N8nWorkflow {
   id: string;
   name: string;
   active: boolean;
-  tags?: string[];
-  createdAt?: string;
-  updatedAt?: string;
+  tags?: string[] | null;
+  createdAt?: string | null;
+  updatedAt?: string | null;
   lastExecution?: {
     id: string;
     status: ExecutionStatus;
     startedAt: string;
-    durationMs?: number;
-  };
+    durationMs?: number | null;
+  } | null;
 }
 
 export interface MessageMetadata {

@@ -10,7 +10,11 @@ import { AddInstanceModal } from "./src/components/AddInstanceModal";
 import { SvgZap, SvgActivity, SvgRefresh, SvgCheckCircle, SvgAlertCircle, SvgPlay, SvgSquare } from "./src/icons";
 
 function isLocalPort5678(url: string): boolean {
-  return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]):5678(\/|\?|$)/i.test(url.trim());
+  const clean = (url || "").trim();
+  return (
+    /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]):5678(\/|\?|$)/i.test(clean) ||
+    /^(localhost|127\.0\.0\.1|\[::1\]):5678(\/|\?|$)/i.test(clean)
+  );
 }
 
 export function ProjectHubView() {
@@ -221,6 +225,23 @@ export function ProjectHubView() {
         const startRes = await rpc.call("start_local_server", {});
         if (!startRes?.ok) {
           setIsServerBusy(false);
+          return;
+        }
+
+        if (startRes.message?.includes("уже") || startRes.message?.includes("already")) {
+          setIsServerRunning(true);
+          setIsServerBusy(false);
+          setAccounts((prev) =>
+            prev.map((a) =>
+              isLocalPort5678(a.url)
+                ? { ...a, status: "online", lastSync: new Date().toISOString() }
+                : a
+            )
+          );
+          if (activeAccount?.id) {
+            handlePingAccount(activeAccount.id);
+            loadWorkflows(activeAccount.id);
+          }
           return;
         }
 

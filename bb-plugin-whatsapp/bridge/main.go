@@ -1068,6 +1068,68 @@ func altJID(sess *Session, chatJID string) string {
 const msgColumns = `id, chat_jid, sender, content, timestamp, is_from_me,
 	COALESCE(media_type, ''), COALESCE(filename, ''), COALESCE(url, ''), COALESCE(file_length, 0), COALESCE(push_name, '')`
 
+// chatItem is one row of /api/chats.
+type chatItem struct {
+	JID             string    `json:"jid"`
+	Name            string    `json:"name"`
+	LastMessageTime time.Time `json:"last_message_time"`
+	LastMessage     string    `json:"last_message"`
+	LastSender      string    `json:"last_sender"`
+	LastIsFromMe    bool      `json:"last_is_from_me"`
+}
+
+// mergeAltJIDChats folds chats that are the same contact under two JIDs
+// (phone JID @s.whatsapp.net and @lid) into a single row. WhatsApp migrates
+// contacts to LIDs, and both variants can land in the store - without the
+// merge the list shows the same person twice and sends by name find two
+// chats. altFn maps a JID to its alternate (LID<->PN) or "" when unknown.
+// The canonical row keeps the PN JID when a pair exists; last-message fields
+// come from whichever side is newer, and a real contact name beats a raw
+// number.
+func mergeAltJIDChats(items []chatItem, altFn func(string) string) []chatItem {
+	canon := func(jid string) string {
+		if strings.HasSuffix(jid, "@lid") {
+			if alt := altFn(jid); alt != "" {
+				return alt
+			}
+		}
+		return jid
+	}
+	merged := make(map[string]*chatItem, len(items))
+	var order []string
+	for i := range items {
+		item := items[i]
+		c := canon(item.JID)
+		prev, ok := merged[c]
+		if !ok {
+			cp := item
+			cp.JID = c
+			merged[c] = &cp
+			order = append(order, c)
+			continue
+		}
+		if item.LastMessageTime.After(prev.LastMessageTime) {
+			prev.LastMessageTime = item.LastMessageTime
+			prev.LastMessage = item.LastMessage
+			prev.LastSender = item.LastSender
+			prev.LastIsFromMe = item.LastIsFromMe
+		}
+		prevRaw := prev.Name == "" || prev.Name == prev.JID || prev.Name == item.JID || isRawNumberName(prev.Name)
+		itemRaw := item.Name == "" || item.Name == item.JID || isRawNumberName(item.Name)
+		if !itemRaw && prevRaw {
+			prev.Name = item.Name
+		}
+	}
+	out := make([]chatItem, 0, len(order))
+	for _, c := range order {
+		out = append(out, *merged[c])
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].LastMessageTime.After(out[j].LastMessageTime)
+	})
+	return out
+}
+
 // Start a REST API server with Multi-Account / Multi-Session support
 // The listener must be bound by the caller BEFORE any session connects:
 // the port doubles as the single-instance lock. Two bridge processes with the
@@ -1429,14 +1491,7 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 		}
 		defer rows.Close()
 
-		type ChatItem struct {
-			JID             string    `json:"jid"`
-			Name            string    `json:"name"`
-			LastMessageTime time.Time `json:"last_message_time"`
-			LastMessage     string    `json:"last_message"`
-			LastSender      string    `json:"last_sender"`
-			LastIsFromMe    bool      `json:"last_is_from_me"`
-		}
+		type ChatItem = chatItem
 		var list []ChatItem
 		for rows.Next() {
 			var item ChatItem
@@ -1458,6 +1513,8 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 		if list == nil {
 			list = []ChatItem{}
 		}
+		// Fold LID/PN duplicates of the same contact into one chat row.
+		list = mergeAltJIDChats(list, func(jid string) string { return altJID(sess, jid) })
 		json.NewEncoder(w).Encode(list)
 	})
 

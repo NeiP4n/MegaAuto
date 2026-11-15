@@ -27,6 +27,7 @@ import {
   SvgX,
   SvgImage,
   SvgUser,
+  SvgLock,
 } from "./components/icons";
 
 interface AgentActivityEntry {
@@ -927,6 +928,23 @@ export function WhatsAppView() {
                 title={sess.status}
               />
               <span className="truncate max-w-[140px]">{label}</span>
+              {sess.claim_holder && (
+                <button
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    await rpc.call("force_release_session", { session_id: sess.id });
+                  }}
+                  title={`Claimed by agent "${sess.claim_holder}"${
+                    sess.claim_expires_at
+                      ? ` until ${new Date(sess.claim_expires_at).toLocaleTimeString()}`
+                      : ""
+                  } - click to force-release`}
+                  className="flex items-center gap-0.5 px-1 h-4.5 rounded text-[10px] leading-none text-[var(--wa-warning)] hover:bg-[var(--wa-hover)] transition-colors shrink-0"
+                >
+                  <SvgLock className="w-2.5 h-2.5" />
+                  <span className="max-w-[72px] truncate">{sess.claim_holder}</span>
+                </button>
+              )}
               {sessions.length > 1 && (
                 <button
                   onClick={(e) => handleDeleteSession(sess.id, e)}

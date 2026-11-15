@@ -1099,6 +1099,31 @@ func guardAllowsSend(w http.ResponseWriter, r *http.Request, sess *Session, reci
 	return false
 }
 
+// claimAllowsSend enforces session claims for /api/send and
+// /api/send-media. Sends tagged as coming from the user's own UI (holder
+// "ui") always pass - claims exist to stop parallel AGENTS stepping on
+// each other, not to lock the user out of his own account. Returns false
+// after writing a 409 when another agent holds the claim.
+func claimAllowsSend(w http.ResponseWriter, sm *SessionManager, sess *Session, holder string) bool {
+	if holder == "" {
+		holder = "agent"
+	}
+	if holder == "ui" {
+		return true
+	}
+	if c, ok := sm.claims.Of(sess.ID); ok && c.Holder != holder {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(SendMessageResponse{
+			Success: false,
+			Message: fmt.Sprintf("session %s is claimed by %q until %s - send via that holder, claim the session yourself, or wait for the claim to expire",
+				sess.ID, c.Holder, c.ExpiresAt.Format("15:04:05")),
+		})
+		return false
+	}
+	return true
+}
+
 func startRESTServer(sm *SessionManager, listener net.Listener) {
 	// Helper to extract requested session or active session
 	getSession := func(r *http.Request) *Session {
@@ -1251,6 +1276,85 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 			return
 		}
 
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success": true,
+		})
+	})
+
+	// 4b. Claim session: an agent takes an exclusive, TTL-bounded claim so
+	// parallel agents don't interleave sends on one account. The same
+	// holder re-claiming renews the TTL. Claims are in-memory: a crashed
+	// holder never wedges a session.
+	mux.HandleFunc("/api/sessions/claim", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			SessionID  string `json:"session_id"`
+			Holder     string `json:"holder"`
+			TTLSeconds int    `json:"ttl_seconds"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.SessionID == "" {
+			http.Error(w, "session_id is required", http.StatusBadRequest)
+			return
+		}
+		if sm.GetSession(req.SessionID) == nil {
+			http.Error(w, "session not found: "+req.SessionID, http.StatusBadRequest)
+			return
+		}
+
+		c, err := sm.claims.Claim(req.SessionID, req.Holder, time.Duration(req.TTLSeconds)*time.Second)
+		if err != nil {
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"message": err.Error(),
+				"holder":  c.Holder,
+			})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"success":    true,
+			"session_id": req.SessionID,
+			"holder":     c.Holder,
+			"expires_at": c.ExpiresAt.Format(time.RFC3339),
+		})
+	})
+
+	// 4c. Release a session claim. The holder releases its own claim;
+	// force=true exists for the user's UI only (agents must never pass it).
+	mux.HandleFunc("/api/sessions/release", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+
+		if r.Method != http.MethodPost {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req struct {
+			SessionID string `json:"session_id"`
+			Holder    string `json:"holder"`
+			Force     bool   `json:"force"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.SessionID == "" {
+			http.Error(w, "session_id is required", http.StatusBadRequest)
+			return
+		}
+
+		if err := sm.claims.Release(req.SessionID, req.Holder, req.Force); err != nil {
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"success": true,
 		})
@@ -1779,6 +1883,7 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 			Message           string `json:"message"`
 			MediaPath         string `json:"media_path,omitempty"`
 			AllowUnknownBlast bool   `json:"allow_unknown_blast,omitempty"`
+			ClaimHolder       string `json:"claim_holder,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "Invalid request format", http.StatusBadRequest)
@@ -1804,6 +1909,9 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 			return
 		}
 
+		if !claimAllowsSend(w, sm, sess, req.ClaimHolder) {
+			return
+		}
 		if !guardAllowsSend(w, r, sess, req.Recipient, req.AllowUnknownBlast) {
 			return
 		}
@@ -1847,6 +1955,7 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 			Filename          string `json:"filename"`
 			DataB64           string `json:"data_b64"`
 			AllowUnknownBlast bool   `json:"allow_unknown_blast,omitempty"`
+			ClaimHolder       string `json:"claim_holder,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "Invalid request format", http.StatusBadRequest)
@@ -1878,6 +1987,10 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 		}
 		if sess.Client == nil {
 			http.Error(w, "WhatsApp session is not started yet - pair or reconnect first", http.StatusBadRequest)
+			return
+		}
+
+		if !claimAllowsSend(w, sm, sess, req.ClaimHolder) {
 			return
 		}
 
@@ -2225,6 +2338,7 @@ func startRESTServer(sm *SessionManager, listener net.Listener) {
 func main() {
 	logger := waLog.Stdout("Bridge", "INFO", true)
 	logger.Infof("Starting WhatsApp Multi-Account Bridge...")
+
 
 	dbLog := waLog.Stdout("Database", "ERROR", true)
 

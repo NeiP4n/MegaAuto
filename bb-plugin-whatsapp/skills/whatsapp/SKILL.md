@@ -30,7 +30,23 @@ List all paired accounts. Call this FIRST when multiple numbers exist or the use
 ```json
 {}
 ```
-Returns `[{ "id": "session_1763..._4821", "name": "Work", "phone": "12025551234", "status": "connected", "connected": true, "is_active": false }]`.
+Returns `[{ "id": "session_1763..._4821", "name": "Work", "phone": "12025551234", "status": "connected", "connected": true, "is_active": false, "claim_holder": "research-bot", "claim_expires_at": "..." }]` (`claim_holder`/`claim_expires_at` appear only on claimed sessions).
+
+#### `whatsapp_claim_session`
+Take an exclusive, time-limited claim on an account so other agents don't interleave sends on it while you work. Use it whenever you run a multi-step job on one account.
+```json
+{ "session_id": "session_1763..._4821", "holder": "my-agent-name", "ttl_seconds": 600 }
+```
+- Same holder re-claiming renews the TTL; a different holder gets a 409 naming the current holder.
+- The claim expires automatically (30 s - 1 h, default 10 min), so a crashed agent never wedges the account.
+- While a session is claimed, sends from other holders are rejected - pass your `holder` as `claim_holder` in `whatsapp_send_message` / `whatsapp_send_file`.
+- Claims stop AGENTS stepping on each other. The user's own UI sends always go through, and only the user can force-release from the plugin UI.
+
+#### `whatsapp_release_session`
+Release your claim when the job is done.
+```json
+{ "session_id": "session_1763..._4821", "holder": "my-agent-name" }
+```
 
 #### `whatsapp_status`
 Check bridge/account status and pairing state.
@@ -68,12 +84,13 @@ All take their usual ids plus optional `session_id`.
 
 #### `whatsapp_send_message`
 ```json
-{ "recipient": "+12025551234", "message": "Hello!", "session_id": "default" }
+{ "recipient": "+12025551234", "message": "Hello!", "session_id": "default", "claim_holder": "my-agent-name" }
 ```
+(`claim_holder` only if you claimed the session.)
 
 #### `whatsapp_send_file`
 ```json
-{ "recipient": "12025551234@s.whatsapp.net", "file_path": "C:/path/to/invoice.pdf", "caption": "Invoice", "session_id": "default" }
+{ "recipient": "12025551234@s.whatsapp.net", "file_path": "C:/path/to/invoice.pdf", "caption": "Invoice", "session_id": "default", "claim_holder": "my-agent-name" }
 ```
 
 #### `whatsapp_download_media`

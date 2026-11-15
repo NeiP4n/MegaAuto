@@ -21,6 +21,8 @@ export interface WhatsAppSessionInfo {
   qr: string;
   is_active: boolean;
   error?: string;
+  claim_holder?: string;
+  claim_expires_at?: string;
 }
 
 export interface WhatsAppStatus {
@@ -149,6 +151,13 @@ export const rpcContract = defineRpcContract({
       session_id: z.string(),
       appear_offline: z.boolean(),
     }),
+    output: z.object({
+      success: z.boolean(),
+      message: z.string().optional(),
+    }),
+  },
+  force_release_session: {
+    input: z.object({ session_id: z.string() }),
     output: z.object({
       success: z.boolean(),
       message: z.string().optional(),
@@ -714,6 +723,58 @@ export class WhatsAppBridgeController {
     }
   }
 
+  public async claimSession(
+    sessionId: string,
+    holder: string,
+    ttlSeconds?: number
+  ): Promise<{ success: boolean; message?: string; holder?: string; expires_at?: string }> {
+    await this.ensureRunning();
+    try {
+      const res = await fetch(`http://127.0.0.1:${this.bridgePort}/api/sessions/claim`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          session_id: sessionId,
+          holder,
+          ttl_seconds: ttlSeconds || 0,
+        }),
+        signal: AbortSignal.timeout(8000),
+      });
+      const data = (await res.json()) as Record<string, unknown>;
+      return {
+        success: Boolean(data.success),
+        message: typeof data.message === "string" ? data.message : undefined,
+        holder: typeof data.holder === "string" ? data.holder : undefined,
+        expires_at: typeof data.expires_at === "string" ? data.expires_at : undefined,
+      };
+    } catch (e) {
+      return { success: false, message: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
+  public async releaseSession(
+    sessionId: string,
+    holder: string,
+    force: boolean
+  ): Promise<{ success: boolean; message?: string }> {
+    await this.ensureRunning();
+    try {
+      const res = await fetch(`http://127.0.0.1:${this.bridgePort}/api/sessions/release`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, holder, force }),
+        signal: AbortSignal.timeout(8000),
+      });
+      const data = (await res.json()) as Record<string, unknown>;
+      return {
+        success: Boolean(data.success),
+        message: typeof data.message === "string" ? data.message : undefined,
+      };
+    } catch (e) {
+      return { success: false, message: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
   public async setAppearOffline(sessionId: string, appearOffline: boolean): Promise<{ success: boolean; message?: string }> {
     await this.ensureRunning();
     try {
@@ -981,7 +1042,8 @@ export class WhatsAppBridgeController {
     message: string,
     mediaPath?: string,
     sessionId?: string,
-    allowUnknownBlast?: boolean
+    allowUnknownBlast?: boolean,
+    claimHolder?: string
   ): Promise<{ success: boolean; message: string; id?: string; timestamp?: string; chat_jid?: string }> {
     await this.ensureRunning();
     try {
@@ -994,6 +1056,7 @@ export class WhatsAppBridgeController {
           message,
           media_path: mediaPath || "",
           allow_unknown_blast: allowUnknownBlast || undefined,
+          claim_holder: claimHolder || undefined,
         }),
         // The bridge serializes sends per session with min spacing, so a
         // queued send can legitimately take tens of seconds.
@@ -1021,7 +1084,8 @@ export class WhatsAppBridgeController {
     mimeType: string,
     filename: string,
     caption: string,
-    sessionId?: string
+    sessionId?: string,
+    claimHolder?: string
   ): Promise<{ success: boolean; message: string; id?: string; timestamp?: string; chat_jid?: string }> {
     await this.ensureRunning();
     try {
@@ -1035,6 +1099,7 @@ export class WhatsAppBridgeController {
           mime_type: mimeType,
           filename,
           data_b64: dataBase64,
+          claim_holder: claimHolder || undefined,
         }),
         // Media uploads can take a while on slow links.
         signal: AbortSignal.timeout(120000),
@@ -1323,6 +1388,9 @@ export default async function plugin(bb: BbPluginApi) {
     async set_appear_offline(input) {
       return await bridge.setAppearOffline(input.session_id, input.appear_offline);
     },
+    async force_release_session(input) {
+      return await bridge.releaseSession(input.session_id, "ui", true);
+    },
     async restart_session(input) {
       return await bridge.restartSession(input.session_id);
     },
@@ -1351,7 +1419,7 @@ export default async function plugin(bb: BbPluginApi) {
       return await bridge.fetchChatHistory(input.chat_jid, input.count ?? 50, input.session_id);
     },
     async send_message(input) {
-      return await bridge.sendMessage(input.recipient, input.message, input.media_path, input.session_id);
+      return await bridge.sendMessage(input.recipient, input.message, input.media_path, input.session_id, undefined, "ui");
     },
     async send_media(input) {
       return await bridge.sendMedia(
@@ -1360,7 +1428,8 @@ export default async function plugin(bb: BbPluginApi) {
         input.mime_type ?? "",
         input.filename ?? "",
         input.caption ?? "",
-        input.session_id
+        input.session_id,
+        "ui"
       );
     },
     async download_media(input) {
@@ -1481,6 +1550,47 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
+  // 0b. whatsapp_claim_session
+  registerToolLogged({
+    name: "whatsapp_claim_session",
+    description: "Take an exclusive, time-limited claim on a WhatsApp account so other agents don't interleave sends on it. Re-calling with the same holder renews the claim. Release it with whatsapp_release_session when done. The claim expires automatically (default 10 minutes, max 1 hour), so a crashed agent never wedges the account. The account list from whatsapp_list_accounts shows who currently holds each session.",
+    parameters: z.object({
+      session_id: z.string().min(1).describe("Account session id from whatsapp_list_accounts"),
+      holder: z.string().min(1).describe("Your agent name - other agents see it as the claim owner, and you pass it as claim_holder when sending"),
+      ttl_seconds: z.number().optional().describe("How long the claim lasts (30-3600 seconds, default 600)"),
+    }),
+    presentation: {
+      label: {
+        pending: "Claiming WhatsApp session",
+        completed: "Claimed WhatsApp session",
+      },
+    },
+    execute: async ({ session_id, holder, ttl_seconds }) => {
+      const res = await bridge.claimSession(session_id, holder, ttl_seconds);
+      return JSON.stringify(res, null, 2);
+    },
+  });
+
+  // 0c. whatsapp_release_session
+  registerToolLogged({
+    name: "whatsapp_release_session",
+    description: "Release your claim on a WhatsApp account taken with whatsapp_claim_session. Only the holder can release it (the user can force-release from the plugin UI).",
+    parameters: z.object({
+      session_id: z.string().min(1).describe("Account session id from whatsapp_list_accounts"),
+      holder: z.string().min(1).describe("The holder name used in whatsapp_claim_session"),
+    }),
+    presentation: {
+      label: {
+        pending: "Releasing WhatsApp session",
+        completed: "Released WhatsApp session",
+      },
+    },
+    execute: async ({ session_id, holder }) => {
+      const res = await bridge.releaseSession(session_id, holder, false);
+      return JSON.stringify(res, null, 2);
+    },
+  });
+
   // 1. whatsapp_status
   registerToolLogged({
     name: "whatsapp_status",
@@ -1571,6 +1681,7 @@ export default async function plugin(bb: BbPluginApi) {
       message: z.string().min(1).describe("The text message content to send"),
       allow_unknown_blast: z.boolean().optional().describe("Override the first-time-recipient hourly cap (max 5 new numbers/hour). Only set when the user explicitly asked to message many new contacts - bulk cold messaging gets WhatsApp accounts banned."),
       session_id: z.string().optional().describe("Target account session id from whatsapp_list_accounts. Omit to use the active account."),
+      claim_holder: z.string().optional().describe("Your agent name if you hold a session claim from whatsapp_claim_session - sends on a session claimed by another agent are rejected."),
     }),
     presentation: {
       label: {
@@ -1578,8 +1689,8 @@ export default async function plugin(bb: BbPluginApi) {
         completed: "Sent WhatsApp message",
       },
     },
-    execute: async ({ recipient, message, allow_unknown_blast, session_id }) => {
-      const res = await bridge.sendMessage(recipient, message, undefined, session_id, allow_unknown_blast);
+    execute: async ({ recipient, message, allow_unknown_blast, session_id, claim_holder }) => {
+      const res = await bridge.sendMessage(recipient, message, undefined, session_id, allow_unknown_blast, claim_holder);
       return JSON.stringify(res, null, 2);
     },
   });
@@ -1594,6 +1705,7 @@ export default async function plugin(bb: BbPluginApi) {
       caption: z.string().optional().describe("Optional caption for the file"),
       allow_unknown_blast: z.boolean().optional().describe("Override the first-time-recipient hourly cap. Only set when the user explicitly asked for bulk messaging to new contacts."),
       session_id: z.string().optional().describe("Target account session id from whatsapp_list_accounts. Omit to use the active account."),
+      claim_holder: z.string().optional().describe("Your agent name if you hold a session claim from whatsapp_claim_session."),
     }),
     presentation: {
       label: {
@@ -1601,8 +1713,8 @@ export default async function plugin(bb: BbPluginApi) {
         completed: "Sent file via WhatsApp",
       },
     },
-    execute: async ({ recipient, file_path, caption = "", allow_unknown_blast, session_id }) => {
-      const res = await bridge.sendMessage(recipient, caption, file_path, session_id, allow_unknown_blast);
+    execute: async ({ recipient, file_path, caption = "", allow_unknown_blast, session_id, claim_holder }) => {
+      const res = await bridge.sendMessage(recipient, caption, file_path, session_id, allow_unknown_blast, claim_holder);
       return JSON.stringify(res, null, 2);
     },
   });
@@ -1870,7 +1982,7 @@ export default async function plugin(bb: BbPluginApi) {
         if (!recipient || !filePath) {
           return { exitCode: 1, stderr: "Usage: bb whatsapp send-file <recipient> <path> [caption] [--session <id>]" };
         }
-        const res = await bridge.sendMessage(recipient, caption, filePath, cliSession);
+        const res = await bridge.sendMessage(recipient, caption, filePath, cliSession, undefined, "cli");
         return { exitCode: res.success ? 0 : 1, stdout: res.message };
       }
 
@@ -1880,7 +1992,7 @@ export default async function plugin(bb: BbPluginApi) {
         if (!recipient || !message) {
           return { exitCode: 1, stderr: "Usage: bb whatsapp send <recipient> <message> [--session <id>]" };
         }
-        const res = await bridge.sendMessage(recipient, message, undefined, cliSession);
+        const res = await bridge.sendMessage(recipient, message, undefined, cliSession, undefined, "cli");
         return { exitCode: res.success ? 0 : 1, stdout: res.message };
       }
 

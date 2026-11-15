@@ -34,6 +34,8 @@ type SessionInfo struct {
 	Pairing       bool   `json:"pairing"`
 	Syncing       bool   `json:"syncing"`
 	AppearOffline bool   `json:"appear_offline"`
+	ClaimHolder   string `json:"claim_holder,omitempty"`
+	ClaimExpires  string `json:"claim_expires_at,omitempty"`
 }
 
 type SessionMeta struct {
@@ -163,6 +165,7 @@ func (s *Session) GetInfo(isActive bool) SessionInfo {
 
 // SessionManager coordinates multiple WhatsApp accounts/sessions
 type SessionManager struct {
+	claims *claimRegistry
 	sessions map[string]*Session
 	activeID string
 	mu       sync.RWMutex
@@ -186,6 +189,7 @@ func NewSessionManager(logger waLog.Logger, dbLog waLog.Logger) (*SessionManager
 
 	sm := &SessionManager{
 		sessions: make(map[string]*Session),
+		claims:   newClaimRegistry(),
 		activeID: "default",
 		metaPath: "store/sessions.json",
 		logger:   logger,
@@ -502,7 +506,12 @@ func (sm *SessionManager) ListSessions() []SessionInfo {
 
 	var list []SessionInfo
 	for _, s := range ordered {
-		list = append(list, s.GetInfo(s.ID == sm.activeID))
+		info := s.GetInfo(s.ID == sm.activeID)
+		if c, ok := sm.claims.Of(s.ID); ok {
+			info.ClaimHolder = c.Holder
+			info.ClaimExpires = c.ExpiresAt.Format(time.RFC3339)
+		}
+		list = append(list, info)
 	}
 	return list
 }

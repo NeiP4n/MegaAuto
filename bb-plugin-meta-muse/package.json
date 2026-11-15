@@ -19,6 +19,10 @@
       "skills/meta-muse"
     ]
   },
+  "scripts": {
+    "build": "bb plugin build",
+    "check": "tsc --noEmit"
+  },
   "dependencies": {
     "zod": "^4.6.5"
   },

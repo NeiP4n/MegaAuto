@@ -218,12 +218,7 @@ export function VmMemoryTab({
                     {vmStatus.activeProcesses[0]?.cpu || 0} мс
                   </span>
                 </div>
-                <div className="w-full bg-[#0B0E14] rounded-full h-2 overflow-hidden border border-slate-800">
-                  <div
-                    className="h-full bg-gradient-to-r from-[#0866FF] to-[#E03E93] transition-all duration-300"
-                    style={{ width: "100%" }}
-                  />
-                </div>
+                <div className="border-t border-slate-800/80 my-1" />
                 <div className="flex justify-between text-[10px] font-mono text-slate-500">
                   <span>Квота ЦП не измеряется</span>
                   <span>Накопленное время Node.js</span>

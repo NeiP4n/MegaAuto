@@ -608,6 +608,16 @@ func (sm *SessionManager) RestartSession(id string) (SessionInfo, error) {
 		sess.MessageStore.Close()
 	}
 
+	// If this session was logged out or unpaired, wipe the old whatsapp.db
+	// so the fresh pairing starts with a pristine app-state and no stale hashes
+	// (which causes "failed to decode app state: invalid use of deleted device").
+	if sess.ID != "default" {
+		_ = os.Remove(filepath.Join(sess.StoreDir, "whatsapp.db"))
+		_ = os.Remove(filepath.Join(sess.StoreDir, "whatsapp.db-journal"))
+		_ = os.Remove(filepath.Join(sess.StoreDir, "whatsapp.db-wal"))
+		_ = os.Remove(filepath.Join(sess.StoreDir, "whatsapp.db-shm"))
+	}
+
 	fresh, err := sm.initSession(sess.ID, sess.Name)
 	if err != nil {
 		delete(sm.sessions, id)

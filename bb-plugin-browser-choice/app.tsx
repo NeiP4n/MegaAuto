@@ -51,25 +51,17 @@ export function BrowserView() {
     port: number;
     error: string | null;
   }>({
+    // Empty until the first real get_status poll - no fake tab bar.
     running: false,
-    activeTabId: "tab-1",
-    tabs: [
-      {
-        id: "tab-1",
-        url: "https://news.ycombinator.com",
-        title: "Hacker News",
-        canGoBack: false,
-        canGoForward: false,
-        isLoading: false,
-      },
-    ],
-    currentUrl: "https://news.ycombinator.com",
-    currentTitle: "Hacker News",
+    activeTabId: "",
+    tabs: [],
+    currentUrl: "",
+    currentTitle: "",
     screenshot: null,
     stealth: false,
     canGoBack: false,
     canGoForward: false,
-    version: "0.2.6",
+    version: "",
     port: 9222,
     error: null,
   });

@@ -15,7 +15,7 @@ const QUICK_PROMPTS = [
   "Как создать Telegram-бота в n8n?",
   "Напиши JS-код для Code ноды (парсинг JSON)",
   "Проверь статус локального n8n и базу SQLite",
-  "Что умеет Gemini 3.8 Flash ACP в связке с n8n?",
+  "Что умеет AI-агент в связке с n8n?",
 ];
 
 export function AiChatTab({
@@ -103,7 +103,7 @@ export function AiChatTab({
               AI Агент n8n готов к диалогу
             </h3>
             <p className="text-[11px] text-muted-foreground mt-0.5 mb-3 leading-relaxed">
-              Модель <span className="text-primary font-mono font-medium">Gemini 3.8 Flash ACP</span> подключена к n8n.
+              AI-агент отвечает через ваш локальный n8n webhook.
             </p>
 
             {/* Quick Prompts */}
@@ -146,7 +146,7 @@ export function AiChatTab({
                   {/* Sender Header */}
                   <div className="flex items-center justify-between gap-3 text-[10px] text-muted-foreground mb-1">
                     <span className="font-semibold text-foreground/80">
-                      {isUser ? "Вы (Оператор)" : msg.senderName || "Gemini 3.8 Flash"}
+                      {isUser ? "Вы (Оператор)" : msg.senderName || "Агент"}
                     </span>
                     <span className="font-mono">{msg.timestamp}</span>
                   </div>
@@ -163,8 +163,12 @@ export function AiChatTab({
                         <SvgZap className="w-3 h-3" />
                         {msg.metadata.durationMs}ms
                       </span>
-                      <span>•</span>
-                      <span>engine: n8n VM</span>
+                      {msg.metadata?.workflowName && (
+                        <>
+                          <span>•</span>
+                          <span>{msg.metadata.workflowName}</span>
+                        </>
+                      )}
                     </div>
                   )}
                 </div>
@@ -187,7 +191,7 @@ export function AiChatTab({
             </div>
             <div className="bg-card/70 border border-primary/30 rounded-xl px-3.5 py-2.5 flex items-center gap-2 text-xs text-primary">
               <SvgActivity className="w-3.5 h-3.5 animate-spin text-primary" />
-              <span>Gemini 3.8 Flash обрабатывает запрос в n8n...</span>
+              <span>Агент обрабатывает запрос в n8n...</span>
             </div>
           </div>
         )}
@@ -220,7 +224,7 @@ export function AiChatTab({
 
         <div className="flex items-center justify-between text-[10px] text-muted-foreground px-1 mt-1 font-mono">
           <span>Enter — отправить</span>
-          <span className="text-primary/70 hidden sm:inline">Gemini 3.8 Flash • ACP</span>
+          <span className="text-primary/70 hidden sm:inline">n8n AI webhook</span>
         </div>
       </div>
     </div>

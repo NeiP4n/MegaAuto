@@ -281,7 +281,7 @@ class RadarEngine {
         statusDescription: "Нет активных задач в текущем диалоге.",
         elapsedSeconds: 0,
         conversationId: convId || "none",
-        model: "gemini-3.8-flash",
+        model: "unknown",
         recentSteps: [],
         turnStepCount: 0,
       };
@@ -289,7 +289,8 @@ class RadarEngine {
 
     const steps: z.infer<typeof agentStepSchema>[] = [];
     let lastTokens: { input?: number; output?: number; cacheRead?: number } | undefined = undefined;
-    let modelName = "gemini-3.8-flash";
+    // No fake default: the model is shown only once the transcript names it.
+    let modelName = "unknown";
 
     for (let i = 0; i < rawLines.length; i++) {
       const line = rawLines[i];

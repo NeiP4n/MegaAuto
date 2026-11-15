@@ -402,7 +402,9 @@ function getInitialStore(): StoreData {
       name: "Локальный n8n (Master)",
       channel: "n8n",
       url: "http://localhost:5678",
-      status: "online",
+      // Honest default: nothing has been probed yet, the first ping sets
+      // the real status.
+      status: "offline",
       workflowsCount: 0,
       executionsCount: 0,
       unreadTotal: 0,
@@ -2108,7 +2110,12 @@ export default function (bb: BbPluginApi) {
         latencyMs = Date.now() - start;
         if (res.ok) {
           const data = (await res.json().catch(() => ({}))) as any;
-          reply = data.reply || data.output || data.message || "Ответ получен от n8n AI Агента";
+          reply = data.reply || data.output || data.message || "";
+          if (!reply) {
+            // A 200 with no text is not an answer - say so honestly instead
+            // of inventing a canned reply.
+            throw new Error("n8n AI webhook вернул пустой ответ (HTTP 200 без reply/output/message)");
+          }
         } else {
           throw new Error(`HTTP ${res.status}: ${res.statusText}`);
         }
@@ -2118,12 +2125,12 @@ export default function (bb: BbPluginApi) {
           id: `ai-msg-gemini-${Date.now()}`,
           projectId: "proj-n8n-gemini-chat",
           sender: "agent",
-          senderName: "Gemini 3.8 Flash",
+          senderName: model,
           text: reply,
           timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
           status: "delivered",
           metadata: {
-            workflowName: "AI Chat Agent (Gemini 3.8 Flash ACP)",
+            workflowName: `ai-chat webhook (${model})`,
             durationMs: latencyMs,
             status: "success",
           },

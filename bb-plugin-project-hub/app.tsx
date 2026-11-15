@@ -380,7 +380,7 @@ export function ProjectHubView() {
             id: `ai-msg-bot-${Date.now()}`,
             projectId: "proj-n8n-gemini-chat",
             sender: "agent",
-            senderName: "Gemini 3.8 Flash ACP",
+            senderName: "n8n AI",
             text: res.reply || "",
             timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
             status: "delivered",
@@ -636,7 +636,7 @@ export function ProjectHubView() {
             {columnTab === "chat" ? (
               <div className="flex items-center gap-2 min-w-0 shrink">
                 <span className="hidden sm:inline-block px-1.5 py-0.5 rounded text-[10px] font-mono font-medium bg-primary/10 text-primary border border-primary/20 truncate max-w-[140px]">
-                  Gemini 3.8 Flash
+                  n8n AI
                 </span>
                 <div className="flex items-center gap-1.5 text-[11px] font-mono text-muted-foreground shrink-0">
                   <span

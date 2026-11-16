@@ -1543,11 +1543,13 @@ function tryClearStuckReclaimMutex(): boolean {
     // the guard holder removes stuck mutexes - this removal cannot hit a
     // fresh mutex.
     let stillStuck = false;
+    let approvedRaw: string | null = null; // exact dead token approved for removal (null = TTL-approved absent/unparsable)
     try {
       const raw = fs.readFileSync(path.join(mutex, "pid"), "utf-8").trim();
       const n = parseInt(raw, 10);
       if (!isNaN(n) && n > 0) {
         stillStuck = !pidAlive(n);
+        if (stillStuck) approvedRaw = raw;
       } else {
         // Read but unparsable: an acquisition crashed between mkdir and
         // its token write - no live owner can exist behind it. Age-based,
@@ -1586,6 +1588,33 @@ function tryClearStuckReclaimMutex(): boolean {
       // now could leave a live lock owner without its lock.
       appendServerLog("Reclaim n8n lock: recovery отменено - захват не восстановлен, зависший мьютекс сохранён");
       return false;
+    }
+    // Final fence immediately before removal: the mutex must STILL be in
+    // the exact state we approved - the same dead token (pid re-checked),
+    // or still without a live owner for the TTL-approved case. A live pid,
+    // a changed token or a vanished token all mean "hands off": the guard
+    // already serializes recoverers, this is the second line against the
+    // residual guard TOCTOU (S10).
+    let finalOk = false;
+    try {
+      const raw = fs.readFileSync(path.join(mutex, "pid"), "utf-8").trim();
+      if (approvedRaw !== null) {
+        finalOk = raw === approvedRaw && !pidAlive(parseInt(raw, 10));
+      } else {
+        const n = parseInt(raw, 10);
+        finalOk = isNaN(n) || n <= 0 || !pidAlive(n);
+      }
+    } catch (e: any) {
+      if (e?.code === "ENOENT") {
+        finalOk = approvedRaw === null; // token vanished: only what we approved
+      } else {
+        appendServerLog(`Reclaim n8n mutex: токен не читается перед снятием (${e?.message || e}) - recovery отменено (fail-closed)`);
+        return false;
+      }
+    }
+    if (!finalOk) {
+      appendServerLog("Reclaim n8n mutex: состояние мьютекса изменилось за время recovery - чужой не удаляем");
+      return true;
     }
     try { fs.unlinkSync(path.join(mutex, "pid")); } catch {}
     try {

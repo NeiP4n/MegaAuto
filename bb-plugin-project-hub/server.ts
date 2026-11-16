@@ -1487,8 +1487,16 @@ function tryClearStuckReclaimMutex(): boolean {
       try {
         const cur = fs.readFileSync(path.join(guard, "pid"), "utf-8").trim();
         if (cur === graw && !pidAlive(gpid)) {
-          try { fs.unlinkSync(path.join(guard, "pid")); } catch {}
-          try { fs.rmdirSync(guard); } catch {}
+          // Final fence immediately before removal: re-read exact token and re-check dead pid
+          let deadGuardFinalOk = false;
+          try {
+            const curFinal = fs.readFileSync(path.join(guard, "pid"), "utf-8").trim();
+            deadGuardFinalOk = curFinal === graw && !pidAlive(gpid);
+          } catch {}
+          if (deadGuardFinalOk) {
+            try { fs.unlinkSync(path.join(guard, "pid")); } catch {}
+            try { fs.rmdirSync(guard); } catch {}
+          }
         }
       } catch {}
       continue;
@@ -1511,6 +1519,8 @@ function tryClearStuckReclaimMutex(): boolean {
           const curMtime = fs.statSync(guard).mtimeMs;
           if (Date.now() - curMtime < RECLAIM_MUTEX_STALE_MS) continue; // replaced by a fresh guard
           let removable = true;
+          let approvedGuardToken: string | null = null;
+          let approvedGuardAbsent = false;
           try {
             const raw2 = fs.readFileSync(path.join(guard, "pid"), "utf-8").trim();
             if (!raw2) {
@@ -1519,14 +1529,37 @@ function tryClearStuckReclaimMutex(): boolean {
               const n2 = parseInt(raw2, 10);
               if (isNaN(n2) || n2 <= 0 || pidAlive(n2)) {
                 removable = false; // corrupt/unparsable or live owner: fail-closed, keep
+              } else {
+                approvedGuardToken = raw2;
               }
             }
           } catch (e2: any) {
-            if (e2?.code !== "ENOENT") removable = false; // unreadable != deletable
+            if (e2?.code !== "ENOENT") {
+              removable = false; // unreadable != deletable
+            } else {
+              approvedGuardAbsent = true;
+            }
           }
           if (removable) {
-            try { fs.unlinkSync(path.join(guard, "pid")); } catch {}
-            try { fs.rmdirSync(guard); } catch {}
+            // Final fence immediately before guard removal (matching mutex S10 fence pattern):
+            let guardFinalOk = false;
+            try {
+              const curGuard = fs.readFileSync(path.join(guard, "pid"), "utf-8").trim();
+              if (approvedGuardToken !== null) {
+                const n3 = parseInt(curGuard, 10);
+                guardFinalOk = curGuard === approvedGuardToken && !isNaN(n3) && n3 > 0 && !pidAlive(n3);
+              } else {
+                guardFinalOk = false; // was absent, any token now means a fresh guard
+              }
+            } catch (e3: any) {
+              if (e3?.code === "ENOENT") {
+                guardFinalOk = approvedGuardAbsent;
+              }
+            }
+            if (guardFinalOk) {
+              try { fs.unlinkSync(path.join(guard, "pid")); } catch {}
+              try { fs.rmdirSync(guard); } catch {}
+            }
           }
           continue;
         }

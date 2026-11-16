@@ -1237,7 +1237,7 @@ function tryAcquireReclaimMutex(mutex: string, token: string): boolean {
       let canUnlink = false;
       try {
         const cur = fs.readFileSync(p, "utf-8");
-        canUnlink = cur === token;
+        canUnlink = token.startsWith(cur);
       } catch (e: any) {
         if (e?.code === "ENOENT") canUnlink = true; // nothing inside - just rmdir
       }
@@ -1362,7 +1362,12 @@ function tryClearStuckReclaimMutex(): boolean {
             appendServerLog(`Reclaim n8n mutex: токен внутри aside (${f}) не читается - fail-closed`);
             return false;
           }
-          if (asidePid !== expectedPid) {
+          // The inner token belongs to the STUCK OWNER, the filename pid
+          // to the crashed recoverer - equality between them can never
+          // hold by design. What matters: never delete while the inner
+          // pid is alive (PID reuse), and never delete blind when the
+          // token is absent or unparsable - keep the dir instead.
+          if (asidePid === null || pidAlive(asidePid)) {
             continue;
           }
           if (!restoreOrphanedReclaimCapture()) {
@@ -1388,7 +1393,10 @@ function tryClearStuckReclaimMutex(): boolean {
             if (e?.code !== "ENOENT") unreadable = true;
           }
           if (unreadable) return false;
-          if (asidePid !== expectedPid) {
+          // Same asymmetry as above: inner token = dead guard owner,
+          // filename pid = crashed recoverer. Skip when the inner pid is
+          // alive or unknown - never delete blind.
+          if (asidePid === null || pidAlive(asidePid)) {
             continue;
           }
           try { fs.unlinkSync(path.join(p, "pid")); } catch {}

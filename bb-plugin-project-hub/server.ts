@@ -1048,13 +1048,14 @@ function findPortPidTri(port: number = 5678): { state: "free" } | { state: "occu
         // also hits :15678/:56780 and returns someone else's PID.
         if (!line.includes("LISTENING")) continue;
         const parts = line.trim().split(/\s+/);
-        if (parts.length < 5) continue;
-        const localAddr = parts[1];
+        const localAddr = parts.length >= 2 ? parts[1] : "";
         if (!localAddr || !localAddr.endsWith(`:${port}`)) continue;
-        const pid = parseInt(parts[parts.length - 1], 10);
-        // A LISTENING line on our port whose PID does not parse means the
-        // output format surprised us: unknown, never "free".
-        if (isNaN(pid) || pid <= 0) return { state: "unknown" };
+        // Found a LISTENING line on target port! Parse PID from last column:
+        const pid = parts.length >= 5 ? parseInt(parts[parts.length - 1], 10) : NaN;
+        if (isNaN(pid) || pid <= 0) {
+          // LISTENING on our port but PID cannot be parsed: unknown, never "free"
+          return { state: "unknown" };
+        }
         return { state: "occupied", pid };
       }
       return { state: "free" };

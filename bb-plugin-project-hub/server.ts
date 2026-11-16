@@ -1325,15 +1325,12 @@ function restoreOrphanedReclaimCapture(): boolean {
 // moved aside - so the mutex path is never observably empty and no fresh
 // mutex can appear mid-recovery (case R08). The guard serializes
 // recoverers; every removal re-checks the exact token and the dead pid
-// (or age, for absent/unparsable tokens) immediately beforehand, which
-// shrinks the verify->remove race to a syscall-scale TOCTOU whose impact
-// is bounded: every mutation inside the critical section is re-verified
-// or idempotent (the stillStuck re-check, ENOENT-tolerant unlink/rmdir,
-// token-checked release), so no foreign live mutex or lock content can
-// be lost through it. A crashed recoverer leaves a dead-owner guard,
-// which the next recoverer clears the same way (dead-pid re-check right
-// before removal, then atomic mkdir - only one winner). No recursive rm
-// on any shared path: token file unlink + rmdir (empty-dir only).
+// (or age, for absent/unparsable tokens) immediately beforehand.
+// Clearing a dead/stale guard itself uses an atomic directory rename to a
+// private path (`guard.cleanup-${process.pid}`): the rename winner cleans
+// its private copy, concurrent cleaners catch ENOENT and back off, and any
+// fresh guard at the canonical path is immune to delayed unlinks.
+// No recursive rm on any shared path: token file unlink + rmdir (empty-dir only).
 function tryClearStuckReclaimMutex(): boolean {
   if (!n8nLockFile) return true;
   const mutex = reclaimMutexPath();
@@ -1386,7 +1383,7 @@ function tryClearStuckReclaimMutex(): boolean {
           try { fs.rmdirSync(p); } catch {}
         }
       }
-      const mg = f.match(new RegExp(`^${base.replace(/\./g, "\\.")}\\.recovery-guard\\.removing-(\\d+)$`));
+      const mg = f.match(new RegExp(`^${base.replace(/\./g, "\\.")}\\.recovery-guard\\.(?:removing|cleanup)-(\\d+)$`));
       if (mg) {
         const expectedPid = parseInt(mg[1], 10);
         if (!pidAlive(expectedPid)) {
@@ -1477,13 +1474,11 @@ function tryClearStuckReclaimMutex(): boolean {
     }
     if (gpid !== null && graw !== null) {
       if (pidAlive(gpid)) return true; // another recoverer is working
-      // Remove the dead guard IN PLACE - never rename it aside: an aside
-      // window would leave the guard path observably empty, and a fresh
-      // mkdir could then admit a second recoverer into the critical
-      // section while the aside is being verified (the R08-class window
-      // this design removed for the mutex itself). Re-read the EXACT
-      // token immediately before removal: a fresh guard (alive owner, or
-      // any instance that replaced the approved one) is never removed.
+      // Atomically move the dead guard aside to a private cleanup path
+      // (`guard.cleanup-${process.pid}`) before removal. The winner of
+      // renameSync owns the private copy, concurrent cleaners catch ENOENT
+      // and abort, and a fresh canonical guard created by another process
+      // is guaranteed never to be touched by a delayed unlink.
       try {
         const cur = fs.readFileSync(path.join(guard, "pid"), "utf-8").trim();
         if (cur === graw && !pidAlive(gpid)) {
@@ -1494,8 +1489,14 @@ function tryClearStuckReclaimMutex(): boolean {
             deadGuardFinalOk = curFinal === graw && !pidAlive(gpid);
           } catch {}
           if (deadGuardFinalOk) {
-            try { fs.unlinkSync(path.join(guard, "pid")); } catch {}
-            try { fs.rmdirSync(guard); } catch {}
+            const cleanupGuard = `${guard}.cleanup-${process.pid}`;
+            try {
+              fs.renameSync(guard, cleanupGuard);
+            } catch {
+              continue; // Lost rename race to another cleaner
+            }
+            try { fs.unlinkSync(path.join(cleanupGuard, "pid")); } catch {}
+            try { fs.rmdirSync(cleanupGuard); } catch {}
           }
         }
       } catch {}
@@ -1561,8 +1562,15 @@ function tryClearStuckReclaimMutex(): boolean {
               }
             }
             if (guardFinalOk) {
-              try { fs.unlinkSync(path.join(guard, "pid")); } catch {}
-              try { fs.rmdirSync(guard); } catch {}
+              // Atomic rename to private cleanup path serializes cleaners and protects fresh canonical guard
+              const cleanupGuard = `${guard}.cleanup-${process.pid}`;
+              try {
+                fs.renameSync(guard, cleanupGuard);
+              } catch {
+                continue; // Lost rename race to another cleaner
+              }
+              try { fs.unlinkSync(path.join(cleanupGuard, "pid")); } catch {}
+              try { fs.rmdirSync(cleanupGuard); } catch {}
             }
           }
           continue;

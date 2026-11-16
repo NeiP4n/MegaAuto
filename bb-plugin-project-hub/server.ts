@@ -1188,10 +1188,13 @@ function writeN8nLock(rec: N8nLockRecord, expected?: N8nLockRecord | null): bool
 
 // Reclaim mutex: a directory created with mkdirSync (atomic, EEXIST when
 // held). BOTH creating the lock and reclaiming a stale one happen only
-// while holding it, so there is never a window in which the lock file is
-// absent and a second process can create a competing one. mkdir sets the
-// mtime at creation, so a mutex abandoned by a crashed reclaimer is
-// detected by age and cleared (empty-dir rmdir only - always safe).
+// while holding it, so a competing lock cannot appear between the
+// ownership check and the create/delete. A mutex whose owner token shows
+// a DEAD pid is reclaimed by the stuck-mutex recovery below; age (mtime
+// at creation) is only the fallback for absent, unparsable or
+// legacy-format tokens - a token with a LIVE pid is never cleared,
+// however old it is. Removal is always unlink(token) + empty-dir rmdir,
+// never recursive.
 const RECLAIM_MUTEX_STALE_MS = 30000;
 
 function reclaimMutexPath(): string {
@@ -1321,11 +1324,16 @@ function restoreOrphanedReclaimCapture(): boolean {
 // own owner token), and the stuck mutex is removed IN PLACE - never
 // moved aside - so the mutex path is never observably empty and no fresh
 // mutex can appear mid-recovery (case R08). The guard serializes
-// recoverers, so the verify->remove sequence cannot span someone else's
-// fresh mutex. A crashed recoverer leaves a dead-owner guard, which the
-// next recoverer clears the same way (dead-pid re-check right before
-// removal, then atomic mkdir - only one winner). No recursive rm on any
-// shared path: token file unlink + rmdir (empty-dir only).
+// recoverers; every removal re-checks the exact token and the dead pid
+// (or age, for absent/unparsable tokens) immediately beforehand, which
+// shrinks the verify->remove race to a syscall-scale TOCTOU whose impact
+// is bounded: every mutation inside the critical section is re-verified
+// or idempotent (the stillStuck re-check, ENOENT-tolerant unlink/rmdir,
+// token-checked release), so no foreign live mutex or lock content can
+// be lost through it. A crashed recoverer leaves a dead-owner guard,
+// which the next recoverer clears the same way (dead-pid re-check right
+// before removal, then atomic mkdir - only one winner). No recursive rm
+// on any shared path: token file unlink + rmdir (empty-dir only).
 function tryClearStuckReclaimMutex(): boolean {
   if (!n8nLockFile) return true;
   const mutex = reclaimMutexPath();

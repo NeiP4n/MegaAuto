@@ -1146,36 +1146,58 @@ function releaseN8nLock(pid: number): void {
   }
 }
 
-// Acquire the manager lock atomically (O_EXCL). Fail-closed: when the lock
-// cannot be created because a live holder exists, the start must NOT
-// proceed. Stale locks (dead holder, or a PID now belonging to an unrelated
-// process) are taken over without ever signalling that process.
+// How long an unreadable lock file is treated as "someone is mid-write":
+// fail-closed within the grace window, garbage-collected after it.
+const LOCK_GRACE_MS = 10000;
+
+// Acquire the manager lock atomically. The file is created WITH its content
+// in one atomic step (write tmp + hard-link into place): a concurrent
+// acquirer never sees an empty or half-written lock. Fail-closed: when the
+// lock cannot be acquired, the start must NOT proceed. Stale locks (dead
+// holder, or a PID now belonging to an unrelated process) are taken over
+// without ever signalling that process. Unreadable locks are NOT deleted
+// inside the grace window.
 function acquireN8nManagerLock(): { ok: true } | { ok: false; reason: string } {
   if (!n8nLockFile) {
     return { ok: false, reason: "каталог данных плагина недоступен (lock-файл не инициализирован)" };
   }
   const myRec: N8nLockRecord = { pid: process.pid, manager: true, createdAt: new Date().toISOString() };
+  const payload = JSON.stringify(myRec);
+  const tmpFile = `${n8nLockFile}.${process.pid}.tmp`;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const fd = fs.openSync(n8nLockFile, "wx");
-      try {
-        fs.writeFileSync(fd, JSON.stringify(myRec), "utf-8");
-      } finally {
-        fs.closeSync(fd);
-      }
+      fs.writeFileSync(tmpFile, payload, { encoding: "utf-8", mode: 0o600 });
+      // Atomic create-with-content: fails with EEXIST if a holder exists,
+      // and the linked file already carries the full JSON.
+      fs.linkSync(tmpFile, n8nLockFile);
+      try { fs.unlinkSync(tmpFile); } catch {}
       return { ok: true };
     } catch (e: any) {
+      try { fs.unlinkSync(tmpFile); } catch {}
       if (e?.code !== "EEXIST") {
         return { ok: false, reason: `не удалось создать lock-файл: ${e?.message || e}` };
       }
     }
 
+    // Someone holds the lock: inspect it.
+    let mtimeMs = 0;
+    try {
+      mtimeMs = fs.statSync(n8nLockFile).mtimeMs;
+    } catch {
+      continue; // disappeared between link attempt and stat - retry
+    }
     const rec = readN8nLock();
     if (!rec) {
-      // Garbage or unreadable content: remove and retry creation.
-      try {
-        fs.unlinkSync(n8nLockFile);
-      } catch {}
+      // Unreadable/empty content. Fail closed while fresh (another process
+      // may legitimately own it); collect as garbage only after the grace.
+      if (Date.now() - mtimeMs < LOCK_GRACE_MS) {
+        return {
+          ok: false,
+          reason: "lock n8n занят (запись формируется другим процессом) - повторите через несколько секунд",
+        };
+      }
+      appendServerLog("Lock n8n содержит нечитаемую запись старше grace-периода - подбираем как мусор");
+      try { fs.unlinkSync(n8nLockFile); } catch {}
       continue;
     }
     if (!pidAlive(rec.pid)) {

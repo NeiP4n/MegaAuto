@@ -82,7 +82,7 @@ const chatMessageSchema = z.object({
   senderName: z.string(),
   text: z.string(),
   timestamp: z.string(),
-  status: z.enum(["sent", "delivered", "read"]),
+  status: z.enum(["sent", "delivered", "read", "failed"]),
   metadata: z
     .object({
       workflowName: z.string().nullable().optional(),
@@ -591,7 +591,9 @@ class HubStore {
       channel: input.channel,
       url: input.url,
       apiKey: input.apiKey,
-      status: "online",
+      // Honest default: nothing has been probed yet. create_account pings
+      // right after and stores the real status.
+      status: "offline",
       workflowsCount: 0,
       executionsCount: 0,
       unreadTotal: 0,
@@ -601,6 +603,15 @@ class HubStore {
     this.data.accounts.push(newAcc);
     this.save();
     return newAcc;
+  }
+
+  public setAccountStatus(id: string, status: "online" | "offline" | "syncing", latencyMs?: number): void {
+    const acc = this.data.accounts.find((a) => a.id === id);
+    if (!acc) return;
+    acc.status = status;
+    if (latencyMs !== undefined) acc.latencyMs = latencyMs;
+    acc.lastSync = new Date().toISOString();
+    this.save();
   }
 
   public disconnectAccount(
@@ -713,6 +724,13 @@ class HubStore {
       return p;
     }
     return undefined;
+  }
+
+  public updateMessage(id: string, patch: Partial<ChatMessage>): void {
+    const m = this.data.messages.find((x) => x.id === id);
+    if (!m) return;
+    Object.assign(m, patch);
+    this.save();
   }
 
   public addMessage(msg: ChatMessage): void {
@@ -1093,11 +1111,30 @@ function readN8nLock(): N8nLockRecord | null {
   return null;
 }
 
+// Atomic replace: tmp file + rename, so a concurrent reader never sees a
+// half-written lock.
 function writeN8nLock(rec: N8nLockRecord): void {
   if (!n8nLockFile) return;
   try {
-    fs.writeFileSync(n8nLockFile, JSON.stringify(rec), { encoding: "utf-8", mode: 0o600 });
+    const tmp = `${n8nLockFile}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(rec), { encoding: "utf-8", mode: 0o600 });
+    fs.renameSync(tmp, n8nLockFile);
   } catch {}
+}
+
+// Atomic stale-takeover: only the process that successfully recreates the
+// file with O_EXCL owns the lock; losers get EEXIST and re-evaluate.
+function removeStaleN8nLock(expected: N8nLockRecord): boolean {
+  if (!n8nLockFile) return false;
+  try {
+    const cur = readN8nLock();
+    // Refuse to delete someone else's newer lock.
+    if (!cur || cur.pid !== expected.pid || cur.createdAt !== expected.createdAt) return false;
+    fs.unlinkSync(n8nLockFile);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function releaseN8nLock(pid: number): void {
@@ -1109,37 +1146,57 @@ function releaseN8nLock(pid: number): void {
   }
 }
 
-// Returns null when the lock is ours; otherwise a human-readable reason why
-// another live holder blocks the start. Never kills anything.
-function checkN8nInstanceLock(): string | null {
-  if (!n8nLockFile) return null;
-  for (let attempt = 0; attempt < 2; attempt++) {
+// Acquire the manager lock atomically (O_EXCL). Fail-closed: when the lock
+// cannot be created because a live holder exists, the start must NOT
+// proceed. Stale locks (dead holder, or a PID now belonging to an unrelated
+// process) are taken over without ever signalling that process.
+function acquireN8nManagerLock(): { ok: true } | { ok: false; reason: string } {
+  if (!n8nLockFile) {
+    return { ok: false, reason: "каталог данных плагина недоступен (lock-файл не инициализирован)" };
+  }
+  const myRec: N8nLockRecord = { pid: process.pid, manager: true, createdAt: new Date().toISOString() };
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const fd = fs.openSync(n8nLockFile, "wx");
+      try {
+        fs.writeFileSync(fd, JSON.stringify(myRec), "utf-8");
+      } finally {
+        fs.closeSync(fd);
+      }
+      return { ok: true };
+    } catch (e: any) {
+      if (e?.code !== "EEXIST") {
+        return { ok: false, reason: `не удалось создать lock-файл: ${e?.message || e}` };
+      }
+    }
+
     const rec = readN8nLock();
-    if (!rec) return null; // no lock (or unreadable garbage already gone)
-    if (!pidAlive(rec.pid)) {
-      // Stale: the holder died. Take over.
-      appendServerLog(`Найден устаревший lock n8n (PID ${rec.pid} не существует) - подбираем`);
+    if (!rec) {
+      // Garbage or unreadable content: remove and retry creation.
       try {
         fs.unlinkSync(n8nLockFile);
       } catch {}
       continue;
     }
+    if (!pidAlive(rec.pid)) {
+      appendServerLog(`Найден устаревший lock n8n (PID ${rec.pid} не существует) - подбираем`);
+      removeStaleN8nLock(rec);
+      continue;
+    }
     if (rec.manager) {
-      return `другой экземпляр плагина уже запускает n8n (PID ${rec.pid})`;
+      return { ok: false, reason: `другой экземпляр плагина уже запускает n8n (PID ${rec.pid})` };
     }
     if (isLikelyN8nProcess(rec.pid)) {
-      return `n8n уже управляется другим процессом (PID ${rec.pid})`;
+      return { ok: false, reason: `n8n уже управляется другим процессом (PID ${rec.pid})` };
     }
-    // PID was reused by an unrelated process: the lock is stale. Remove the
-    // file and take over - the foreign process is left completely alone.
+    // PID was reused by an unrelated process: the lock is stale. Remove it
+    // and take over - the foreign process is left completely alone.
     appendServerLog(
       `Lock n8n указывает на PID ${rec.pid}, но это не n8n - lock устарел, подбираем (процесс не трогаем)`
     );
-    try {
-      fs.unlinkSync(n8nLockFile);
-    } catch {}
+    removeStaleN8nLock(rec);
   }
-  return null;
+  return { ok: false, reason: "не удалось получить lock n8n (гонка за stale lock)" };
 }
 
 async function startLocalN8nProcess(): Promise<{ ok: boolean; message: string; pid?: number }> {
@@ -1171,16 +1228,13 @@ async function startLocalN8nProcess(): Promise<{ ok: boolean; message: string; p
         };
       }
 
-      // Cross-process guard: refuse to double-start when another manager
-      // holds a live lock; stale locks are taken over inside the check.
-      const lockConflict = checkN8nInstanceLock();
-      if (lockConflict) {
-        appendServerLog(`Запуск пропущен: ${lockConflict}`);
-        return { ok: false, message: `Запуск пропущен: ${lockConflict}` };
+      // Cross-process guard: atomically acquire the manager lock BEFORE
+      // spawning (O_EXCL, fail-closed). Stale locks are taken over inside.
+      const lockResult = acquireN8nManagerLock();
+      if (!lockResult.ok) {
+        appendServerLog(`Запуск пропущен: ${lockResult.reason}`);
+        return { ok: false, message: `Запуск пропущен: ${lockResult.reason}` };
       }
-      // Mark ourselves as the manager mid-start so a parallel plugin
-      // instance sees a live lock immediately.
-      writeN8nLock({ pid: process.pid, manager: true, createdAt: new Date().toISOString() });
 
       serverState = "starting";
       appendServerLog("Запуск локального сервера n8n (127.0.0.1:5678)...");
@@ -1372,11 +1426,35 @@ async function stopLocalN8nProcess(): Promise<{ ok: boolean; message: string }> 
         process.kill(targetPid, "SIGKILL");
       }
     } catch {}
-    await new Promise((r) => setTimeout(r, 500));
+    // Hold the lock until the process has REALLY exited: releasing early
+    // would let a parallel start spawn a duplicate against a dying n8n.
+    const killDeadline = Date.now() + 5000;
+    while (Date.now() < killDeadline) {
+      if (!pidAlive(targetPid)) {
+        stillAlive = false;
+        break;
+      }
+      if (child && child.exitCode !== null) {
+        stillAlive = false;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
   }
 
   if (localN8nProcess === child) {
     localN8nProcess = null;
+  }
+  if (stillAlive) {
+    // Keep the lock: the PID is still ours to track and the process is
+    // not confirmed dead. Report honestly instead of claiming success.
+    serverState = "error";
+    healthCache.clear();
+    appendServerLog(`Процесс n8n (PID ${targetPid}) не завершился даже после SIGKILL - lock сохранён`);
+    return {
+      ok: false,
+      message: `Не удалось остановить n8n: процесс (PID ${targetPid}) жив после SIGKILL`,
+    };
   }
   releaseN8nLock(targetPid);
   serverState = "stopped";
@@ -1676,6 +1754,9 @@ async function forwardToN8n(
       }
       if (res.ok) {
         const data = (await res.json().catch(() => ({}))) as any;
+        if (data && data.ok === false) {
+          return { ok: false, error: data.error || `Webhook вернул ok:false (HTTP ${res.status})` };
+        }
         return {
           ok: true,
           reply: data.reply || data.output || data.message || undefined, // no canned reply: an empty 200 means accepted-with-nothing-to-say, no fake bubble
@@ -1718,6 +1799,9 @@ async function forwardToN8n(
       }
       if (res.ok) {
         const data = (await res.json().catch(() => ({}))) as any;
+        if (data && data.ok === false) {
+          return { ok: false, error: data.error || `Telegram-шлюз вернул ok:false (HTTP ${res.status})` };
+        }
         return {
           ok: true,
           reply: data.reply || data.output || data.message || undefined, // no canned reply: an empty 200 means accepted-with-nothing-to-say, no fake bubble
@@ -1761,6 +1845,9 @@ async function forwardToN8n(
 
       if (res.ok) {
         const data = (await res.json().catch(() => ({}))) as any;
+        if (data && data.ok === false) {
+          return { ok: false, error: data.error || `n8n webhook вернул ok:false (HTTP ${res.status})` };
+        }
         return {
           ok: true,
           reply: data.reply || data.output || data.message || undefined, // no canned reply: an empty 200 means accepted-with-nothing-to-say, no fake bubble
@@ -1772,6 +1859,17 @@ async function forwardToN8n(
   }
 
   return { ok: false, error: `n8n Webhook (${cleanBase}) недоступен или вернул ошибку` };
+}
+
+// Detects the hardcoded "Ответ Gemini ... Я обработал ваш запрос" template
+// that the ai-chat n8n workflow answers with when no real model is wired in.
+// Such a reply is a stub, not an LLM answer.
+function isCannedAiReply(text: string): boolean {
+  const t = text.toLowerCase();
+  return (
+    (t.includes("ответ gemini") && t.includes("я обработал ваш запрос")) ||
+    (t.includes("я обработал ваш запрос") && t.includes("готов помочь"))
+  );
 }
 
 export default function (bb: BbPluginApi) {
@@ -1803,6 +1901,33 @@ export default function (bb: BbPluginApi) {
           url: cleanUrl,
           apiKey: input.apiKey || undefined,
         });
+
+        // Real reachability check instead of an assumed "online".
+        try {
+          if (input.channel === "n8n") {
+            const start = Date.now();
+            const health = await checkN8nHealth(getCanonicalBase(cleanUrl), true);
+            const latency = Date.now() - start;
+            store.setAccountStatus(acc.id, health.connected ? "online" : "offline", latency);
+            acc.status = health.connected ? "online" : "offline";
+            acc.latencyMs = latency;
+          } else {
+            // webhook/telegram: any HTTP response means the endpoint exists.
+            const start = Date.now();
+            const res = await fetch(cleanUrl, {
+              method: "HEAD",
+              signal: AbortSignal.timeout(4000),
+              redirect: "manual",
+            }).catch(() => null);
+            const reachable = res !== null;
+            store.setAccountStatus(acc.id, reachable ? "online" : "offline", reachable ? Date.now() - start : undefined);
+            acc.status = reachable ? "online" : "offline";
+          }
+        } catch {
+          store.setAccountStatus(acc.id, "offline");
+          acc.status = "offline";
+        }
+
         return {
           ok: true,
           account: maskAccount(acc),
@@ -1865,7 +1990,7 @@ export default function (bb: BbPluginApi) {
 
       if (n8nResult.ok && n8nResult.reply) {
         const replyMsg: ChatMessage = {
-          id: `msg-${Date.now()}-reply`,
+          id: `msg-${Date.now()}-reply-${Math.random().toString(36).substring(2, 7)}`,
           projectId: input.projectId,
           accountId: store.getProjectById(input.projectId)?.accountId,
           sender: "agent",
@@ -1880,6 +2005,15 @@ export default function (bb: BbPluginApi) {
           },
         };
         store.addMessage(replyMsg);
+      } else if (!n8nResult.ok) {
+        // Honest delivery state: the remote side rejected/unreachable, the
+        // message must not look "sent".
+        store.updateMessage(newMsg.id, {
+          status: "failed",
+          metadata: { ...newMsg.metadata, status: "error", error: n8nResult.error },
+        });
+        newMsg.status = "failed";
+        newMsg.metadata = { ...newMsg.metadata, status: "error", error: n8nResult.error };
       }
 
       return {
@@ -2198,7 +2332,9 @@ export default function (bb: BbPluginApi) {
     send_ai_chat: async ({ accountId, message, sessionId, model = "gemini-3.8-flash-acp" }) => {
       const activeAccount = accountId ? store.getAccountById(accountId) : store.getAccounts()[0];
       const targetUrl = buildSafeWebhookUrl(activeAccount?.url || "http://localhost:5678", "ai-chat");
-      const effectiveSessionId = sessionId || `session-${Date.now()}`;
+      // Stable per-account session: a fresh id per message would break
+      // conversation continuity in the workflow memory.
+      const effectiveSessionId = sessionId || `session-${activeAccount?.id || "default"}`;
       const start = Date.now();
       const nowStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
@@ -2237,11 +2373,22 @@ export default function (bb: BbPluginApi) {
         latencyMs = Date.now() - start;
         if (res.ok) {
           const data = (await res.json().catch(() => ({}))) as any;
+          if (data && data.ok === false) {
+            throw new Error(data.error || `n8n AI webhook вернул ok:false (HTTP ${res.status})`);
+          }
           reply = data.reply || data.output || data.message || "";
           if (!reply) {
             // A 200 with no text is not an answer - say so honestly instead
             // of inventing a canned reply.
             throw new Error("n8n AI webhook вернул пустой ответ (HTTP 200 без reply/output/message)");
+          }
+          if (isCannedAiReply(reply)) {
+            // The workflow answered with a hardcoded template instead of a
+            // real model response. Show the honest state, not the stub.
+            throw new Error(
+              "Модель не подключена: воркфлоу ai-chat вернул заготовленный шаблон, а не ответ LLM. " +
+              "Подключите реальную модель в ноде AI Agent воркфлоу ai-chat в n8n."
+            );
           }
         } else {
           throw new Error(`HTTP ${res.status}: ${res.statusText}`);
@@ -2482,8 +2629,9 @@ export default function (bb: BbPluginApi) {
           return { exitCode: 1, stderr: "Usage: bb project-hub send <projectId> <command>" };
         }
         const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        const cliMsgId = `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
         store.addMessage({
-          id: `msg-${Date.now()}`,
+          id: cliMsgId,
           projectId,
           accountId: store.getProjectById(projectId)?.accountId,
           sender: "user",
@@ -2498,6 +2646,16 @@ export default function (bb: BbPluginApi) {
         });
 
         const n8nResult = await forwardToN8n(store, projectId, text, "command");
+        if (!n8nResult.ok) {
+          store.updateMessage(cliMsgId, {
+            status: "failed",
+            metadata: { workflowName: "cli_command", status: "error", error: n8nResult.error },
+          });
+          return {
+            exitCode: 1,
+            stderr: `Command NOT delivered to ${projectId}: ${n8nResult.error || "unknown error"}`,
+          };
+        }
         if (n8nResult.ok && n8nResult.reply) {
           store.addMessage({
             id: `msg-${Date.now()}-reply`,
@@ -2521,9 +2679,7 @@ export default function (bb: BbPluginApi) {
 
         return {
           exitCode: 0,
-          stdout: `Command dispatched to ${projectId}: "${text}" (Warning: ${
-            n8nResult.error || "no remote reply"
-          })`,
+          stdout: `Command dispatched to ${projectId}: "${text}" (accepted, no reply body)`,
         };
       }
 
@@ -2589,7 +2745,7 @@ export default function (bb: BbPluginApi) {
       const mode = args.mode || "command";
       const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
       const msg: ChatMessage = {
-        id: `msg-${Date.now()}`,
+        id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
         projectId: args.projectId,
         accountId: store.getProjectById(args.projectId)?.accountId,
         sender: "user",
@@ -2623,9 +2779,14 @@ export default function (bb: BbPluginApi) {
         return `Dispatched to ${args.projectId}. Execution result: "${n8nResult.reply}"`;
       }
 
-      return `Message sent to ${args.projectId}: "${args.text}" (Remote result: ${
-        n8nResult.error || "no reply"
-      })`;
+      if (!n8nResult.ok) {
+        store.updateMessage(msg.id, {
+          status: "failed",
+          metadata: { workflowName: "agent_command", status: "error", error: n8nResult.error },
+        });
+        return `Dispatch to ${args.projectId} FAILED: ${n8nResult.error || "unknown error"}`;
+      }
+      return `Message delivered to ${args.projectId} (accepted, no reply body)`;
     },
   });
 

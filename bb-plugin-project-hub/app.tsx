@@ -47,6 +47,8 @@ export function ProjectHubView() {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [isSendingChat, setIsSendingChat] = useState(false);
   const isSendingChatRef = useRef(false);
+  // Stable AI-chat session id for conversation continuity (regenerated per page load).
+  const aiChatSessionIdRef = useRef(`session-ui-${Date.now().toString(36)}`);
   const [isLoadingChatHistory, setIsLoadingChatHistory] = useState(false);
 
   // Active Instance & Workflow
@@ -392,6 +394,7 @@ export function ProjectHubView() {
           message: text,
           accountId: activeAccount?.id,
           model: "gemini-3.8-flash-acp",
+          sessionId: aiChatSessionIdRef.current,
         });
         if (res?.ok) {
           const aiMsg: ChatMessage = {

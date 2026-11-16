@@ -67,6 +67,7 @@ export interface MessageMetadata {
   executionId?: string | null;
   status?: ExecutionStatus | null;
   durationMs?: number | null;
+  error?: string | null;
   payload?: Record<string, unknown> | null;
 }
 
@@ -78,7 +79,7 @@ export interface ChatMessage {
   senderName: string;
   text: string;
   timestamp: string;
-  status: "sent" | "delivered" | "read";
+  status: "sent" | "delivered" | "read" | "failed";
   metadata?: MessageMetadata | null;
 }
 

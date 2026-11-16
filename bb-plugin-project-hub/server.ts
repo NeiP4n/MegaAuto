@@ -1226,11 +1226,17 @@ function tryAcquireReclaimMutex(mutex: string, token: string): boolean {
     fs.writeFileSync(path.join(mutex, "pid"), token, { encoding: "utf-8", mode: 0o600 });
     return true;
   } catch {
-    // Roll back only what we created: unlink the (possibly partial) token
-    // file and rmdir (empty-dir only). No recursive rm on a shared path:
-    // if anything unexpected is inside, the dir stays and the stuck
-    // recovery handles it by TTL. We never delete someone else's content.
-    try { fs.unlinkSync(path.join(mutex, "pid")); } catch {}
+    // Roll back only what we created. Unlink the token file ONLY while it
+    // still holds our token - a failed write leaves a partial token, which
+    // is always a PREFIX of ours; anything else means the dir no longer
+    // carries our content and must stay untouched. rmdir is empty-dir
+    // only: unexpected content stays for the TTL-based stuck recovery.
+    try {
+      const cur = fs.readFileSync(path.join(mutex, "pid"), "utf-8");
+      if (token.startsWith(cur)) {
+        try { fs.unlinkSync(path.join(mutex, "pid")); } catch {}
+      }
+    } catch {} // no token file (the write never created one) - nothing to unlink
     try { fs.rmdirSync(mutex); } catch {}
     return false;
   }
@@ -1264,15 +1270,21 @@ function restoreOrphanedReclaimCapture(): boolean {
   try {
     const dir = path.dirname(n8nLockFile);
     const base = path.basename(n8nLockFile);
-    const captures = fs
+    const captureNames = fs
       .readdirSync(dir)
-      .filter((f) => f.startsWith(`${base}.`) && f.endsWith(".reclaim"))
-      .map((f) => {
-        let m = 0;
-        try { m = fs.statSync(path.join(dir, f)).mtimeMs; } catch {}
-        return { f, m };
-      })
-      .sort((a, b) => a.m - b.m);
+      .filter((f) => f.startsWith(`${base}.`) && f.endsWith(".reclaim"));
+    const captures: { f: string; m: number }[] = [];
+    for (const f of captureNames) {
+      try {
+        captures.push({ f, m: fs.statSync(path.join(dir, f)).mtimeMs });
+      } catch (e: any) {
+        // Fail-closed: an unreadable capture makes the listing untrustworthy
+        // - restore nothing rather than picking by a fake mtime of 0.
+        appendServerLog(`Reclaim n8n lock: не удалось прочитать захват (${f}): ${e?.message || e} - восстановление отменено`);
+        return false;
+      }
+    }
+    captures.sort((a, b) => a.m - b.m);
     const newest = captures[captures.length - 1]?.f;
     if (!newest) return true; // nothing to restore
     // Hard-link, never rename-over: if a fresh lock appeared since our
@@ -1335,11 +1347,18 @@ function tryClearStuckReclaimMutex(): void {
     return; // no mutex present - nothing to recover
   }
   let ownerPid: number | null = null;
+  let mutexTokenUnreadable = false;
   try {
     const raw = fs.readFileSync(path.join(mutex, "pid"), "utf-8").trim();
     const n = parseInt(raw, 10);
     if (!isNaN(n) && n > 0) ownerPid = n;
-  } catch {}
+  } catch (e: any) {
+    // ENOENT = legacy format or mid-creation (age-based fallback below).
+    // Any other read error is NOT expiry: never TTL-delete a mutex whose
+    // owner token we could not read.
+    if (e?.code !== "ENOENT") mutexTokenUnreadable = true;
+  }
+  if (mutexTokenUnreadable) return;
   if (ownerPid !== null && pidAlive(ownerPid)) {
     return; // the reclaimer is alive and working - never break its mutex
   }
@@ -1359,11 +1378,19 @@ function tryClearStuckReclaimMutex(): void {
     // never removed. A live owner: back off.
     let graw: string | null = null;
     let gpid: number | null = null;
+    let guardTokenUnreadable = false;
     try {
       graw = fs.readFileSync(path.join(guard, "pid"), "utf-8").trim();
       const n = parseInt(graw, 10);
       if (!isNaN(n) && n > 0) gpid = n;
-    } catch {}
+    } catch (e: any) {
+      if (e?.code !== "ENOENT") guardTokenUnreadable = true;
+    }
+    if (guardTokenUnreadable) {
+      // Present but unreadable token is not expiry: back off, never delete.
+      syncWaitMs(40);
+      continue;
+    }
     if (gpid !== null && graw !== null) {
       if (pidAlive(gpid)) return; // another recoverer is working
       try {
@@ -1400,10 +1427,15 @@ function tryClearStuckReclaimMutex(): void {
       const raw = fs.readFileSync(path.join(mutex, "pid"), "utf-8").trim();
       const n = parseInt(raw, 10);
       stillStuck = !isNaN(n) && n > 0 && !pidAlive(n);
-    } catch {
-      try {
-        stillStuck = Date.now() - fs.statSync(mutex).mtimeMs >= RECLAIM_MUTEX_STALE_MS;
-      } catch {}
+    } catch (e: any) {
+      // TTL fallback only when the token file is genuinely ABSENT (legacy
+      // format / mid-creation). A present but unreadable token is not proof
+      // of a stuck mutex: keep it.
+      if (e?.code === "ENOENT") {
+        try {
+          stillStuck = Date.now() - fs.statSync(mutex).mtimeMs >= RECLAIM_MUTEX_STALE_MS;
+        } catch {}
+      }
     }
     if (!stillStuck) return;
     if (!restoreOrphanedReclaimCapture()) {

@@ -1060,8 +1060,16 @@ function findPortPidTri(port: number = 5678): { state: "free" } | { state: "occu
     if (!isNaN(pid) && pid > 0) return { state: "occupied", pid };
     return { state: "free" };
   } catch (e: any) {
-    // lsof exits 1 when nothing matches: that is "free", not an error.
-    if (e?.status === 1 && process.platform !== "win32") return { state: "free" };
+    // lsof exits 1 with EMPTY stderr when nothing matches: that is "free".
+    // Exit 1 with stderr output is a real error (permissions, platform
+    // quirks): that is "unknown", never "free".
+    if (
+      process.platform !== "win32" &&
+      e?.status === 1 &&
+      !String(e?.stderr || "").trim()
+    ) {
+      return { state: "free" };
+    }
     return { state: "unknown" };
   }
 }
@@ -1192,15 +1200,56 @@ function syncWaitMs(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+// Restore lock content captured by a crashed reclaimer, if the lock file
+// is currently absent. Captures are ordered by mtime: newest is
+// authoritative.
+function restoreOrphanedReclaimCapture(): void {
+  if (!n8nLockFile || fs.existsSync(n8nLockFile)) return;
+  try {
+    const dir = path.dirname(n8nLockFile);
+    const base = path.basename(n8nLockFile);
+    const captures = fs
+      .readdirSync(dir)
+      .filter((f) => f.startsWith(`${base}.`) && f.endsWith(".reclaim"))
+      .map((f) => {
+        let m = 0;
+        try { m = fs.statSync(path.join(dir, f)).mtimeMs; } catch {}
+        return { f, m };
+      })
+      .sort((a, b) => a.m - b.m);
+    const newest = captures[captures.length - 1]?.f;
+    if (newest) {
+      try {
+        fs.renameSync(path.join(dir, newest), n8nLockFile);
+        appendServerLog(`Reclaim n8n lock: восстановлен захваченный lock после сбоя реклеймера (${newest})`);
+      } catch {}
+    }
+  } catch {}
+}
+
 // Clear an abandoned reclaim mutex (reclaimer crashed mid-flight). The
 // mutex dir carries its owner's PID: while that PID is ALIVE the mutex is
 // never cleared, however old it is. Only a dead owner (or a pre-PID mutex
-// older than the stale window) lets us recover - and then we first
-// restore any lock content the crashed reclaimer captured, so a live lock
-// owner is not left without its lock.
+// older than the stale window) lets us recover. Recovery is fenced: the
+// mutex is moved aside with an atomic rename first, so two concurrent
+// recoverers can never remove a FRESH mutex recreated at the old path -
+// only one wins the rename, the other gets ENOENT and backs off.
 function tryClearStuckReclaimMutex(): void {
   if (!n8nLockFile) return;
   const mutex = reclaimMutexPath();
+  // Sweep leftover recovery dirs of crashed recoverers first (dead pid
+  // suffix only); the mutex path itself may already be gone.
+  try {
+    const dir = path.dirname(n8nLockFile);
+    const base = path.basename(n8nLockFile);
+    for (const f of fs.readdirSync(dir)) {
+      const m = f.match(new RegExp(`^${base.replace(/\./g, "\\.")}\\.reclaim-mutex\\.recovering-(\\d+)$`));
+      if (m && !pidAlive(parseInt(m[1], 10))) {
+        restoreOrphanedReclaimCapture();
+        try { fs.rmSync(path.join(dir, f), { recursive: true, force: true }); } catch {}
+      }
+    }
+  } catch {}
   let mtimeMs: number;
   try {
     mtimeMs = fs.statSync(mutex).mtimeMs;
@@ -1219,28 +1268,16 @@ function tryClearStuckReclaimMutex(): void {
   if (ownerPid === null && Date.now() - mtimeMs < RECLAIM_MUTEX_STALE_MS) {
     return; // no PID recorded (old format or mid-creation): age-based only
   }
+  // Fence: atomically move the stuck mutex aside; only one recoverer wins.
+  const aside = `${mutex}.recovering-${process.pid}`;
   try {
-    if (!fs.existsSync(n8nLockFile)) {
-      const dir = path.dirname(n8nLockFile);
-      const base = path.basename(n8nLockFile);
-      const captures = fs
-        .readdirSync(dir)
-        .filter((f) => f.startsWith(`${base}.`) && f.endsWith(".reclaim"))
-        .map((f) => {
-          let m = 0;
-          try { m = fs.statSync(path.join(dir, f)).mtimeMs; } catch {}
-          return { f, m };
-        })
-        .sort((a, b) => a.m - b.m); // oldest first: newest capture is authoritative
-      const newest = captures[captures.length - 1]?.f;
-      if (newest) {
-        try {
-          fs.renameSync(path.join(dir, newest), n8nLockFile);
-          appendServerLog(`Reclaim n8n lock: восстановлен захваченный lock после сбоя реклеймера (${newest})`);
-        } catch {}
-      }
-    }
-    fs.rmSync(mutex, { recursive: true, force: true }); // contains only the owner-pid file
+    fs.renameSync(mutex, aside);
+  } catch {
+    return; // another recoverer took it, or it vanished
+  }
+  try {
+    restoreOrphanedReclaimCapture();
+    fs.rmSync(aside, { recursive: true, force: true });
     appendServerLog("Reclaim n8n lock: убран зависший reclaim-мьютекс (реклеймер умер)");
   } catch {}
 }
@@ -1300,21 +1337,46 @@ function reclaimStaleN8nLockLocked(expected: N8nLockRecord): boolean {
 
 function releaseN8nLock(pid: number): void {
   if (!n8nLockFile) return;
-  const cur = readN8nLock();
-  if (!cur || cur.pid !== pid) return;
-  // Delete only if the CURRENT content is exactly a record we created
-  // ourselves (pid + createdAt): a bare pid match can be a fresh foreign
-  // lock after PID reuse, or our own superseded manager marker.
-  const isOurs = [ownManagerLockRecord, ownChildLockRecord].some(
-    (r) => r && r.pid === cur.pid && r.createdAt === cur.createdAt
-  );
-  if (!isOurs) {
-    appendServerLog(`release n8n lock: текущая запись (pid ${pid}) не наша или новее - чужой lock не трогаем`);
+  // Serialized under the reclaim mutex: the ownership check and the unlink
+  // are one critical section, so no acquirer can create a fresh lock
+  // between them (TOCTOU). If the mutex stays busy, skip the release:
+  // the record we leave behind goes stale and is reclaimed by PID-death.
+  const mutex = reclaimMutexPath();
+  let mutexHeld = false;
+  for (let i = 0; i < 3 && !mutexHeld; i++) {
+    try {
+      fs.mkdirSync(mutex);
+      mutexHeld = true;
+      try {
+        fs.writeFileSync(path.join(mutex, "pid"), String(process.pid), { encoding: "utf-8", mode: 0o600 });
+      } catch {}
+    } catch {
+      syncWaitMs(50);
+    }
+  }
+  if (!mutexHeld) {
+    appendServerLog(`release n8n lock (pid ${pid}): мьютекс занят - lock оставлен, подберётся как stale`);
     return;
   }
   try {
-    fs.unlinkSync(n8nLockFile);
-  } catch {}
+    const cur = readN8nLock();
+    if (!cur || cur.pid !== pid) return;
+    // Delete only if the CURRENT content is exactly a record we created
+    // ourselves (pid + createdAt): a bare pid match can be a fresh foreign
+    // lock after PID reuse, or our own superseded manager marker.
+    const isOurs = [ownManagerLockRecord, ownChildLockRecord].some(
+      (r) => r && r.pid === cur.pid && r.createdAt === cur.createdAt
+    );
+    if (!isOurs) {
+      appendServerLog(`release n8n lock: текущая запись (pid ${pid}) не наша или новее - чужой lock не трогаем`);
+      return;
+    }
+    try {
+      fs.unlinkSync(n8nLockFile);
+    } catch {}
+  } finally {
+    try { fs.rmSync(mutex, { recursive: true, force: true }); } catch {}
+  }
 }
 
 // Acquire the manager lock. Creation AND stale reclaim are serialized
@@ -1403,10 +1465,14 @@ function acquireN8nManagerLock(): { ok: true } | { ok: false; reason: string } {
               reason: "lock n8n - наша метка, но состояние порта 5678 определить не удалось (ошибка netstat/lsof) - reclaim отменён",
             };
           }
-          if (port.state === "occupied" && isLikelyN8nProcess(port.pid)) {
+          if (port.state === "occupied") {
+            // Any listener on the port blocks the reclaim: a fresh n8n
+            // could not bind anyway, and we never touch the process.
             return {
               ok: false,
-              reason: `lock n8n - наша метка, но на порту 5678 уже живой n8n (PID ${port.pid}) - запуск отменён`,
+              reason: isLikelyN8nProcess(port.pid)
+                ? `lock n8n - наша метка, но на порту 5678 уже живой n8n (PID ${port.pid}) - запуск отменён`
+                : `lock n8n - наша метка, но порт 5678 занят другим процессом (PID ${port.pid}) - запуск отменён (процесс не трогаем)`,
             };
           }
           appendServerLog("Найден собственный manager-lock, child не жив и порт свободен - подбираем");

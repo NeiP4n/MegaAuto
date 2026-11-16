@@ -1063,6 +1063,9 @@ function findPortPidTri(port: number = 5678): { state: "free" } | { state: "occu
     const out = execSync(`lsof -ti :${port}`, { encoding: "utf8", timeout: 2000 });
     const pid = parseInt(out.trim().split("\n")[0], 10);
     if (!isNaN(pid) && pid > 0) return { state: "occupied", pid };
+    // Non-empty output whose first line is not a PID means the output
+    // format surprised us: unknown, never "free".
+    if (out.trim()) return { state: "unknown" };
     return { state: "free" };
   } catch (e: any) {
     // lsof exits 1 with EMPTY stderr when nothing matches: that is "free".
@@ -1151,15 +1154,14 @@ function writeN8nLock(rec: N8nLockRecord, expected?: N8nLockRecord | null): bool
   if (!n8nLockFile) return false;
   const tmp = `${n8nLockFile}.${process.pid}.tmp`;
   const mutex = reclaimMutexPath();
+  const mutexToken = newReclaimMutexToken();
   let mutexHeld = false;
   try {
     for (let i = 0; i < 3 && !mutexHeld; i++) {
       try {
         fs.mkdirSync(mutex);
         mutexHeld = true;
-        try {
-          fs.writeFileSync(path.join(mutex, "pid"), String(process.pid), { encoding: "utf-8", mode: 0o600 });
-        } catch {}
+        writeReclaimMutexToken(mutex, mutexToken);
       } catch {
         syncWaitMs(50);
       }
@@ -1184,7 +1186,7 @@ function writeN8nLock(rec: N8nLockRecord, expected?: N8nLockRecord | null): bool
     return false;
   } finally {
     if (mutexHeld) {
-      try { fs.rmSync(mutex, { recursive: true, force: true }); } catch {}
+      releaseReclaimMutex(mutex, mutexToken);
     }
   }
 }
@@ -1203,6 +1205,36 @@ function reclaimMutexPath(): string {
 
 function syncWaitMs(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// Each mutex acquisition writes a unique token (pid + timestamp + random)
+// into mutex/pid; the finally-path removes the mutex ONLY if the token is
+// still ours - after a fenced recovery or any mix-up the dir at this path
+// may belong to someone else's live critical section. The token starts
+// with the pid, so parseInt-based liveness checks in the stuck-mutex
+// recovery keep working.
+function newReclaimMutexToken(): string {
+  return `${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
+}
+
+function writeReclaimMutexToken(mutex: string, token: string): void {
+  try {
+    fs.writeFileSync(path.join(mutex, "pid"), token, { encoding: "utf-8", mode: 0o600 });
+  } catch {}
+}
+
+function releaseReclaimMutex(mutex: string, token: string): void {
+  let cur: string | null = null;
+  try {
+    cur = fs.readFileSync(path.join(mutex, "pid"), "utf-8").trim();
+  } catch {}
+  if (cur !== token) {
+    appendServerLog("reclaim-мьютекс сменил владельца за время критической секции - чужой не удаляем");
+    return;
+  }
+  try {
+    fs.rmSync(mutex, { recursive: true, force: true });
+  } catch {}
 }
 
 // Restore lock content captured by a crashed reclaimer, if the lock file
@@ -1379,13 +1411,12 @@ function releaseN8nLock(pid: number): void {
   // the record we leave behind goes stale and is reclaimed by PID-death.
   const mutex = reclaimMutexPath();
   let mutexHeld = false;
+  const mutexToken = newReclaimMutexToken();
   for (let i = 0; i < 3 && !mutexHeld; i++) {
     try {
       fs.mkdirSync(mutex);
       mutexHeld = true;
-      try {
-        fs.writeFileSync(path.join(mutex, "pid"), String(process.pid), { encoding: "utf-8", mode: 0o600 });
-      } catch {}
+      writeReclaimMutexToken(mutex, mutexToken);
     } catch {
       syncWaitMs(50);
     }
@@ -1411,7 +1442,7 @@ function releaseN8nLock(pid: number): void {
       fs.unlinkSync(n8nLockFile);
     } catch {}
   } finally {
-    try { fs.rmSync(mutex, { recursive: true, force: true }); } catch {}
+    releaseReclaimMutex(mutex, mutexToken);
   }
 }
 
@@ -1435,14 +1466,13 @@ function acquireN8nManagerLock(): { ok: true } | { ok: false; reason: string } {
   for (let attempt = 0; attempt < 6; attempt++) {
     tryClearStuckReclaimMutex(); // no-op when absent or fresh
     let mutexHeld = false;
+    const mutexToken = newReclaimMutexToken();
     try {
       fs.mkdirSync(mutex);
       mutexHeld = true;
       // Record the mutex owner: a stuck-mutex check must never clear the
       // mutex of a LIVE reclaimer, no matter how old it looks.
-      try {
-        fs.writeFileSync(path.join(mutex, "pid"), String(process.pid), { encoding: "utf-8", mode: 0o600 });
-      } catch {}
+      writeReclaimMutexToken(mutex, mutexToken);
     } catch {
       syncWaitMs(60); // another acquirer/reclaimer holds it - brief wait, retry
       continue;
@@ -1528,7 +1558,7 @@ function acquireN8nManagerLock(): { ok: true } | { ok: false; reason: string } {
       reclaimStaleN8nLockLocked(rec);
     } finally {
       if (mutexHeld) {
-        try { fs.rmSync(mutex, { recursive: true, force: true }); } catch {}
+        releaseReclaimMutex(mutex, mutexToken);
       }
     }
   }

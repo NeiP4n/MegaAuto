@@ -1226,14 +1226,21 @@ function tryAcquireReclaimMutex(mutex: string, token: string): boolean {
     fs.writeFileSync(path.join(mutex, "pid"), token, { encoding: "utf-8", mode: 0o600, flag: "wx" });
     return true;
   } catch {
-    // Rollback: строгое равенство токена canUnlink = (cur === token) без startsWith и пустых значений
+    // Roll back only what we created. Unlink the token file ONLY while it
+    // still holds our token: a partial failed write leaves a PREFIX of our
+    // token (never a foreign token - a different pid differs from the very
+    // first characters), so prefix-match is exact against foreign content
+    // while still rolling back our own incomplete write. Strict equality
+    // here would leak the mutex until TTL on every partial/empty write.
     try {
       const p = path.join(mutex, "pid");
       let canUnlink = false;
       try {
-        const cur = fs.readFileSync(p, "utf-8").trim();
-        canUnlink = cur === token;
-      } catch {}
+        const cur = fs.readFileSync(p, "utf-8");
+        canUnlink = token.startsWith(cur);
+      } catch (e: any) {
+        if (e?.code === "ENOENT") canUnlink = true; // nothing inside - just rmdir
+      }
       if (canUnlink) {
         try { fs.unlinkSync(p); } catch {}
         try { fs.rmdirSync(mutex); } catch {}
@@ -1470,8 +1477,14 @@ function tryClearStuckReclaimMutex(): boolean {
       } catch {}
       continue;
     }
-    // Unreadable/legacy guard: разрешение TTL строго при err.code === 'ENOENT'.
-    if (guardPidNotFound) {
+    // TTL fallback: allowed when the token file is ABSENT (ENOENT - legacy
+    // format or mid-creation) OR was READ but is unparsable/empty (an
+    // acquisition crashed between mkdir and its token write - there is no
+    // live owner behind such a token). ENOENT-only would brick recovery
+    // forever on a readable-but-corrupt token: nobody could ever clear the
+    // guard. A present but UNREADABLE token (read error) never reaches
+    // here - it backs off above.
+    if (guardPidNotFound || (graw !== null && gpid === null)) {
       try {
         if (Date.now() - fs.statSync(guard).mtimeMs >= RECLAIM_MUTEX_STALE_MS) {
           try { fs.unlinkSync(path.join(guard, "pid")); } catch {}

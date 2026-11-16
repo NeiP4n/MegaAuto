@@ -1158,13 +1158,8 @@ function writeN8nLock(rec: N8nLockRecord, expected?: N8nLockRecord | null): bool
   let mutexHeld = false;
   try {
     for (let i = 0; i < 3 && !mutexHeld; i++) {
-      try {
-        fs.mkdirSync(mutex);
-        mutexHeld = true;
-        writeReclaimMutexToken(mutex, mutexToken);
-      } catch {
-        syncWaitMs(50);
-      }
+      mutexHeld = tryAcquireReclaimMutex(mutex, mutexToken);
+      if (!mutexHeld) syncWaitMs(50);
     }
     if (!mutexHeld) {
       appendServerLog("Не удалось обновить lock n8n: reclaim-мьютекс занят - обновление отменено (fail-closed)");
@@ -1217,10 +1212,23 @@ function newReclaimMutexToken(): string {
   return `${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
 }
 
-function writeReclaimMutexToken(mutex: string, token: string): void {
+// Atomic mutex acquisition: mkdir + owner token. If the token write fails
+// after a successful mkdir, roll back (remove the dir we just created):
+// holding an untagged mutex would leak it - the token-checked release
+// would refuse to remove it and the stuck-recovery would keep it by TTL.
+function tryAcquireReclaimMutex(mutex: string, token: string): boolean {
+  try {
+    fs.mkdirSync(mutex);
+  } catch {
+    return false;
+  }
   try {
     fs.writeFileSync(path.join(mutex, "pid"), token, { encoding: "utf-8", mode: 0o600 });
-  } catch {}
+    return true;
+  } catch {
+    try { fs.rmSync(mutex, { recursive: true, force: true }); } catch {}
+    return false;
+  }
 }
 
 function releaseReclaimMutex(mutex: string, token: string): void {
@@ -1413,13 +1421,8 @@ function releaseN8nLock(pid: number): void {
   let mutexHeld = false;
   const mutexToken = newReclaimMutexToken();
   for (let i = 0; i < 3 && !mutexHeld; i++) {
-    try {
-      fs.mkdirSync(mutex);
-      mutexHeld = true;
-      writeReclaimMutexToken(mutex, mutexToken);
-    } catch {
-      syncWaitMs(50);
-    }
+    mutexHeld = tryAcquireReclaimMutex(mutex, mutexToken);
+    if (!mutexHeld) syncWaitMs(50);
   }
   if (!mutexHeld) {
     appendServerLog(`release n8n lock (pid ${pid}): мьютекс занят - lock оставлен, подберётся как stale`);
@@ -1467,13 +1470,10 @@ function acquireN8nManagerLock(): { ok: true } | { ok: false; reason: string } {
     tryClearStuckReclaimMutex(); // no-op when absent or fresh
     let mutexHeld = false;
     const mutexToken = newReclaimMutexToken();
-    try {
-      fs.mkdirSync(mutex);
-      mutexHeld = true;
-      // Record the mutex owner: a stuck-mutex check must never clear the
-      // mutex of a LIVE reclaimer, no matter how old it looks.
-      writeReclaimMutexToken(mutex, mutexToken);
-    } catch {
+    // Record the mutex owner: a stuck-mutex check must never clear the
+    // mutex of a LIVE reclaimer, no matter how old it looks.
+    mutexHeld = tryAcquireReclaimMutex(mutex, mutexToken);
+    if (!mutexHeld) {
       syncWaitMs(60); // another acquirer/reclaimer holds it - brief wait, retry
       continue;
     }

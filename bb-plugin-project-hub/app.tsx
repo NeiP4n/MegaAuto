@@ -385,7 +385,8 @@ export function ProjectHubView() {
         senderName: "Вы (Оператор)",
         text,
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        status: "sent",
+        // Optimistic bubble: pending until the RPC confirms acceptance.
+        status: "pending",
       };
       setChatMessages((prev) => [...prev, tempUserMsg]);
 

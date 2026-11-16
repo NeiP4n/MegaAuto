@@ -1124,17 +1124,41 @@ function writeN8nLock(rec: N8nLockRecord): void {
 
 // Atomic stale-takeover: only the process that successfully recreates the
 // file with O_EXCL owns the lock; losers get EEXIST and re-evaluate.
+// Atomic stale-lock reclaim without the read-then-unlink TOCTOU: rename the
+// lock aside first (only one process wins the rename), THEN verify the
+// captured content is exactly the record we judged stale. If a newer lock
+// raced in, it is put back untouched.
 function removeStaleN8nLock(expected: N8nLockRecord): boolean {
   if (!n8nLockFile) return false;
+  const reclaimTmp = `${n8nLockFile}.${process.pid}.reclaim`;
+  let captured: string;
   try {
-    const cur = readN8nLock();
-    // Refuse to delete someone else's newer lock.
-    if (!cur || cur.pid !== expected.pid || cur.createdAt !== expected.createdAt) return false;
-    fs.unlinkSync(n8nLockFile);
-    return true;
+    fs.renameSync(n8nLockFile, reclaimTmp);
+    captured = fs.readFileSync(reclaimTmp, "utf-8");
   } catch {
-    return false;
+    return false; // already gone, or not ours to take
   }
+  let isExpected = false;
+  try {
+    const cur = JSON.parse(captured);
+    isExpected = !!cur && cur.pid === expected.pid && String(cur.createdAt || "") === expected.createdAt;
+  } catch {
+    isExpected = false;
+  }
+  if (isExpected) {
+    try { fs.unlinkSync(reclaimTmp); } catch {}
+    return true;
+  }
+  // Content is NOT the stale record we approved for deletion - restore it.
+  try {
+    fs.linkSync(reclaimTmp, n8nLockFile);
+    try { fs.unlinkSync(reclaimTmp); } catch {}
+  } catch {
+    // A third lock appeared in the meantime: leave the captured file on
+    // disk rather than clobbering anything.
+    appendServerLog("Reclaim n8n lock: содержимое изменилось, восстановить не удалось - чужой lock не тронут");
+  }
+  return false;
 }
 
 function releaseN8nLock(pid: number): void {
@@ -1152,34 +1176,59 @@ function releaseN8nLock(pid: number): void {
 // Fail-closed: when the lock cannot be acquired or is corrupted/unreadable, the start
 // must NOT proceed and the lock is never deleted silently. Stale locks (dead holder,
 // or a PID now belonging to an unrelated process) are safely cleaned without signalling.
+// How long an unreadable lock file is treated as "another process may be
+// mid-write": fail-closed within the grace window, garbage-collected after.
+const LOCK_GRACE_MS = 10000;
+
+// Acquire the manager lock atomically. The lock file is created WITH its
+// content in one atomic step (write tmp + hard-link into place): a
+// concurrent acquirer never observes an empty or half-written lock.
+// Fail-closed: no lock, no start. Stale locks (dead holder, or a PID now
+// belonging to an unrelated process) are reclaimed atomically without ever
+// signalling the foreign process.
 function acquireN8nManagerLock(): { ok: true } | { ok: false; reason: string } {
   if (!n8nLockFile) {
     return { ok: false, reason: "каталог данных плагина недоступен (lock-файл не инициализирован)" };
   }
   const myRec: N8nLockRecord = { pid: process.pid, manager: true, createdAt: new Date().toISOString() };
   const payload = JSON.stringify(myRec);
+  const tmpFile = `${n8nLockFile}.${process.pid}.tmp`;
 
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      fs.writeFileSync(n8nLockFile, payload, { flag: "wx", encoding: "utf-8" });
+      fs.writeFileSync(tmpFile, payload, { encoding: "utf-8", mode: 0o600 });
+      // Atomic create-with-content: EEXIST if a holder already exists.
+      fs.linkSync(tmpFile, n8nLockFile);
+      try { fs.unlinkSync(tmpFile); } catch {}
       return { ok: true };
     } catch (e: any) {
+      try { fs.unlinkSync(tmpFile); } catch {}
       if (e?.code !== "EEXIST") {
         return { ok: false, reason: `не удалось создать lock-файл: ${e?.message || e}` };
       }
     }
 
+    // Someone holds the lock: inspect it.
+    let mtimeMs = 0;
+    try {
+      mtimeMs = fs.statSync(n8nLockFile).mtimeMs;
+    } catch {
+      continue; // disappeared between link attempt and stat - retry
+    }
     const rec = readN8nLock();
     if (!rec) {
-      // Fail-closed: если файл существует, но повреждён или не читается — не удалять молча!
-      if (fs.existsSync(n8nLockFile)) {
-        appendServerLog("Найден повреждённый или нечитаемый lock n8n — запуск отменён (fail-closed)");
+      // Unreadable/empty content. Fail closed while fresh: never delete a
+      // lock another process may still be writing. Collect as garbage only
+      // after the grace window.
+      if (Date.now() - mtimeMs < LOCK_GRACE_MS) {
+        appendServerLog("Lock n8n занят (запись формируется другим процессом) - запуск отменён (fail-closed)");
         return {
           ok: false,
-          reason: "найден повреждённый или нечитаемый lock-файл n8n — запуск отменён (fail-closed)",
+          reason: "lock n8n занят (запись формируется другим процессом) - повторите через несколько секунд",
         };
       }
-      // Файл исчез между EEXIST и чтением (держатель только что отпустил lock) — повторяем попытку
+      appendServerLog("Lock n8n содержит нечитаемую запись старше grace-периода - подбираем как мусор");
+      try { fs.unlinkSync(n8nLockFile); } catch {}
       continue;
     }
     if (!pidAlive(rec.pid)) {
@@ -1193,8 +1242,8 @@ function acquireN8nManagerLock(): { ok: true } | { ok: false; reason: string } {
     if (isLikelyN8nProcess(rec.pid)) {
       return { ok: false, reason: `n8n уже управляется другим процессом (PID ${rec.pid})` };
     }
-    // PID was reused by an unrelated process: the lock is stale. Remove it
-    // and take over - the foreign process is left completely alone.
+    // PID was reused by an unrelated process: the lock is stale. Reclaim it
+    // atomically and take over - the foreign process is left completely alone.
     appendServerLog(
       `Lock n8n указывает на PID ${rec.pid}, но это не n8n - lock устарел, подбираем (процесс не трогаем)`
     );
@@ -1328,8 +1377,20 @@ async function startLocalN8nProcess(): Promise<{ ok: boolean; message: string; p
             child.kill("SIGKILL");
           }
         } catch {}
+        // Release the lock only after the killed child is REALLY dead;
+        // releasing early would let a parallel start race a dying n8n.
+        if (child.pid) {
+          const killDeadline = Date.now() + 3000;
+          while (Date.now() < killDeadline && pidAlive(child.pid) && child.exitCode === null) {
+            await new Promise((r) => setTimeout(r, 200));
+          }
+          if (pidAlive(child.pid) && child.exitCode === null) {
+            appendServerLog(`n8n (PID ${child.pid}) жив после SIGKILL при таймауте запуска - lock сохранён`);
+          } else {
+            releaseN8nLock(child.pid);
+          }
+        }
         if (localN8nProcess === child) localN8nProcess = null;
-        if (child.pid) releaseN8nLock(child.pid);
         return {
           ok: false,
           message: `Таймаут запуска: n8n не перешёл в состояние готовности за 30 секунд (PID ${child.pid})`,
@@ -1479,7 +1540,19 @@ function cleanupLocalN8n() {
         child.kill("SIGKILL");
       }
     } catch {}
-    if (child.pid) releaseN8nLock(child.pid);
+    // Sync context (process exit): wait briefly for the real death before
+    // releasing the lock; if the child survives, keep the lock so the next
+    // run sees the true owner instead of a free pass.
+    const buf = new Int32Array(new SharedArrayBuffer(4));
+    const deadline = Date.now() + 2000;
+    while (Date.now() < deadline && pidAlive(child.pid)) {
+      Atomics.wait(buf, 0, 0, 100);
+    }
+    if (pidAlive(child.pid)) {
+      appendServerLog(`n8n (PID ${child.pid}) жив после SIGKILL при выходе - lock сохранён`);
+    } else {
+      releaseN8nLock(child.pid);
+    }
     localN8nProcess = null;
     serverState = "stopped";
   }
@@ -1916,15 +1989,16 @@ export default function (bb: BbPluginApi) {
             acc.status = health.connected ? "online" : "offline";
             acc.latencyMs = latency;
           } else {
-            // webhook/telegram: only a 2xx/3xx answer verifies the endpoint;
-            // 404/405/5xx or no answer means "not verified" -> offline.
+            // webhook/telegram: only a real 2xx verifies the endpoint;
+            // redirects (e.g. to a login page), 404/405/5xx or no answer
+            // mean "not verified" -> offline.
             const start = Date.now();
             const res = await fetch(cleanUrl, {
               method: "HEAD",
               signal: AbortSignal.timeout(4000),
               redirect: "manual",
             }).catch(() => null);
-            const verified = res !== null && res.status < 400;
+            const verified = res !== null && res.status >= 200 && res.status < 300;
             store.setAccountStatus(acc.id, verified ? "online" : "offline", verified ? Date.now() - start : undefined);
             acc.status = verified ? "online" : "offline";
           }

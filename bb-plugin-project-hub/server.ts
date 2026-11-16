@@ -1041,6 +1041,7 @@ function findPortPidTri(port: number = 5678): { state: "free" } | { state: "occu
   try {
     if (process.platform === "win32") {
       const out = execSync("netstat -ano -p tcp", { encoding: "utf8", timeout: 2000 });
+      if (!out.trim()) return { state: "unknown" }; // netstat produced nothing: unparseable
       for (const line of out.split("\n")) {
         // netstat columns: proto, local addr, foreign addr, state, pid.
         // Match the LOCAL address exactly - a substring match on ":5678"
@@ -1049,9 +1050,12 @@ function findPortPidTri(port: number = 5678): { state: "free" } | { state: "occu
         const parts = line.trim().split(/\s+/);
         if (parts.length < 5) continue;
         const localAddr = parts[1];
-        if (!localAddr.endsWith(`:${port}`)) continue;
+        if (!localAddr || !localAddr.endsWith(`:${port}`)) continue;
         const pid = parseInt(parts[parts.length - 1], 10);
-        if (!isNaN(pid) && pid > 0) return { state: "occupied", pid };
+        // A LISTENING line on our port whose PID does not parse means the
+        // output format surprised us: unknown, never "free".
+        if (isNaN(pid) || pid <= 0) return { state: "unknown" };
+        return { state: "occupied", pid };
       }
       return { state: "free" };
     }
@@ -1219,10 +1223,18 @@ function restoreOrphanedReclaimCapture(): void {
       .sort((a, b) => a.m - b.m);
     const newest = captures[captures.length - 1]?.f;
     if (newest) {
+      // Hard-link, never rename-over: if a fresh lock appeared since our
+      // existsSync check, linkSync fails EEXIST and the fresh lock stays
+      // untouched (the capture remains on disk for a later recovery).
       try {
-        fs.renameSync(path.join(dir, newest), n8nLockFile);
+        fs.linkSync(path.join(dir, newest), n8nLockFile);
+        try { fs.unlinkSync(path.join(dir, newest)); } catch {}
         appendServerLog(`Reclaim n8n lock: восстановлен захваченный lock после сбоя реклеймера (${newest})`);
-      } catch {}
+      } catch (e: any) {
+        if (e?.code !== "EEXIST") {
+          appendServerLog(`Reclaim n8n lock: не удалось восстановить захват (${newest}): ${e?.message || e}`);
+        }
+      }
     }
   } catch {}
 }
@@ -1274,6 +1286,29 @@ function tryClearStuckReclaimMutex(): void {
     fs.renameSync(mutex, aside);
   } catch {
     return; // another recoverer took it, or it vanished
+  }
+  // Identity re-check on the ASIDE dir: between our inspection and the
+  // rename, the stuck mutex may have been cleared and a FRESH one created
+  // at the same path. If the aside content is not the dead owner we
+  // approved (or the TTL case no longer matches), put it back untouched.
+  let approved = false;
+  try {
+    if (ownerPid !== null) {
+      const raw = fs.readFileSync(path.join(aside, "pid"), "utf-8").trim();
+      const n = parseInt(raw, 10);
+      approved = !isNaN(n) && n === ownerPid && !pidAlive(n);
+    } else {
+      const st = fs.statSync(aside);
+      approved = st.mtimeMs === mtimeMs && Date.now() - st.mtimeMs >= RECLAIM_MUTEX_STALE_MS;
+    }
+  } catch {
+    approved = false;
+  }
+  if (!approved) {
+    try {
+      fs.renameSync(aside, mutex); // not the mutex we approved - restore it
+    } catch {}
+    return;
   }
   try {
     restoreOrphanedReclaimCapture();

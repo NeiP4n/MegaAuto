@@ -34,6 +34,7 @@
   },
   "scripts": {
     "check": "tsc --noEmit",
-    "build:bridge": "cd bridge && go build -o whatsapp-bridge.exe ."
+    "build:bridge": "cd bridge && go build -o whatsapp-bridge.exe .",
+    "build": "bb plugin build"
   }
 }

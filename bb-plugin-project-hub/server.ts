@@ -1513,8 +1513,14 @@ function tryClearStuckReclaimMutex(): boolean {
           let removable = true;
           try {
             const raw2 = fs.readFileSync(path.join(guard, "pid"), "utf-8").trim();
-            const n2 = parseInt(raw2, 10);
-            if (!isNaN(n2) && n2 > 0 && pidAlive(n2)) removable = false;
+            if (!raw2) {
+              removable = false; // empty token mid-write: fail-closed, keep
+            } else {
+              const n2 = parseInt(raw2, 10);
+              if (isNaN(n2) || n2 <= 0 || pidAlive(n2)) {
+                removable = false; // corrupt/unparsable or live owner: fail-closed, keep
+              }
+            }
           } catch (e2: any) {
             if (e2?.code !== "ENOENT") removable = false; // unreadable != deletable
           }
@@ -1556,6 +1562,7 @@ function tryClearStuckReclaimMutex(): boolean {
         // mirroring the pre-guard check and the guard TTL branch.
         try {
           stillStuck = Date.now() - fs.statSync(mutex).mtimeMs >= RECLAIM_MUTEX_STALE_MS;
+          if (stillStuck) approvedRaw = raw; // must match exact unparsable token
         } catch (e2: any) {
           if (e2?.code !== "ENOENT") {
             appendServerLog(`Reclaim n8n mutex: ошибка statSync мьютекса под гардом (${e2?.message || e2}) - recovery отменено (fail-closed)`);
@@ -1599,10 +1606,12 @@ function tryClearStuckReclaimMutex(): boolean {
     try {
       const raw = fs.readFileSync(path.join(mutex, "pid"), "utf-8").trim();
       if (approvedRaw !== null) {
-        finalOk = raw === approvedRaw && !pidAlive(parseInt(raw, 10));
-      } else {
         const n = parseInt(raw, 10);
-        finalOk = isNaN(n) || n <= 0 || !pidAlive(n);
+        finalOk = raw === approvedRaw && (isNaN(n) || n <= 0 || !pidAlive(n));
+      } else {
+        // Mutex was approved while token was absent (legacy empty dir).
+        // Any token appearing now means a new owner took the mutex: fail-closed!
+        finalOk = false;
       }
     } catch (e: any) {
       if (e?.code === "ENOENT") {

@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
 import type { ChatMessage } from "../types";
-import { SvgBot, SvgUser, SvgSend, SvgTrash, SvgSparkles, SvgActivity, SvgZap } from "../icons";
+import { SvgBot, SvgUser, SvgSend, SvgTrash, SvgSparkles, SvgActivity, SvgZap, SvgAlertCircle } from "../icons";
 
 interface AiChatTabProps {
   messages: ChatMessage[];
@@ -125,28 +125,35 @@ export function AiChatTab({
         ) : (
           messages.map((msg) => {
             const isUser = msg.sender === "user";
+            const isSystem = msg.sender === "system" || msg.status === "failed";
             return (
               <div
                 key={msg.id}
                 className={`flex gap-2.5 ${isUser ? "justify-end" : "justify-start"}`}
               >
-                {!isUser && (
+                {isSystem ? (
+                  <div className="w-7 h-7 rounded-lg bg-destructive/15 border border-destructive/25 flex items-center justify-center text-destructive shrink-0 mt-0.5">
+                    <SvgAlertCircle className="w-4 h-4" />
+                  </div>
+                ) : !isUser ? (
                   <div className="w-7 h-7 rounded-lg bg-primary/15 border border-primary/25 flex items-center justify-center text-primary shrink-0 mt-0.5">
                     <SvgBot className="w-4 h-4" />
                   </div>
-                )}
+                ) : null}
 
                 <div
                   className={`max-w-[85%] rounded-xl px-3.5 py-2.5 shadow-sm text-xs ${
                     isUser
                       ? "bg-emerald-500/15 border border-emerald-500/30 text-foreground"
+                      : isSystem
+                      ? "bg-destructive/10 border border-destructive/30 text-foreground"
                       : "bg-card/80 border border-border/50 text-foreground backdrop-blur-sm"
                   }`}
                 >
                   {/* Sender Header */}
                   <div className="flex items-center justify-between gap-3 text-[10px] text-muted-foreground mb-1">
                     <span className="font-semibold text-foreground/80">
-                      {isUser ? "Вы (Оператор)" : msg.senderName || "Агент"}
+                      {isUser ? "Вы (Оператор)" : isSystem ? "Система (Ошибка)" : msg.senderName || "Агент"}
                     </span>
                     <span className="font-mono">{msg.timestamp}</span>
                   </div>

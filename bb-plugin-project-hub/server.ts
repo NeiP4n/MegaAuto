@@ -1223,21 +1223,25 @@ function tryAcquireReclaimMutex(mutex: string, token: string): boolean {
     return false;
   }
   try {
-    fs.writeFileSync(path.join(mutex, "pid"), token, { encoding: "utf-8", mode: 0o600 });
+    fs.writeFileSync(path.join(mutex, "pid"), token, { encoding: "utf-8", mode: 0o600, flag: "wx" });
     return true;
   } catch {
-    // Roll back only what we created. Unlink the token file ONLY while it
-    // still holds our token - a failed write leaves a partial token, which
-    // is always a PREFIX of ours; anything else means the dir no longer
-    // carries our content and must stay untouched. rmdir is empty-dir
-    // only: unexpected content stays for the TTL-based stuck recovery.
+    // N01: Rollback only what we created. Unlink pidFile and rmdir ONLY if
+    // confirmed holding our token (or empty/ENOENT). Foreign files stay untouched.
     try {
-      const cur = fs.readFileSync(path.join(mutex, "pid"), "utf-8");
-      if (token.startsWith(cur)) {
-        try { fs.unlinkSync(path.join(mutex, "pid")); } catch {}
+      const p = path.join(mutex, "pid");
+      let canUnlink = false;
+      try {
+        const cur = fs.readFileSync(p, "utf-8");
+        canUnlink = cur === token || cur === "" || token.startsWith(cur);
+      } catch (e: any) {
+        if (e?.code === "ENOENT") canUnlink = true;
       }
-    } catch {} // no token file (the write never created one) - nothing to unlink
-    try { fs.rmdirSync(mutex); } catch {}
+      if (canUnlink) {
+        try { fs.unlinkSync(p); } catch {}
+        try { fs.rmdirSync(mutex); } catch {}
+      }
+    } catch {}
     return false;
   }
 }
@@ -1337,6 +1341,12 @@ function tryClearStuckReclaimMutex(): void {
           try { fs.rmdirSync(p); } catch {}
         }
       }
+      const mg = f.match(new RegExp(`^${base.replace(/\./g, "\\.")}\\.recovery-guard\\.removing-(\\d+)$`));
+      if (mg && !pidAlive(parseInt(mg[1], 10))) {
+        const p = path.join(dir, f);
+        try { fs.unlinkSync(path.join(p, "pid")); } catch {}
+        try { fs.rmdirSync(p); } catch {}
+      }
     }
   } catch {}
 
@@ -1393,11 +1403,19 @@ function tryClearStuckReclaimMutex(): void {
     }
     if (gpid !== null && graw !== null) {
       if (pidAlive(gpid)) return; // another recoverer is working
+      // Guard G4: atomic rename aside eliminates read-unlink window on guard
+      const guardRemoving = `${guard}.removing-${process.pid}`;
       try {
-        const cur = fs.readFileSync(path.join(guard, "pid"), "utf-8").trim();
-        if (cur === graw && !pidAlive(gpid)) {
-          try { fs.unlinkSync(path.join(guard, "pid")); } catch {}
-          try { fs.rmdirSync(guard); } catch {}
+        fs.renameSync(guard, guardRemoving);
+        let asideToken: string | null = null;
+        try {
+          asideToken = fs.readFileSync(path.join(guardRemoving, "pid"), "utf-8").trim();
+        } catch {}
+        if (asideToken === graw && !pidAlive(gpid)) {
+          try { fs.unlinkSync(path.join(guardRemoving, "pid")); } catch {}
+          try { fs.rmdirSync(guardRemoving); } catch {}
+        } else {
+          try { fs.renameSync(guardRemoving, guard); } catch {}
         }
       } catch {}
       continue;

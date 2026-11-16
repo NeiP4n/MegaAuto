@@ -1226,7 +1226,12 @@ function tryAcquireReclaimMutex(mutex: string, token: string): boolean {
     fs.writeFileSync(path.join(mutex, "pid"), token, { encoding: "utf-8", mode: 0o600 });
     return true;
   } catch {
-    try { fs.rmSync(mutex, { recursive: true, force: true }); } catch {}
+    // Roll back only what we created: unlink the (possibly partial) token
+    // file and rmdir (empty-dir only). No recursive rm on a shared path:
+    // if anything unexpected is inside, the dir stays and the stuck
+    // recovery handles it by TTL. We never delete someone else's content.
+    try { fs.unlinkSync(path.join(mutex, "pid")); } catch {}
+    try { fs.rmdirSync(mutex); } catch {}
     return false;
   }
 }
@@ -1240,9 +1245,10 @@ function releaseReclaimMutex(mutex: string, token: string): void {
     appendServerLog("reclaim-мьютекс сменил владельца за время критической секции - чужой не удаляем");
     return;
   }
-  try {
-    fs.rmSync(mutex, { recursive: true, force: true });
-  } catch {}
+  // Our own mutex contains only our token file: unlink + rmdir (empty-dir
+  // only), never a recursive rm on a shared path.
+  try { fs.unlinkSync(path.join(mutex, "pid")); } catch {}
+  try { fs.rmdirSync(mutex); } catch {}
 }
 
 // Restore lock content captured by a crashed reclaimer, if the lock file
@@ -1281,17 +1287,24 @@ function restoreOrphanedReclaimCapture(): void {
 }
 
 // Clear an abandoned reclaim mutex (reclaimer crashed mid-flight). The
-// mutex dir carries its owner's PID: while that PID is ALIVE the mutex is
-// never cleared, however old it is. Only a dead owner (or a pre-PID mutex
-// older than the stale window) lets us recover. Recovery is fenced: the
-// mutex is moved aside with an atomic rename first, so two concurrent
-// recoverers can never remove a FRESH mutex recreated at the old path -
-// only one wins the rename, the other gets ENOENT and backs off.
+// mutex dir carries its owner's token (starts with the PID): while that
+// PID is ALIVE the mutex is never cleared, however old it is. Recovery
+// runs under an exclusive recovery-guard (a second mkdir mutex with its
+// own owner token), and the stuck mutex is removed IN PLACE - never
+// moved aside - so the mutex path is never observably empty and no fresh
+// mutex can appear mid-recovery (case R08). The guard serializes
+// recoverers, so the verify->remove sequence cannot span someone else's
+// fresh mutex. A crashed recoverer leaves a dead-owner guard, which the
+// next recoverer clears the same way (dead-pid re-check right before
+// removal, then atomic mkdir - only one winner). No recursive rm on any
+// shared path: token file unlink + rmdir (empty-dir only).
 function tryClearStuckReclaimMutex(): void {
   if (!n8nLockFile) return;
   const mutex = reclaimMutexPath();
-  // Sweep leftover recovery dirs of crashed recoverers first (dead pid
-  // suffix only); the mutex path itself may already be gone.
+  const guard = `${n8nLockFile}.recovery-guard`;
+
+  // Sweep leftover recovery dirs from the previous fenced design (dead
+  // pid suffix only); new code never creates them.
   try {
     const dir = path.dirname(n8nLockFile);
     const base = path.basename(n8nLockFile);
@@ -1299,15 +1312,18 @@ function tryClearStuckReclaimMutex(): void {
       const m = f.match(new RegExp(`^${base.replace(/\./g, "\\.")}\\.reclaim-mutex\\.recovering-(\\d+)$`));
       if (m && !pidAlive(parseInt(m[1], 10))) {
         restoreOrphanedReclaimCapture();
-        try { fs.rmSync(path.join(dir, f), { recursive: true, force: true }); } catch {}
+        const p = path.join(dir, f);
+        try { fs.unlinkSync(path.join(p, "pid")); } catch {}
+        try { fs.rmdirSync(p); } catch {}
       }
     }
   } catch {}
+
   let mtimeMs: number;
   try {
     mtimeMs = fs.statSync(mutex).mtimeMs;
   } catch {
-    return; // no mutex present
+    return; // no mutex present - nothing to recover
   }
   let ownerPid: number | null = null;
   try {
@@ -1321,41 +1337,73 @@ function tryClearStuckReclaimMutex(): void {
   if (ownerPid === null && Date.now() - mtimeMs < RECLAIM_MUTEX_STALE_MS) {
     return; // no PID recorded (old format or mid-creation): age-based only
   }
-  // Fence: atomically move the stuck mutex aside; only one recoverer wins.
-  const aside = `${mutex}.recovering-${process.pid}`;
-  try {
-    fs.renameSync(mutex, aside);
-  } catch {
-    return; // another recoverer took it, or it vanished
-  }
-  // Identity re-check on the ASIDE dir: between our inspection and the
-  // rename, the stuck mutex may have been cleared and a FRESH one created
-  // at the same path. If the aside content is not the dead owner we
-  // approved (or the TTL case no longer matches), put it back untouched.
-  let approved = false;
-  try {
-    if (ownerPid !== null) {
-      const raw = fs.readFileSync(path.join(aside, "pid"), "utf-8").trim();
-      const n = parseInt(raw, 10);
-      approved = !isNaN(n) && n === ownerPid && !pidAlive(n);
-    } else {
-      const st = fs.statSync(aside);
-      approved = st.mtimeMs === mtimeMs && Date.now() - st.mtimeMs >= RECLAIM_MUTEX_STALE_MS;
-    }
-  } catch {
-    approved = false;
-  }
-  if (!approved) {
+
+  // Serialize recoverers under the guard (atomic mkdir: single winner).
+  const token = newReclaimMutexToken();
+  let guardHeld = false;
+  for (let i = 0; i < 3 && !guardHeld; i++) {
+    guardHeld = tryAcquireReclaimMutex(guard, token);
+    if (guardHeld) break;
+    // Guard busy: clear it only when its owner is PROVEN dead, re-checking
+    // the recorded identity immediately before the removal so a fresh
+    // guard (alive owner) is never removed. A live owner: back off.
+    let gpid: number | null = null;
     try {
-      fs.renameSync(aside, mutex); // not the mutex we approved - restore it
+      const raw = fs.readFileSync(path.join(guard, "pid"), "utf-8").trim();
+      const n = parseInt(raw, 10);
+      if (!isNaN(n) && n > 0) gpid = n;
     } catch {}
-    return;
+    if (gpid !== null) {
+      if (pidAlive(gpid)) return; // another recoverer is working
+      try {
+        const cur = fs.readFileSync(path.join(guard, "pid"), "utf-8").trim();
+        if (parseInt(cur, 10) === gpid && !pidAlive(gpid)) {
+          try { fs.unlinkSync(path.join(guard, "pid")); } catch {}
+          try { fs.rmdirSync(guard); } catch {}
+        }
+      } catch {}
+      continue;
+    }
+    // Unreadable/legacy guard: TTL fallback.
+    try {
+      if (Date.now() - fs.statSync(guard).mtimeMs >= RECLAIM_MUTEX_STALE_MS) {
+        try { fs.unlinkSync(path.join(guard, "pid")); } catch {}
+        try { fs.rmdirSync(guard); } catch {}
+        continue;
+      }
+    } catch {
+      continue;
+    }
+    syncWaitMs(40);
   }
+  if (!guardHeld) return;
+
   try {
+    // Re-verify, now that no other recoverer can interfere: the mutex is
+    // still the approved stuck one (dead owner, or TTL for legacy). While
+    // it sits at its path nobody can create a fresh mutex there, and only
+    // the guard holder removes stuck mutexes - this removal cannot hit a
+    // fresh mutex.
+    let stillStuck = false;
+    try {
+      const raw = fs.readFileSync(path.join(mutex, "pid"), "utf-8").trim();
+      const n = parseInt(raw, 10);
+      stillStuck = !isNaN(n) && n > 0 && !pidAlive(n);
+    } catch {
+      try {
+        stillStuck = Date.now() - fs.statSync(mutex).mtimeMs >= RECLAIM_MUTEX_STALE_MS;
+      } catch {}
+    }
+    if (!stillStuck) return;
     restoreOrphanedReclaimCapture();
-    fs.rmSync(aside, { recursive: true, force: true });
+    try { fs.unlinkSync(path.join(mutex, "pid")); } catch {}
+    try {
+      fs.rmdirSync(mutex); // empty-dir only: unexpected content stays
+    } catch {}
     appendServerLog("Reclaim n8n lock: убран зависший reclaim-мьютекс (реклеймер умер)");
-  } catch {}
+  } finally {
+    releaseReclaimMutex(guard, token);
+  }
 }
 
 // Stale-lock takeover, called ONLY while holding the reclaim mutex: rename

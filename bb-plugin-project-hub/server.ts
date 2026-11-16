@@ -1403,19 +1403,18 @@ function tryClearStuckReclaimMutex(): void {
     }
     if (gpid !== null && graw !== null) {
       if (pidAlive(gpid)) return; // another recoverer is working
-      // Guard G4: atomic rename aside eliminates read-unlink window on guard
-      const guardRemoving = `${guard}.removing-${process.pid}`;
+      // Remove the dead guard IN PLACE - never rename it aside: an aside
+      // window would leave the guard path observably empty, and a fresh
+      // mkdir could then admit a second recoverer into the critical
+      // section while the aside is being verified (the R08-class window
+      // this design removed for the mutex itself). Re-read the EXACT
+      // token immediately before removal: a fresh guard (alive owner, or
+      // any instance that replaced the approved one) is never removed.
       try {
-        fs.renameSync(guard, guardRemoving);
-        let asideToken: string | null = null;
-        try {
-          asideToken = fs.readFileSync(path.join(guardRemoving, "pid"), "utf-8").trim();
-        } catch {}
-        if (asideToken === graw && !pidAlive(gpid)) {
-          try { fs.unlinkSync(path.join(guardRemoving, "pid")); } catch {}
-          try { fs.rmdirSync(guardRemoving); } catch {}
-        } else {
-          try { fs.renameSync(guardRemoving, guard); } catch {}
+        const cur = fs.readFileSync(path.join(guard, "pid"), "utf-8").trim();
+        if (cur === graw && !pidAlive(gpid)) {
+          try { fs.unlinkSync(path.join(guard, "pid")); } catch {}
+          try { fs.rmdirSync(guard); } catch {}
         }
       } catch {}
       continue;

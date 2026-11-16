@@ -1332,14 +1332,23 @@ function tryClearStuckReclaimMutex(): void {
   try {
     const dir = path.dirname(n8nLockFile);
     const base = path.basename(n8nLockFile);
-    for (const f of fs.readdirSync(dir)) {
+    let files: string[];
+    try {
+      files = fs.readdirSync(dir);
+    } catch (e: any) {
+      appendServerLog(`Reclaim n8n mutex: ошибка readdirSync в sweep (${e?.message || e}) - recovery отменено (fail-closed)`);
+      return;
+    }
+    for (const f of files) {
       const m = f.match(new RegExp(`^${base.replace(/\./g, "\\.")}\\.reclaim-mutex\\.recovering-(\\d+)$`));
       if (m && !pidAlive(parseInt(m[1], 10))) {
-        if (restoreOrphanedReclaimCapture()) {
-          const p = path.join(dir, f);
-          try { fs.unlinkSync(path.join(p, "pid")); } catch {}
-          try { fs.rmdirSync(p); } catch {}
+        if (!restoreOrphanedReclaimCapture()) {
+          appendServerLog("Reclaim n8n mutex: восстановление захвата не удалось в sweep - recovery отменено (fail-closed)");
+          return;
         }
+        const p = path.join(dir, f);
+        try { fs.unlinkSync(path.join(p, "pid")); } catch {}
+        try { fs.rmdirSync(p); } catch {}
       }
       const mg = f.match(new RegExp(`^${base.replace(/\./g, "\\.")}\\.recovery-guard\\.removing-(\\d+)$`));
       if (mg && !pidAlive(parseInt(mg[1], 10))) {
@@ -1348,13 +1357,18 @@ function tryClearStuckReclaimMutex(): void {
         try { fs.rmdirSync(p); } catch {}
       }
     }
-  } catch {}
+  } catch (e: any) {
+    appendServerLog(`Reclaim n8n mutex: сбой sweep (${e?.message || e}) - recovery отменено (fail-closed)`);
+    return;
+  }
 
   let mtimeMs: number;
   try {
     mtimeMs = fs.statSync(mutex).mtimeMs;
-  } catch {
-    return; // no mutex present - nothing to recover
+  } catch (e: any) {
+    if (e?.code === "ENOENT") return; // no mutex present - nothing to recover
+    appendServerLog(`Reclaim n8n mutex: ошибка statSync мьютекса (${e?.message || e}) - recovery отменено (fail-closed)`);
+    return;
   }
   let ownerPid: number | null = null;
   let mutexTokenUnreadable = false;

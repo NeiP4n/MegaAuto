@@ -1491,7 +1491,13 @@ function tryClearStuckReclaimMutex(): boolean {
           try { fs.rmdirSync(guard); } catch {}
           continue;
         }
-      } catch {}
+      } catch (e: any) {
+        if (e?.code === "ENOENT") continue; // guard vanished mid-check - retry
+        // A stat error is not expiry and not a transient to ignore: fail
+        // closed, the caller aborts the acquire with an honest error.
+        appendServerLog(`Reclaim n8n mutex: ошибка statSync гарда (${e?.message || e}) - recovery отменено (fail-closed)`);
+        return false;
+      }
     }
     syncWaitMs(40);
   }

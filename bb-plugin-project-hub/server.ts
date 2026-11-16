@@ -1495,16 +1495,22 @@ function tryClearStuckReclaimMutex(): boolean {
     if (guardPidNotFound || (graw !== null && gpid === null)) {
       try {
         if (Date.now() - fs.statSync(guard).mtimeMs >= RECLAIM_MUTEX_STALE_MS) {
-          // Re-read the token immediately before removing: if a fresh
-          // guard appeared at this path since our check (its token parses
-          // to a LIVE pid), it is never removed.
-          let fresh = false;
+          // Re-verify immediately before removing: the guard must STILL be
+          // the stale one. Re-check its age (a fresh guard created at this
+          // path is younger than the TTL) and re-read its token: a live
+          // owner is never removed, and an UNREADABLE token is not
+          // deletable either (read error != expiry).
+          const curMtime = fs.statSync(guard).mtimeMs;
+          if (Date.now() - curMtime < RECLAIM_MUTEX_STALE_MS) continue; // replaced by a fresh guard
+          let removable = true;
           try {
             const raw2 = fs.readFileSync(path.join(guard, "pid"), "utf-8").trim();
             const n2 = parseInt(raw2, 10);
-            fresh = !isNaN(n2) && n2 > 0 && pidAlive(n2);
-          } catch {}
-          if (!fresh) {
+            if (!isNaN(n2) && n2 > 0 && pidAlive(n2)) removable = false;
+          } catch (e2: any) {
+            if (e2?.code !== "ENOENT") removable = false; // unreadable != deletable
+          }
+          if (removable) {
             try { fs.unlinkSync(path.join(guard, "pid")); } catch {}
             try { fs.rmdirSync(guard); } catch {}
           }
@@ -1540,16 +1546,29 @@ function tryClearStuckReclaimMutex(): boolean {
         // mirroring the pre-guard check and the guard TTL branch.
         try {
           stillStuck = Date.now() - fs.statSync(mutex).mtimeMs >= RECLAIM_MUTEX_STALE_MS;
-        } catch {}
+        } catch (e2: any) {
+          if (e2?.code !== "ENOENT") {
+            appendServerLog(`Reclaim n8n mutex: ошибка statSync мьютекса под гардом (${e2?.message || e2}) - recovery отменено (fail-closed)`);
+            return false;
+          }
+        }
       }
     } catch (e: any) {
       // TTL fallback only when the token file is genuinely ABSENT (legacy
-      // format / mid-creation). A present but unreadable token is not proof
-      // of a stuck mutex: keep it.
+      // format / mid-creation). A present but unreadable token is not
+      // expiry: fail closed, never delete what we cannot read.
       if (e?.code === "ENOENT") {
         try {
           stillStuck = Date.now() - fs.statSync(mutex).mtimeMs >= RECLAIM_MUTEX_STALE_MS;
-        } catch {}
+        } catch (e2: any) {
+          if (e2?.code !== "ENOENT") {
+            appendServerLog(`Reclaim n8n mutex: ошибка statSync мьютекса под гардом (${e2?.message || e2}) - recovery отменено (fail-closed)`);
+            return false;
+          }
+        }
+      } else {
+        appendServerLog(`Reclaim n8n mutex: токен мьютекса не читается под гардом (${e?.message || e}) - recovery отменено (fail-closed)`);
+        return false;
       }
     }
     if (!stillStuck) return true;

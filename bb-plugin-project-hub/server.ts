@@ -1523,15 +1523,17 @@ function tryClearStuckReclaimMutex(): boolean {
           let approvedGuardAbsent = false;
           try {
             const raw2 = fs.readFileSync(path.join(guard, "pid"), "utf-8").trim();
-            if (!raw2) {
-              removable = false; // empty token mid-write: fail-closed, keep
+            const n2 = parseInt(raw2, 10);
+            if (!isNaN(n2) && n2 > 0 && pidAlive(n2)) {
+              removable = false; // live owner: never removed
             } else {
-              const n2 = parseInt(raw2, 10);
-              if (isNaN(n2) || n2 <= 0 || pidAlive(n2)) {
-                removable = false; // corrupt/unparsable or live owner: fail-closed, keep
-              } else {
-                approvedGuardToken = raw2;
-              }
+              // Dead pid, or empty/corrupt content from a crashed
+              // acquisition: approve the EXACT string. The mtime fence
+              // above keeps any freshly created guard, so an old dir with
+              // an unchanged garbage/empty token has no live owner behind
+              // it - refusing to remove it would brick recovery forever
+              // (this branch is the only way such a guard is cleared).
+              approvedGuardToken = raw2;
             }
           } catch (e2: any) {
             if (e2?.code !== "ENOENT") {
@@ -1547,7 +1549,9 @@ function tryClearStuckReclaimMutex(): boolean {
               const curGuard = fs.readFileSync(path.join(guard, "pid"), "utf-8").trim();
               if (approvedGuardToken !== null) {
                 const n3 = parseInt(curGuard, 10);
-                guardFinalOk = curGuard === approvedGuardToken && !isNaN(n3) && n3 > 0 && !pidAlive(n3);
+                // Still the exact approved token, and still no live owner
+                // behind it (unchanged garbage/empty/dead pid - all fine).
+                guardFinalOk = curGuard === approvedGuardToken && (isNaN(n3) || n3 <= 0 || !pidAlive(n3));
               } else {
                 guardFinalOk = false; // was absent, any token now means a fresh guard
               }

@@ -1254,8 +1254,13 @@ function releaseReclaimMutex(mutex: string, token: string): void {
 // Restore lock content captured by a crashed reclaimer, if the lock file
 // is currently absent. Captures are ordered by mtime: newest is
 // authoritative.
-function restoreOrphanedReclaimCapture(): void {
-  if (!n8nLockFile || fs.existsSync(n8nLockFile)) return;
+// Restore the newest orphaned reclaim capture. Returns true when the
+// lock file is present afterwards or there was nothing to restore, false
+// on a REAL failure - callers must treat false as fail-closed (keep the
+// stuck mutex, abort the recovery) rather than losing the captured lock.
+function restoreOrphanedReclaimCapture(): boolean {
+  if (!n8nLockFile) return false;
+  if (fs.existsSync(n8nLockFile)) return true; // a live lock is present
   try {
     const dir = path.dirname(n8nLockFile);
     const base = path.basename(n8nLockFile);
@@ -1269,21 +1274,24 @@ function restoreOrphanedReclaimCapture(): void {
       })
       .sort((a, b) => a.m - b.m);
     const newest = captures[captures.length - 1]?.f;
-    if (newest) {
-      // Hard-link, never rename-over: if a fresh lock appeared since our
-      // existsSync check, linkSync fails EEXIST and the fresh lock stays
-      // untouched (the capture remains on disk for a later recovery).
-      try {
-        fs.linkSync(path.join(dir, newest), n8nLockFile);
-        try { fs.unlinkSync(path.join(dir, newest)); } catch {}
-        appendServerLog(`Reclaim n8n lock: восстановлен захваченный lock после сбоя реклеймера (${newest})`);
-      } catch (e: any) {
-        if (e?.code !== "EEXIST") {
-          appendServerLog(`Reclaim n8n lock: не удалось восстановить захват (${newest}): ${e?.message || e}`);
-        }
-      }
+    if (!newest) return true; // nothing to restore
+    // Hard-link, never rename-over: if a fresh lock appeared since our
+    // existsSync check, linkSync fails EEXIST and the fresh lock stays
+    // untouched (the capture remains on disk for a later recovery).
+    try {
+      fs.linkSync(path.join(dir, newest), n8nLockFile);
+      try { fs.unlinkSync(path.join(dir, newest)); } catch {}
+      appendServerLog(`Reclaim n8n lock: восстановлен захваченный lock после сбоя реклеймера (${newest})`);
+      return true;
+    } catch (e: any) {
+      if (e?.code === "EEXIST") return true; // a fresh lock won - fine
+      appendServerLog(`Reclaim n8n lock: не удалось восстановить захват (${newest}): ${e?.message || e}`);
+      return false;
     }
-  } catch {}
+  } catch (e: any) {
+    appendServerLog(`Reclaim n8n lock: ошибка восстановления захвата: ${e?.message || e}`);
+    return false;
+  }
 }
 
 // Clear an abandoned reclaim mutex (reclaimer crashed mid-flight). The
@@ -1311,10 +1319,11 @@ function tryClearStuckReclaimMutex(): void {
     for (const f of fs.readdirSync(dir)) {
       const m = f.match(new RegExp(`^${base.replace(/\./g, "\\.")}\\.reclaim-mutex\\.recovering-(\\d+)$`));
       if (m && !pidAlive(parseInt(m[1], 10))) {
-        restoreOrphanedReclaimCapture();
-        const p = path.join(dir, f);
-        try { fs.unlinkSync(path.join(p, "pid")); } catch {}
-        try { fs.rmdirSync(p); } catch {}
+        if (restoreOrphanedReclaimCapture()) {
+          const p = path.join(dir, f);
+          try { fs.unlinkSync(path.join(p, "pid")); } catch {}
+          try { fs.rmdirSync(p); } catch {}
+        }
       }
     }
   } catch {}
@@ -1345,19 +1354,21 @@ function tryClearStuckReclaimMutex(): void {
     guardHeld = tryAcquireReclaimMutex(guard, token);
     if (guardHeld) break;
     // Guard busy: clear it only when its owner is PROVEN dead, re-checking
-    // the recorded identity immediately before the removal so a fresh
-    // guard (alive owner) is never removed. A live owner: back off.
+    // the EXACT token immediately before the removal so a fresh guard
+    // (alive owner, or any instance that replaced the one we approved) is
+    // never removed. A live owner: back off.
+    let graw: string | null = null;
     let gpid: number | null = null;
     try {
-      const raw = fs.readFileSync(path.join(guard, "pid"), "utf-8").trim();
-      const n = parseInt(raw, 10);
+      graw = fs.readFileSync(path.join(guard, "pid"), "utf-8").trim();
+      const n = parseInt(graw, 10);
       if (!isNaN(n) && n > 0) gpid = n;
     } catch {}
-    if (gpid !== null) {
+    if (gpid !== null && graw !== null) {
       if (pidAlive(gpid)) return; // another recoverer is working
       try {
         const cur = fs.readFileSync(path.join(guard, "pid"), "utf-8").trim();
-        if (parseInt(cur, 10) === gpid && !pidAlive(gpid)) {
+        if (cur === graw && !pidAlive(gpid)) {
           try { fs.unlinkSync(path.join(guard, "pid")); } catch {}
           try { fs.rmdirSync(guard); } catch {}
         }
@@ -1395,7 +1406,13 @@ function tryClearStuckReclaimMutex(): void {
       } catch {}
     }
     if (!stillStuck) return;
-    restoreOrphanedReclaimCapture();
+    if (!restoreOrphanedReclaimCapture()) {
+      // Fail-closed: the captured lock could not be restored. Keep the
+      // stuck mutex in place and abort this recovery - removing the mutex
+      // now could leave a live lock owner without its lock.
+      appendServerLog("Reclaim n8n lock: recovery отменено - захват не восстановлен, зависший мьютекс сохранён");
+      return;
+    }
     try { fs.unlinkSync(path.join(mutex, "pid")); } catch {}
     try {
       fs.rmdirSync(mutex); // empty-dir only: unexpected content stays

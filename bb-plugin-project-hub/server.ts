@@ -1057,6 +1057,91 @@ function isLikelyN8nProcess(pid: number): boolean {
   }
 }
 
+// ============================================================================
+// Cross-process single-instance lock for the managed n8n server.
+// The in-process startLockPromise only guards THIS plugin process; a second
+// BB host (or a reloaded plugin) could spawn a duplicate n8n. The lock file
+// records who manages n8n; stale locks (dead PID, or a PID now belonging to
+// an unrelated process) are taken over WITHOUT signalling that process.
+// ============================================================================
+let n8nLockFile: string | null = null;
+
+interface N8nLockRecord {
+  pid: number;
+  manager: boolean; // true = a plugin process is mid-start; false = managed n8n child
+  createdAt: string;
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e: any) {
+    // EPERM means the process exists but belongs to another user.
+    return e?.code === "EPERM";
+  }
+}
+
+function readN8nLock(): N8nLockRecord | null {
+  if (!n8nLockFile) return null;
+  try {
+    const raw = JSON.parse(fs.readFileSync(n8nLockFile, "utf-8"));
+    if (raw && typeof raw.pid === "number" && raw.pid > 0) {
+      return { pid: raw.pid, manager: !!raw.manager, createdAt: String(raw.createdAt || "") };
+    }
+  } catch {}
+  return null;
+}
+
+function writeN8nLock(rec: N8nLockRecord): void {
+  if (!n8nLockFile) return;
+  try {
+    fs.writeFileSync(n8nLockFile, JSON.stringify(rec), { encoding: "utf-8", mode: 0o600 });
+  } catch {}
+}
+
+function releaseN8nLock(pid: number): void {
+  const cur = readN8nLock();
+  if (cur && cur.pid === pid && n8nLockFile) {
+    try {
+      fs.unlinkSync(n8nLockFile);
+    } catch {}
+  }
+}
+
+// Returns null when the lock is ours; otherwise a human-readable reason why
+// another live holder blocks the start. Never kills anything.
+function checkN8nInstanceLock(): string | null {
+  if (!n8nLockFile) return null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const rec = readN8nLock();
+    if (!rec) return null; // no lock (or unreadable garbage already gone)
+    if (!pidAlive(rec.pid)) {
+      // Stale: the holder died. Take over.
+      appendServerLog(`Найден устаревший lock n8n (PID ${rec.pid} не существует) - подбираем`);
+      try {
+        fs.unlinkSync(n8nLockFile);
+      } catch {}
+      continue;
+    }
+    if (rec.manager) {
+      return `другой экземпляр плагина уже запускает n8n (PID ${rec.pid})`;
+    }
+    if (isLikelyN8nProcess(rec.pid)) {
+      return `n8n уже управляется другим процессом (PID ${rec.pid})`;
+    }
+    // PID was reused by an unrelated process: the lock is stale. Remove the
+    // file and take over - the foreign process is left completely alone.
+    appendServerLog(
+      `Lock n8n указывает на PID ${rec.pid}, но это не n8n - lock устарел, подбираем (процесс не трогаем)`
+    );
+    try {
+      fs.unlinkSync(n8nLockFile);
+    } catch {}
+  }
+  return null;
+}
+
 async function startLocalN8nProcess(): Promise<{ ok: boolean; message: string; pid?: number }> {
   // 1. Guard against alive child process regardless of current state
   if (localN8nProcess && localN8nProcess.exitCode === null) {
@@ -1086,6 +1171,17 @@ async function startLocalN8nProcess(): Promise<{ ok: boolean; message: string; p
         };
       }
 
+      // Cross-process guard: refuse to double-start when another manager
+      // holds a live lock; stale locks are taken over inside the check.
+      const lockConflict = checkN8nInstanceLock();
+      if (lockConflict) {
+        appendServerLog(`Запуск пропущен: ${lockConflict}`);
+        return { ok: false, message: `Запуск пропущен: ${lockConflict}` };
+      }
+      // Mark ourselves as the manager mid-start so a parallel plugin
+      // instance sees a live lock immediately.
+      writeN8nLock({ pid: process.pid, manager: true, createdAt: new Date().toISOString() });
+
       serverState = "starting";
       appendServerLog("Запуск локального сервера n8n (127.0.0.1:5678)...");
       const isWin = process.platform === "win32";
@@ -1105,6 +1201,9 @@ async function startLocalN8nProcess(): Promise<{ ok: boolean; message: string; p
       });
 
       localN8nProcess = child;
+      if (child.pid) {
+        writeN8nLock({ pid: child.pid, manager: false, createdAt: new Date().toISOString() });
+      }
 
       child.stdout?.on("data", (chunk: any) => {
         const str = chunk.toString();
@@ -1126,6 +1225,7 @@ async function startLocalN8nProcess(): Promise<{ ok: boolean; message: string; p
           localN8nProcess = null;
           serverState = "stopped";
         }
+        if (child.pid) releaseN8nLock(child.pid);
         healthCache.clear();
       });
 
@@ -1135,6 +1235,10 @@ async function startLocalN8nProcess(): Promise<{ ok: boolean; message: string; p
           localN8nProcess = null;
           serverState = "error";
         }
+        if (child.pid) releaseN8nLock(child.pid);
+        // Spawn may have failed before a child PID existed: drop our
+        // manager marker too, or we would block ourselves forever.
+        releaseN8nLock(process.pid);
         healthCache.clear();
       });
 
@@ -1167,6 +1271,7 @@ async function startLocalN8nProcess(): Promise<{ ok: boolean; message: string; p
           }
         } catch {}
         if (localN8nProcess === child) localN8nProcess = null;
+        if (child.pid) releaseN8nLock(child.pid);
         return {
           ok: false,
           message: `Таймаут запуска: n8n не перешёл в состояние готовности за 30 секунд (PID ${child.pid})`,
@@ -1183,6 +1288,8 @@ async function startLocalN8nProcess(): Promise<{ ok: boolean; message: string; p
     } catch (err: any) {
       serverState = "error";
       appendServerLog(`Не удалось запустить n8n: ${err?.message}`);
+      // Do not leave our own manager marker behind on failure.
+      releaseN8nLock(process.pid);
       return {
         ok: false,
         message: err?.message || "Ошибка запуска n8n",
@@ -1271,6 +1378,7 @@ async function stopLocalN8nProcess(): Promise<{ ok: boolean; message: string }> 
   if (localN8nProcess === child) {
     localN8nProcess = null;
   }
+  releaseN8nLock(targetPid);
   serverState = "stopped";
   healthCache.clear();
   appendServerLog(`Сервер n8n остановлен (PID ${targetPid})`);
@@ -1289,6 +1397,7 @@ function cleanupLocalN8n() {
         child.kill("SIGKILL");
       }
     } catch {}
+    if (child.pid) releaseN8nLock(child.pid);
     localN8nProcess = null;
     serverState = "stopped";
   }
@@ -1540,7 +1649,12 @@ async function forwardToN8n(
   const channel = project?.channel || account?.channel || "n8n";
 
   if (channel === "webhook") {
-    const targetUrl = account?.url || cfg.n8nBaseUrl;
+    // No silent fallback to the n8n base URL: a webhook account without a
+    // configured URL has nowhere real to post to, so say so honestly.
+    const targetUrl = account?.url;
+    if (!targetUrl || !/^https?:\/\//i.test(targetUrl)) {
+      return { ok: false, error: "Webhook-аккаунт не настроен: укажите URL вебхука в аккаунте" };
+    }
     try {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       // Security: never forward administrative X-N8N-API-KEY to external webhooks!
@@ -1574,9 +1688,13 @@ async function forwardToN8n(
   }
 
   if (channel === "telegram") {
-    const targetUrl = account?.url?.startsWith("http")
-      ? account.url
-      : `${(cfg.n8nBaseUrl || "http://localhost:5678").replace(/\/+$/, "")}/webhook/telegram`;
+    // The old fallback invented an unconfirmed endpoint
+    // (<n8n>/webhook/telegram) and a fake "@bot" target. Only a real,
+    // user-configured gateway URL is used; otherwise an honest error.
+    const targetUrl = account?.url;
+    if (!targetUrl || !/^https?:\/\//i.test(targetUrl)) {
+      return { ok: false, error: "Telegram-шлюз не настроен: укажите URL шлюза в аккаунте" };
+    }
     try {
       const headers: Record<string, string> = { "Content-Type": "application/json" };
       // Security: never forward administrative X-N8N-API-KEY to external telegram bots!
@@ -1586,7 +1704,7 @@ async function forwardToN8n(
         headers,
         body: JSON.stringify({
           channel: "telegram",
-          target: account?.url || "@bot",
+          target: account?.url,
           projectId,
           command,
           mode,
@@ -1659,6 +1777,7 @@ async function forwardToN8n(
 export default function (bb: BbPluginApi) {
   const pluginRoot = path.basename(__dirname) === "dist" ? path.dirname(__dirname) : __dirname;
   const storePath = path.join(pluginRoot, "data");
+  n8nLockFile = path.join(storePath, "n8n.lock");
   const store = new HubStore(storePath);
 
   // 1. REGISTER RPC IMPLEMENTATIONS (wrapped with strict JSON sanitizer)
@@ -2059,8 +2178,14 @@ export default function (bb: BbPluginApi) {
 
     get_local_server_status: async () => {
       const health = await checkN8nHealth("http://127.0.0.1:5678", undefined, true);
-      const isManaged = Boolean(localN8nProcess !== null && !localN8nProcess.killed);
       const activePid = localN8nProcess?.pid || (health.connected ? findPortPid(5678) : undefined);
+      // Managed means: this process spawned it, or our instance lock names
+      // the listening PID (e.g. after a plugin reload).
+      const lock = readN8nLock();
+      const isManaged = Boolean(
+        (localN8nProcess !== null && !localN8nProcess.killed) ||
+        (lock && !lock.manager && activePid !== undefined && lock.pid === activePid)
+      );
       return {
         ok: true,
         running: health.connected,

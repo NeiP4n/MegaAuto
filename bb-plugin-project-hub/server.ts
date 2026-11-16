@@ -1237,7 +1237,7 @@ function tryAcquireReclaimMutex(mutex: string, token: string): boolean {
       let canUnlink = false;
       try {
         const cur = fs.readFileSync(p, "utf-8");
-        canUnlink = token.startsWith(cur);
+        canUnlink = cur === token;
       } catch (e: any) {
         if (e?.code === "ENOENT") canUnlink = true; // nothing inside - just rmdir
       }
@@ -1362,7 +1362,7 @@ function tryClearStuckReclaimMutex(): boolean {
             appendServerLog(`Reclaim n8n mutex: токен внутри aside (${f}) не читается - fail-closed`);
             return false;
           }
-          if (asidePid !== null && pidAlive(asidePid)) {
+          if (asidePid !== expectedPid) {
             continue;
           }
           if (!restoreOrphanedReclaimCapture()) {
@@ -1388,7 +1388,7 @@ function tryClearStuckReclaimMutex(): boolean {
             if (e?.code !== "ENOENT") unreadable = true;
           }
           if (unreadable) return false;
-          if (asidePid !== null && pidAlive(asidePid)) {
+          if (asidePid !== expectedPid) {
             continue;
           }
           try { fs.unlinkSync(path.join(p, "pid")); } catch {}

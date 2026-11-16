@@ -1128,20 +1128,67 @@ function writeN8nLock(rec: N8nLockRecord): boolean {
   }
 }
 
-// Atomic stale-takeover: only the process that successfully recreates the
-// file with O_EXCL owns the lock; losers get EEXIST and re-evaluate.
-// Atomic stale-lock reclaim without the read-then-unlink TOCTOU: rename the
-// lock aside first (only one process wins the rename), THEN verify the
-// captured content is exactly the record we judged stale. If a newer lock
-// raced in, it is put back untouched.
-function removeStaleN8nLock(expected: N8nLockRecord): boolean {
+// Reclaim mutex: a directory created with mkdirSync (atomic, EEXIST when
+// held). BOTH creating the lock and reclaiming a stale one happen only
+// while holding it, so there is never a window in which the lock file is
+// absent and a second process can create a competing one. mkdir sets the
+// mtime at creation, so a mutex abandoned by a crashed reclaimer is
+// detected by age and cleared (empty-dir rmdir only - always safe).
+const RECLAIM_MUTEX_STALE_MS = 30000;
+
+function reclaimMutexPath(): string {
+  return `${n8nLockFile}.reclaim-mutex`;
+}
+
+function syncWaitMs(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// Clear an abandoned reclaim mutex (reclaimer crashed mid-flight). Before
+// removing it, restore any lock content the crashed reclaimer captured so
+// a live owner is not left without its lock.
+function tryClearStuckReclaimMutex(): void {
+  if (!n8nLockFile) return;
+  const mutex = reclaimMutexPath();
+  let mtimeMs: number;
+  try {
+    mtimeMs = fs.statSync(mutex).mtimeMs;
+  } catch {
+    return; // no mutex present
+  }
+  if (Date.now() - mtimeMs < RECLAIM_MUTEX_STALE_MS) return;
+  try {
+    if (!fs.existsSync(n8nLockFile)) {
+      const dir = path.dirname(n8nLockFile);
+      const base = path.basename(n8nLockFile);
+      const captures = fs
+        .readdirSync(dir)
+        .filter((f) => f.startsWith(`${base}.`) && f.endsWith(".reclaim"))
+        .sort();
+      const newest = captures[captures.length - 1];
+      if (newest) {
+        try {
+          fs.renameSync(path.join(dir, newest), n8nLockFile);
+          appendServerLog(`Reclaim n8n lock: восстановлен захваченный lock после сбоя реклеймера (${newest})`);
+        } catch {}
+      }
+    }
+    fs.rmdirSync(mutex); // succeeds only when empty - safe
+    appendServerLog("Reclaim n8n lock: убран зависший reclaim-мьютекс (реклеймер умер)");
+  } catch {}
+}
+
+// Stale-lock takeover, called ONLY while holding the reclaim mutex: rename
+// the lock aside, verify the captured content is exactly the record we
+// judged stale, then delete it - or put it back untouched. Because every
+// create also runs under the mutex, no competing lock can appear in the
+// aside window; the only possible new content is the live owner's own
+// atomic update (writeN8nLock), which is newer than our capture and wins.
+function reclaimStaleN8nLockLocked(expected: N8nLockRecord): boolean {
   if (!n8nLockFile) return false;
-  // Re-verify immediately before touching the file: if the content changed
-  // since the caller's read, a live owner rewrote the lock - do not move
-  // anything at all (no rename-aside window in the common race).
   const now = readN8nLock();
   if (!now || now.pid !== expected.pid || now.createdAt !== expected.createdAt) {
-    return false;
+    return false; // changed since the caller's read - leave it alone
   }
   const reclaimTmp = `${n8nLockFile}.${process.pid}.reclaim`;
   let captured: string;
@@ -1166,10 +1213,20 @@ function removeStaleN8nLock(expected: N8nLockRecord): boolean {
   try {
     fs.linkSync(reclaimTmp, n8nLockFile);
     try { fs.unlinkSync(reclaimTmp); } catch {}
-  } catch {
-    // A third lock appeared in the meantime: leave the captured file on
-    // disk rather than clobbering anything.
-    appendServerLog("Reclaim n8n lock: содержимое изменилось, восстановить не удалось - чужой lock не тронут");
+  } catch (e: any) {
+    if (e?.code === "EEXIST") {
+      // The live owner rewrote the lock while it was aside; the on-disk
+      // record is newer than our capture, so drop the capture and keep theirs.
+      try { fs.unlinkSync(reclaimTmp); } catch {}
+    } else if (!fs.existsSync(n8nLockFile)) {
+      try {
+        fs.renameSync(reclaimTmp, n8nLockFile);
+      } catch {
+        appendServerLog("Reclaim n8n lock: восстановить не удалось - копия сохранена рядом, чужой lock не затираем");
+      }
+    } else {
+      appendServerLog("Reclaim n8n lock: восстановить не удалось - копия сохранена рядом, чужой lock не затираем");
+    }
   }
   return false;
 }
@@ -1183,18 +1240,14 @@ function releaseN8nLock(pid: number): void {
   }
 }
 
-// Acquire the manager lock atomically using fs.writeFileSync with flag: 'wx'.
-// This creates the lockfile with its content in one atomic step (O_CREAT | O_EXCL),
-// closing any window where an empty file could be observed on EEXIST.
-// Fail-closed: when the lock cannot be acquired or is corrupted/unreadable, the start
-// must NOT proceed and the lock is never deleted silently. Stale locks (dead holder,
-// or a PID now belonging to an unrelated process) are safely cleaned without signalling.
-// Acquire the manager lock atomically. The lock file is created WITH its
-// content in one atomic step (write tmp + hard-link into place): a
-// concurrent acquirer never observes an empty or half-written lock.
-// Fail-closed: no lock, no start. Stale locks (dead holder, or a PID now
-// belonging to an unrelated process) are reclaimed atomically without ever
-// signalling the foreign process.
+// Acquire the manager lock. Creation AND stale reclaim are serialized
+// under the reclaim mutex, so the lock file is never observably absent to
+// a competing acquirer: no two owners, no lost restore. The lock file is
+// created WITH its content in one atomic step (tmp + hard-link), and all
+// updates are atomic (tmp + rename): a concurrent reader never sees an
+// empty or half-written lock. Fail-closed: no lock, no start. Stale locks
+// (dead holder, or a PID reused by an unrelated process) are reclaimed
+// without ever signalling the foreign process.
 function acquireN8nManagerLock(): { ok: true } | { ok: false; reason: string } {
   if (!n8nLockFile) {
     return { ok: false, reason: "каталог данных плагина недоступен (lock-файл не инициализирован)" };
@@ -1202,67 +1255,92 @@ function acquireN8nManagerLock(): { ok: true } | { ok: false; reason: string } {
   const myRec: N8nLockRecord = { pid: process.pid, manager: true, createdAt: new Date().toISOString() };
   const payload = JSON.stringify(myRec);
   const tmpFile = `${n8nLockFile}.${process.pid}.tmp`;
+  const mutex = reclaimMutexPath();
 
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    tryClearStuckReclaimMutex(); // no-op when absent or fresh
+    let mutexHeld = false;
     try {
-      fs.writeFileSync(tmpFile, payload, { encoding: "utf-8", mode: 0o600 });
-      // Atomic create-with-content: EEXIST if a holder already exists.
-      fs.linkSync(tmpFile, n8nLockFile);
-      try { fs.unlinkSync(tmpFile); } catch {}
-      return { ok: true };
-    } catch (e: any) {
-      try { fs.unlinkSync(tmpFile); } catch {}
-      if (e?.code !== "EEXIST") {
-        return { ok: false, reason: `не удалось создать lock-файл: ${e?.message || e}` };
-      }
-    }
-
-    // Someone holds the lock: inspect it. It may have been released between
-    // the failed link attempt and now - then simply retry.
-    if (!fs.existsSync(n8nLockFile)) continue;
-    const rec = readN8nLock();
-    if (!rec) {
-      // Unreadable/corrupt content. Every write in this file is atomic
-      // (tmp+link on create, tmp+rename on update), so a broken lock means
-      // external interference or disk damage - NEVER delete it
-      // automatically: it may belong to a live foreign process. Fail closed
-      // with an honest, actionable error instead.
-      appendServerLog(`Lock n8n нечитаем (${n8nLockFile}) - запуск заблокирован, требуется ручное удаление`);
-      return {
-        ok: false,
-        reason:
-          `lock n8n повреждён или нечитаем: ${n8nLockFile}. ` +
-          `Проверьте, что n8n не запущен, удалите файл вручную (rm "${n8nLockFile}") и повторите запуск. ` +
-          `Автоматически не удаляем: это может быть lock чужого живого процесса.`,
-      };
-    }
-    if (!pidAlive(rec.pid)) {
-      appendServerLog(`Найден устаревший lock n8n (PID ${rec.pid} не существует) - подбираем`);
-      removeStaleN8nLock(rec);
+      fs.mkdirSync(mutex);
+      mutexHeld = true;
+    } catch {
+      syncWaitMs(60); // another acquirer/reclaimer holds it - brief wait, retry
       continue;
     }
-    if (rec.manager) {
-      if (rec.pid === process.pid && !localN8nProcess) {
-        // Our own leftover manager marker: an earlier child-PID update
-        // failed and the child is gone, so nothing is actually managed.
-        // Reclaim it instead of blocking ourselves forever.
-        appendServerLog("Найден собственный manager-lock без живого child - подбираем");
-        removeStaleN8nLock(rec);
+    try {
+      try {
+        fs.writeFileSync(tmpFile, payload, { encoding: "utf-8", mode: 0o600 });
+        // Atomic create-with-content: EEXIST if a holder already exists.
+        fs.linkSync(tmpFile, n8nLockFile);
+        try { fs.unlinkSync(tmpFile); } catch {}
+        return { ok: true };
+      } catch (e: any) {
+        try { fs.unlinkSync(tmpFile); } catch {}
+        if (e?.code !== "EEXIST") {
+          return { ok: false, reason: `не удалось создать lock-файл: ${e?.message || e}` };
+        }
+      }
+
+      // Someone holds the lock: inspect it (still under the mutex). It may
+      // have been released between the failed link attempt and now.
+      if (!fs.existsSync(n8nLockFile)) continue;
+      const rec = readN8nLock();
+      if (!rec) {
+        // Unreadable/corrupt content. Every write in this file is atomic
+        // (tmp+link on create, tmp+rename on update), so a broken lock
+        // means external interference or disk damage - NEVER delete it
+        // automatically: it may belong to a live foreign process. Fail
+        // closed with an honest, actionable error instead.
+        appendServerLog(`Lock n8n нечитаем (${n8nLockFile}) - запуск заблокирован, требуется ручное удаление`);
+        return {
+          ok: false,
+          reason:
+            `lock n8n повреждён или нечитаем: ${n8nLockFile}. ` +
+            `Проверьте, что n8n не запущен, удалите файл вручную (rm "${n8nLockFile}") и повторите запуск. ` +
+            `Автоматически не удаляем: это может быть lock чужого живого процесса.`,
+        };
+      }
+      if (!pidAlive(rec.pid)) {
+        appendServerLog(`Найден устаревший lock n8n (PID ${rec.pid} не существует) - подбираем`);
+        reclaimStaleN8nLockLocked(rec);
         continue;
       }
-      return { ok: false, reason: `другой экземпляр плагина уже запускает n8n (PID ${rec.pid})` };
+      if (rec.manager) {
+        if (rec.pid === process.pid && !localN8nProcess) {
+          // Our own manager marker, but no child reference. Absence of the
+          // reference is NOT proof nothing is alive (a previous start may
+          // have spawned n8n without recording it): reclaim only when no
+          // n8n-like process listens on the port. Never kill anything -
+          // an n8n found here may belong to the user.
+          const portPid = findPortPid(5678);
+          if (portPid && isLikelyN8nProcess(portPid)) {
+            return {
+              ok: false,
+              reason: `lock n8n - наша метка, но на порту 5678 уже живой n8n (PID ${portPid}) - запуск отменён`,
+            };
+          }
+          appendServerLog("Найден собственный manager-lock, child не жив и порт свободен - подбираем");
+          reclaimStaleN8nLockLocked(rec);
+          continue;
+        }
+        return { ok: false, reason: `другой экземпляр плагина уже запускает n8n (PID ${rec.pid})` };
+      }
+      if (isLikelyN8nProcess(rec.pid)) {
+        return { ok: false, reason: `n8n уже управляется другим процессом (PID ${rec.pid})` };
+      }
+      // PID was reused by an unrelated process: the lock is stale. Reclaim
+      // it and take over - the foreign process is left completely alone.
+      appendServerLog(
+        `Lock n8n указывает на PID ${rec.pid}, но это не n8n - lock устарел, подбираем (процесс не трогаем)`
+      );
+      reclaimStaleN8nLockLocked(rec);
+    } finally {
+      if (mutexHeld) {
+        try { fs.rmdirSync(mutex); } catch {}
+      }
     }
-    if (isLikelyN8nProcess(rec.pid)) {
-      return { ok: false, reason: `n8n уже управляется другим процессом (PID ${rec.pid})` };
-    }
-    // PID was reused by an unrelated process: the lock is stale. Reclaim it
-    // atomically and take over - the foreign process is left completely alone.
-    appendServerLog(
-      `Lock n8n указывает на PID ${rec.pid}, но это не n8n - lock устарел, подбираем (процесс не трогаем)`
-    );
-    removeStaleN8nLock(rec);
   }
-  return { ok: false, reason: "не удалось получить lock n8n (гонка за stale lock)" };
+  return { ok: false, reason: "не удалось получить lock n8n (превышено число попыток, активная гонка)" };
 }
 
 async function startLocalN8nProcess(): Promise<{ ok: boolean; message: string; pid?: number }> {
@@ -1322,11 +1400,29 @@ async function startLocalN8nProcess(): Promise<{ ok: boolean; message: string; p
 
       localN8nProcess = child;
       if (child.pid) {
-        // Result is checked and logged inside writeN8nLock. On failure the
-        // lock keeps our manager record: still fail-closed for other
-        // instances, and stop/exit paths release it via the process.pid
-        // fallback below.
-        writeN8nLock({ pid: child.pid, manager: false, createdAt: new Date().toISOString() });
+        const lockUpdated = writeN8nLock({ pid: child.pid, manager: false, createdAt: new Date().toISOString() });
+        if (!lockUpdated) {
+          // Without the child-PID record a later stop/release would not
+          // match the lock. Fail the start honestly: kill only the child
+          // WE just spawned (never a foreign process), wait for its real
+          // death, then release the lock.
+          appendServerLog("Не удалось записать PID child в lock-файл - старт отменяется, child остановлен");
+          localN8nProcess = null;
+          try {
+            child.kill("SIGKILL");
+          } catch {}
+          const killDeadline = Date.now() + 3000;
+          while (Date.now() < killDeadline && pidAlive(child.pid) && child.exitCode === null) {
+            await new Promise((r) => setTimeout(r, 150));
+          }
+          releaseN8nLock(child.pid);
+          releaseN8nLock(process.pid);
+          serverState = "error";
+          return {
+            ok: false,
+            message: "Запуск отменён: не удалось обновить lock-файл (запись PID child). Запущенный нами процесс n8n остановлен.",
+          };
+        }
       }
 
       child.stdout?.on("data", (chunk: any) => {

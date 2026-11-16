@@ -82,7 +82,7 @@ const chatMessageSchema = z.object({
   senderName: z.string(),
   text: z.string(),
   timestamp: z.string(),
-  status: z.enum(["sent", "delivered", "read", "failed"]),
+  status: z.enum(["pending", "sent", "delivered", "read", "failed"]),
   metadata: z
     .object({
       workflowName: z.string().nullable().optional(),
@@ -1934,16 +1934,17 @@ export default function (bb: BbPluginApi) {
             acc.status = health.connected ? "online" : "offline";
             acc.latencyMs = latency;
           } else {
-            // webhook/telegram: any HTTP response means the endpoint exists.
+            // webhook/telegram: only a 2xx/3xx answer verifies the endpoint;
+            // 404/405/5xx or no answer means "not verified" -> offline.
             const start = Date.now();
             const res = await fetch(cleanUrl, {
               method: "HEAD",
               signal: AbortSignal.timeout(4000),
               redirect: "manual",
             }).catch(() => null);
-            const reachable = res !== null;
-            store.setAccountStatus(acc.id, reachable ? "online" : "offline", reachable ? Date.now() - start : undefined);
-            acc.status = reachable ? "online" : "offline";
+            const verified = res !== null && res.status < 400;
+            store.setAccountStatus(acc.id, verified ? "online" : "offline", verified ? Date.now() - start : undefined);
+            acc.status = verified ? "online" : "offline";
           }
         } catch {
           store.setAccountStatus(acc.id, "offline");
@@ -1996,7 +1997,8 @@ export default function (bb: BbPluginApi) {
         senderName: "Оператор",
         text: input.text,
         timestamp: timeStr,
-        status: "sent",
+        // Pending until the remote side actually accepts it.
+        status: "pending",
         metadata: {
           workflowName: input.mode === "command" ? "interactive_command" : "interactive_message",
           status: "running",
@@ -2010,6 +2012,10 @@ export default function (bb: BbPluginApi) {
       const n8nResult = await forwardToN8n(store, input.projectId, input.text, input.mode);
       const actualDurationMs = Date.now() - forwardStart;
 
+      if (n8nResult.ok) {
+        store.updateMessage(newMsg.id, { status: "sent", metadata: { ...newMsg.metadata, status: "success" } });
+        newMsg.status = "sent";
+      }
       if (n8nResult.ok && n8nResult.reply) {
         const replyMsg: ChatMessage = {
           id: `msg-${Date.now()}-reply-${Math.random().toString(36).substring(2, 7)}`,
@@ -2351,7 +2357,7 @@ export default function (bb: BbPluginApi) {
       };
     },
 
-    send_ai_chat: async ({ accountId, message, sessionId, model = "gemini-3.8-flash-acp" }) => {
+    send_ai_chat: async ({ accountId, message, sessionId, model }) => {
       const activeAccount = accountId ? store.getAccountById(accountId) : store.getAccounts()[0];
       const targetUrl = buildSafeWebhookUrl(activeAccount?.url || "http://localhost:5678", "ai-chat");
       // Stable per-account session: a fresh id per message would break
@@ -2360,19 +2366,21 @@ export default function (bb: BbPluginApi) {
       const start = Date.now();
       const nowStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
-      // Save user message to persistent history
+      // Save user message to persistent history as pending; it becomes
+      // "sent" only when the webhook actually accepts it, "failed" otherwise.
       const userMsg: ChatMessage = {
-        id: `ai-msg-user-${Date.now()}`,
+        id: `ai-msg-user-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
         projectId: "proj-n8n-gemini-chat",
         sender: "user",
         senderName: "Вы (Оператор)",
         text: message,
         timestamp: nowStr,
-        status: "sent",
+        status: "pending",
       };
       store.addMessage(userMsg);
 
       let reply = "";
+      let respModel = "";
       let latencyMs = 0;
       let errText: string | null = null;
 
@@ -2386,7 +2394,9 @@ export default function (bb: BbPluginApi) {
             message,
             prompt: message,
             sessionId: effectiveSessionId,
-            model,
+            // No hardcoded model name: the hint is sent only when the
+            // caller explicitly provides one.
+            ...(model ? { model } : {}),
           }),
           signal: AbortSignal.timeout(45000),
           redirect: "manual",
@@ -2399,6 +2409,7 @@ export default function (bb: BbPluginApi) {
             throw new Error(data.error || `n8n AI webhook вернул ok:false (HTTP ${res.status})`);
           }
           reply = data.reply || data.output || data.message || "";
+          if (typeof data.model === "string" && data.model) respModel = data.model;
           if (!reply) {
             // A 200 with no text is not an answer - say so honestly instead
             // of inventing a canned reply.
@@ -2416,37 +2427,43 @@ export default function (bb: BbPluginApi) {
           throw new Error(`HTTP ${res.status}: ${res.statusText}`);
         }
 
+        // The model label comes only from the real response (data.model)
+        // or an explicit caller hint - never a hardcoded default.
+        const effModel = respModel || model || "";
+
         // Save assistant message to persistent history on success
         const aiMsg: ChatMessage = {
-          id: `ai-msg-gemini-${Date.now()}`,
+          id: `ai-msg-gemini-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
           projectId: "proj-n8n-gemini-chat",
           sender: "agent",
-          senderName: model,
+          senderName: effModel || "n8n AI",
           text: reply,
           timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
           status: "delivered",
           metadata: {
-            workflowName: `ai-chat webhook (${model})`,
+            workflowName: effModel ? `ai-chat webhook (${effModel})` : "ai-chat webhook",
             durationMs: latencyMs,
             status: "success",
           },
         };
         store.addMessage(aiMsg);
+        store.updateMessage(userMsg.id, { status: "sent" });
 
         return {
           ok: true,
           reply,
-          model,
+          model: effModel,
           latencyMs,
           error: null,
         };
       } catch (err: any) {
         latencyMs = Date.now() - start;
         errText = err?.message || "Ошибка связи с n8n AI Webhook";
+        store.updateMessage(userMsg.id, { status: "failed" });
         return {
           ok: false,
           reply: "",
-          model,
+          model: model || "",
           latencyMs,
           error: errText,
         };
@@ -2660,7 +2677,7 @@ export default function (bb: BbPluginApi) {
           senderName: "CLI",
           text,
           timestamp: timeStr,
-          status: "sent",
+          status: "pending",
           metadata: {
             workflowName: "cli_command",
             status: "running",
@@ -2668,6 +2685,9 @@ export default function (bb: BbPluginApi) {
         });
 
         const n8nResult = await forwardToN8n(store, projectId, text, "command");
+        if (n8nResult.ok) {
+          store.updateMessage(cliMsgId, { status: "sent", metadata: { workflowName: "cli_command", status: "success" } });
+        }
         if (!n8nResult.ok) {
           store.updateMessage(cliMsgId, {
             status: "failed",
@@ -2774,7 +2794,7 @@ export default function (bb: BbPluginApi) {
         senderName: "AI Assistant",
         text: args.text,
         timestamp: timeStr,
-        status: "sent",
+        status: "pending",
         metadata: {
           workflowName: "agent_command",
           status: "running",
@@ -2783,6 +2803,9 @@ export default function (bb: BbPluginApi) {
       store.addMessage(msg);
 
       const n8nResult = await forwardToN8n(store, args.projectId, args.text, mode);
+      if (n8nResult.ok) {
+        store.updateMessage(msg.id, { status: "sent", metadata: { workflowName: "agent_command", status: "success" } });
+      }
       if (n8nResult.ok && n8nResult.reply) {
         store.addMessage({
           id: `msg-${Date.now()}-reply`,

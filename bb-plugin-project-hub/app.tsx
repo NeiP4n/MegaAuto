@@ -393,7 +393,6 @@ export function ProjectHubView() {
         const res = await rpc.call("send_ai_chat", {
           message: text,
           accountId: activeAccount?.id,
-          model: "gemini-3.8-flash-acp",
           sessionId: aiChatSessionIdRef.current,
         });
         if (res?.ok) {

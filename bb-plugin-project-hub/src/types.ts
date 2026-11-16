@@ -79,7 +79,7 @@ export interface ChatMessage {
   senderName: string;
   text: string;
   timestamp: string;
-  status: "sent" | "delivered" | "read" | "failed";
+  status: "pending" | "sent" | "delivered" | "read" | "failed";
   metadata?: MessageMetadata | null;
 }
 

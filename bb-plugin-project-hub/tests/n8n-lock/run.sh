@@ -2,7 +2,9 @@
 # n8n manager lock (proper-lockfile) - unit + multi-process stress suite.
 # Extracts the lock section from server.ts by anchors, stubs the server-only
 # dependencies (port probe, log), then runs:
-#   UNIT     18 cases: acquire/release, busy error, stale reclaim, compromised
+#   UNIT     21 cases: acquire/release, busy error, stale reclaim, fresh-holder
+#             never broken (free or unknown port), compromised -> own child
+#             stopped (SIGTERM then SIGKILL), clean release has no side effects
 #   STRESS1  6 workers, 2 SIGKILLed mid-run -> single live owner at all times
 #   STRESS2  holder SIGKILLed mid-hold -> stale recovery by another process
 #   STRESS3  live holder blocks everyone; clean exit frees the lock

@@ -1116,7 +1116,8 @@ function isLikelyN8nProcess(pid: number): boolean {
 // manages n8n and its pid); the lock dir is the authority. If our held
 // lock is compromised (dir removed/replaced externally, heartbeat failing
 // past the stale threshold), onCompromised fires and we go fail-closed:
-// log loudly, refuse further starts, never kill the n8n child.
+// log loudly, refuse further starts, and stop the n8n child WE spawned
+// (never a port-derived PID, which may by then be a new owner's n8n).
 // ============================================================================
 let n8nLockFile: string | null = null;
 
@@ -1167,15 +1168,75 @@ let managerLockRelease: (() => void) | null = null;
 // Set when our held lock was compromised: fail-closed from then on.
 let managerLockCompromised: string | null = null;
 
+// Fail-closed half of a compromise: stop exactly the n8n child WE spawned
+// (tracked handle, never a port-derived PID - by then the port may belong
+// to a NEW owner's n8n). Graceful SIGTERM, SIGKILL after a 3s grace. The
+// child's own exit listener updates serverState; the status record is
+// dropped through the ownership-guarded releaseN8nLock only when it is
+// still one we created.
+async function stopN8nChildAfterCompromise(): Promise<void> {
+  const child = localN8nProcess;
+  if (!child || !child.pid || child.exitCode !== null) {
+    appendServerLog("Lock n8n скомпрометирован: наш запущенный n8n не найден (уже завершён) - останавливать нечего");
+    return;
+  }
+  const pid = child.pid;
+  appendServerLog(`Lock n8n скомпрометирован: останавливаем наш n8n (PID ${pid}) - fail-closed`);
+  try {
+    if (process.platform === "win32") {
+      spawn("taskkill", ["/pid", String(pid), "/t"]);
+    } else {
+      child.kill("SIGTERM");
+    }
+  } catch (e: any) {
+    appendServerLog(`Lock n8n скомпрометирован: ошибка SIGTERM для PID ${pid}: ${e?.message || e}`);
+  }
+  const termDeadline = Date.now() + 3000;
+  while (Date.now() < termDeadline && child.exitCode === null && pidAlive(pid)) {
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  if (child.exitCode === null && pidAlive(pid)) {
+    appendServerLog(`Lock n8n скомпрометирован: n8n (PID ${pid}) не завершился добровольно за 3с - SIGKILL`);
+    try {
+      if (process.platform === "win32") {
+        spawn("taskkill", ["/pid", String(pid), "/f", "/t"]);
+      } else {
+        child.kill("SIGKILL");
+      }
+    } catch {}
+    const killDeadline = Date.now() + 5000;
+    while (Date.now() < killDeadline && child.exitCode === null && pidAlive(pid)) {
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+  if (child.exitCode === null && pidAlive(pid)) {
+    // Keep the status record: it names the real (still breathing) owner.
+    appendServerLog(`Lock n8n скомпрометирован: n8n (PID ${pid}) жив даже после SIGKILL - запись сохранена, остановите его вручную`);
+    return;
+  }
+  appendServerLog(`Lock n8n скомпрометирован: наш n8n (PID ${pid}) остановлен`);
+  // Drop OUR status record if it is still ours (a fresher foreign record
+  // is never touched). The lock dir itself is already gone.
+  releaseN8nLock(pid);
+}
+
+// Set while the compromise handler is stopping our child, so shutdown
+// code (and the test harness) can await the stop instead of racing it.
+let lastCompromisedStop: Promise<void> | null = null;
+
 function onManagerLockCompromised(err: Error): void {
+  if (managerLockCompromised) return; // single-fire guard
   managerLockCompromised = err?.message || "lock скомпрометирован";
   managerLockRelease = null;
-  // Fail-closed: we do NOT continue as the owner. The n8n child is never
-  // killed (it may be perfectly healthy); further starts are refused
-  // until the plugin is reloaded.
+  // Fail-closed: we do NOT continue as the owner. Further starts are
+  // refused until the plugin is reloaded, and the n8n child WE spawned is
+  // stopped - otherwise a new owner could start a second n8n next to it.
   appendServerLog(
     `Lock n8n ПОТЕРЯН (скомпрометирован): ${managerLockCompromised}. ` +
-    `Запущенный n8n не трогаем; новые запуски заблокированы до перезапуска плагина (fail-closed).`
+    `Новые запуски заблокированы до перезапуска плагина; наш n8n останавливается (fail-closed).`
+  );
+  lastCompromisedStop = stopN8nChildAfterCompromise().catch((e: any) =>
+    appendServerLog(`Lock n8n скомпрометирован: ошибка остановки нашего n8n: ${e?.message || e}`)
   );
 }
 
@@ -1259,13 +1320,11 @@ function releaseN8nLock(pid: number): void {
 }
 
 // Acquire the manager lock. Fail-closed: no lock, no start. A busy lock
-// (ELOCKED) means another live instance: honest error, its processes are
-// never touched. The single escape hatch mirrors the old behavior: when
-// the lock is held but port 5678 is PROVEN free, the holder has no live
-// n8n behind it (e.g. a zombie heartbeat from a reloaded plugin module) -
-// the stale dir is removed once and the acquire retried once; the old
-// holder's heartbeat then fails and its onCompromised fires (its own
-// fail-closed path).
+// (ELOCKED) means another instance holds a FRESH lock: honest busy error,
+// its lock is never broken manually - the holder may simply be mid-start
+// with n8n not yet on the port, so a port probe cannot prove it dead. A
+// crashed holder stops heartbeating and proper-lockfile reclaims its dir
+// as stale by itself.
 function acquireN8nManagerLock(): { ok: true } | { ok: false; reason: string } {
   if (!n8nLockFile) {
     return { ok: false, reason: "каталог данных плагина недоступен (lock-файл не инициализирован)" };
@@ -1295,31 +1354,10 @@ function acquireN8nManagerLock(): { ok: true } | { ok: false; reason: string } {
     if (e?.code !== "ELOCKED") {
       return { ok: false, reason: `не удалось получить lock n8n: ${e?.message || e}` };
     }
-    const port = findPortPidTri(5678);
-    if (port.state === "occupied") {
-      return {
-        ok: false,
-        reason: isLikelyN8nProcess(port.pid)
-          ? `n8n уже работает (PID ${port.pid}) - запуск отменён`
-          : `порт 5678 занят другим процессом (PID ${port.pid}) - запуск отменён (процесс не трогаем)`,
-      };
-    }
-    if (port.state === "unknown") {
-      return {
-        ok: false,
-        reason: "lock n8n занят, а состояние порта 5678 определить не удалось - запуск отменён (fail-closed)",
-      };
-    }
-    try {
-      fs.rmdirSync(`${lockPath}.lock`);
-    } catch (rmErr: any) {
-      return { ok: false, reason: `lock n8n занят, снять зависший lock при свободном порте не удалось: ${rmErr?.message || rmErr}` };
-    }
-    try {
-      managerLockRelease = lockfileLockSync(lockPath, options);
-    } catch (e2: any) {
-      return { ok: false, reason: `lock n8n занят другим экземпляром: ${e2?.message || e2}` };
-    }
+    return {
+      ok: false,
+      reason: `другой экземпляр уже запускает n8n (lock занят) - запуск отменён; если предыдущий процесс аварийно завершился, lock освободится автоматически в течение ${Math.round(N8N_LOCK_STALE_MS / 1000)} с`,
+    };
   }
 
   // Cross-version guard: an old-format record naming a LIVE foreign pid

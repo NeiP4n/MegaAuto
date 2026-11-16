@@ -12,10 +12,10 @@ interface AiChatTabProps {
 }
 
 const QUICK_PROMPTS = [
-  "Как создать Telegram-бота в n8n?",
+  "Как создать HTTP Webhook триггер в n8n?",
   "Напиши JS-код для Code ноды (парсинг JSON)",
   "Проверь статус локального n8n и базу SQLite",
-  "Что умеет AI-агент в связке с n8n?",
+  "Как настроить расписание по Cron в n8n?",
 ];
 
 export function AiChatTab({

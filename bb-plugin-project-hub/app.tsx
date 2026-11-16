@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback, useMemo } from "react";
+import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { definePluginApp, useRpc } from "@get-bb/plugin-sdk/app";
 import type { rpcContract } from "./server";
 import type { Account, N8nWorkflow, N8nExecution, WebhookDispatchResult, PingInstanceResult, ChatMessage } from "./src/types";
@@ -28,6 +28,7 @@ export function ProjectHubView() {
 
   // State: Local n8n server process
   const [isServerBusy, setIsServerBusy] = useState(false);
+  const isServerBusyRef = useRef(false);
   const [isServerRunning, setIsServerRunning] = useState(false);
   const [serverLogs, setServerLogs] = useState<string[]>([]);
 
@@ -45,6 +46,7 @@ export function ProjectHubView() {
   const [columnTab, setColumnTab] = useState<"workspace" | "chat">("chat");
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [isSendingChat, setIsSendingChat] = useState(false);
+  const isSendingChatRef = useRef(false);
   const [isLoadingChatHistory, setIsLoadingChatHistory] = useState(false);
 
   // Active Instance & Workflow
@@ -116,6 +118,7 @@ export function ProjectHubView() {
 
   // Ping an instance
   const handlePingAccount = useCallback(async (accountId: string) => {
+    if (!accountId || pingingId === accountId) return;
     setPingingId(accountId);
     try {
       const res = (await rpc.call("ping_instance", { accountId })) as unknown as PingInstanceResult;
@@ -215,12 +218,15 @@ export function ProjectHubView() {
 
   // Toggle local server start/stop
   const handleToggleLocalServer = async () => {
+    if (isServerBusy || isServerBusyRef.current) return;
+    isServerBusyRef.current = true;
     setIsServerBusy(true);
     try {
       if (isServerRunning) {
         await rpc.call("stop_local_server", {});
         setIsServerRunning(false);
         setIsServerBusy(false);
+        isServerBusyRef.current = false;
         setAccounts((prev) =>
           prev.map((a) =>
             isLocalPort5678(a.url)
@@ -235,13 +241,18 @@ export function ProjectHubView() {
       } else {
         const startRes = await rpc.call("start_local_server", {});
         if (!startRes?.ok) {
+          if (startRes?.message) {
+            setServerLogs((prev) => [...prev, `[ОШИБКА ЗАПУСКА] ${startRes.message}`]);
+          }
           setIsServerBusy(false);
+          isServerBusyRef.current = false;
           return;
         }
 
         if (startRes.message?.includes("уже") || startRes.message?.includes("already")) {
           setIsServerRunning(true);
           setIsServerBusy(false);
+          isServerBusyRef.current = false;
           setAccounts((prev) =>
             prev.map((a) =>
               isLocalPort5678(a.url)
@@ -278,6 +289,7 @@ export function ProjectHubView() {
               clearInterval(checkInterval);
               setIsServerRunning(true);
               setIsServerBusy(false);
+              isServerBusyRef.current = false;
               setAccounts((prev) =>
                 prev.map((a) =>
                   isLocalPort5678(a.url)
@@ -299,12 +311,14 @@ export function ProjectHubView() {
           if (attempts >= maxAttempts) {
             clearInterval(checkInterval);
             setIsServerBusy(false);
+            isServerBusyRef.current = false;
             if (activeAccount?.id) handlePingAccount(activeAccount.id);
           }
         }, 1000);
       }
     } catch {
       setIsServerBusy(false);
+      isServerBusyRef.current = false;
     }
   };
 
@@ -356,7 +370,11 @@ export function ProjectHubView() {
   }, [loadChatHistory]);
 
   const handleSendChatMessage = useCallback(
-    async (text: string) => {
+    async (text: string): Promise<{ ok: boolean; error?: string }> => {
+      if (!text.trim() || isSendingChat || isSendingChatRef.current) {
+        return { ok: false, error: "Сообщение уже отправляется" };
+      }
+      isSendingChatRef.current = true;
       setIsSendingChat(true);
       const tempUserMsg: ChatMessage = {
         id: `ai-msg-temp-${Date.now()}`,
@@ -419,9 +437,10 @@ export function ProjectHubView() {
         return { ok: false, error: errMsg };
       } finally {
         setIsSendingChat(false);
+        isSendingChatRef.current = false;
       }
     },
-    [rpc, activeAccount]
+    [rpc, activeAccount, isSendingChat]
   );
 
   const handleClearChatHistory = useCallback(async () => {

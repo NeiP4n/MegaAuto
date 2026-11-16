@@ -32,6 +32,8 @@ export function WebhookConsole({
   };
 
   const handleSend = async () => {
+    if (isSending) return;
+
     // Confirmation check for production webhooks
     const isProductionWebhook = !webhookPath.includes("test") && !jsonPayload.includes('"test": true');
     if (isProductionWebhook) {

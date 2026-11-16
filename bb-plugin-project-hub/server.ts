@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { spawn, execSync, type ChildProcess } from "node:child_process";
+import { lockSync as lockfileLockSync } from "proper-lockfile";
 import type { Account, Project, ChatMessage, HubStatus } from "./src/types";
 
 // ESM has no __dirname or require - shims for ESM plugin runtime
@@ -1105,9 +1106,17 @@ function isLikelyN8nProcess(pid: number): boolean {
 // ============================================================================
 // Cross-process single-instance lock for the managed n8n server.
 // The in-process startLockPromise only guards THIS plugin process; a second
-// BB host (or a reloaded plugin) could spawn a duplicate n8n. The lock file
-// records who manages n8n; stale locks (dead PID, or a PID now belonging to
-// an unrelated process) are taken over WITHOUT signalling that process.
+// BB host (or a reloaded plugin) could spawn a duplicate n8n.
+//
+// Mutual exclusion is proper-lockfile: an atomic mkdir on `<n8n.lock>.lock`.
+// A LIVE holder keeps the lock dir mtime fresh via a heartbeat, so it is
+// never taken for stale; a crashed holder stops heartbeating, the dir goes
+// stale and the next acquirer removes it - a crash blocks a start for at
+// most N8N_LOCK_STALE_MS. The n8n.lock FILE is only a status record (who
+// manages n8n and its pid); the lock dir is the authority. If our held
+// lock is compromised (dir removed/replaced externally, heartbeat failing
+// past the stale threshold), onCompromised fires and we go fail-closed:
+// log loudly, refuse further starts, never kill the n8n child.
 // ============================================================================
 let n8nLockFile: string | null = null;
 
@@ -1122,7 +1131,7 @@ function pidAlive(pid: number): boolean {
     process.kill(pid, 0);
     return true;
   } catch (e: any) {
-    // EPERM means the process exists but belongs to another user.
+    // EPERM means the process exists and belongs to another user.
     return e?.code === "EPERM";
   }
 }
@@ -1139,39 +1148,52 @@ function readN8nLock(): N8nLockRecord | null {
 }
 
 // Records WE created in this process. releaseN8nLock only ever deletes a
-// lock whose pid AND createdAt match a tracked record: a bare pid match
-// can be a fresh foreign lock after PID reuse and must never be unlinked.
+// record whose pid AND createdAt match one of these: a bare pid match can
+// be a fresh foreign record after PID reuse.
 let ownManagerLockRecord: N8nLockRecord | null = null;
 let ownChildLockRecord: N8nLockRecord | null = null;
 
-// Atomic replace: tmp file + rename, so a concurrent reader never sees a
-// half-written lock. When `expected` is given, the replace runs as a
-// compare-and-swap under the reclaim mutex: the current record must still
-// be exactly `expected` (pid + createdAt), otherwise a fresher lock has
-// taken over and we must NOT clobber it. Returns false (and logs) when
-// the update failed - callers must not assume the lock holds the record.
+// Staleness window / heartbeat. A live holder heartbeats every `update` ms
+// and is never considered stale; a crashed holder is reclaimable after
+// `stale` ms. The env overrides exist ONLY for the local multi-process
+// stress harness (proper-lockfile itself clamps stale >= 2000,
+// 1000 <= update <= stale/2).
+const N8N_LOCK_STALE_MS = Number(process.env.N8N_LOCK_STALE_MS) || 30000;
+const N8N_LOCK_UPDATE_MS = Number(process.env.N8N_LOCK_UPDATE_MS) || 10000;
+
+// In-process ownership state: the proper-lockfile release function while
+// this process holds the manager lock, null otherwise.
+let managerLockRelease: (() => void) | null = null;
+// Set when our held lock was compromised: fail-closed from then on.
+let managerLockCompromised: string | null = null;
+
+function onManagerLockCompromised(err: Error): void {
+  managerLockCompromised = err?.message || "lock скомпрометирован";
+  managerLockRelease = null;
+  // Fail-closed: we do NOT continue as the owner. The n8n child is never
+  // killed (it may be perfectly healthy); further starts are refused
+  // until the plugin is reloaded.
+  appendServerLog(
+    `Lock n8n ПОТЕРЯН (скомпрометирован): ${managerLockCompromised}. ` +
+    `Запущенный n8n не трогаем; новые запуски заблокированы до перезапуска плагина (fail-closed).`
+  );
+}
+
+// Atomic record replace: tmp file + rename, so a concurrent reader never
+// sees a half-written record. Only the current lock holder may write; with
+// `expected` the current record must still be exactly it (pid+createdAt),
+// otherwise a fresher record took over and we must NOT clobber it.
 function writeN8nLock(rec: N8nLockRecord, expected?: N8nLockRecord | null): boolean {
-  if (!n8nLockFile) return false;
-  const tmp = `${n8nLockFile}.${process.pid}.tmp`;
-  const mutex = reclaimMutexPath();
-  const mutexToken = newReclaimMutexToken();
-  let mutexHeld = false;
-  try {
-    for (let i = 0; i < 3 && !mutexHeld; i++) {
-      mutexHeld = tryAcquireReclaimMutex(mutex, mutexToken);
-      if (!mutexHeld) syncWaitMs(50);
-    }
-    if (!mutexHeld) {
-      appendServerLog("Не удалось обновить lock n8n: reclaim-мьютекс занят - обновление отменено (fail-closed)");
+  if (!n8nLockFile || !managerLockRelease) return false;
+  if (expected) {
+    const cur = readN8nLock();
+    if (!cur || cur.pid !== expected.pid || cur.createdAt !== expected.createdAt) {
+      appendServerLog("Не удалось обновить lock n8n: записью уже владеет более свежий lock - чужой lock не затираем");
       return false;
     }
-    if (expected) {
-      const cur = readN8nLock();
-      if (!cur || cur.pid !== expected.pid || cur.createdAt !== expected.createdAt) {
-        appendServerLog("Не удалось обновить lock n8n: записью уже владеет более свежий lock - чужой lock не затираем");
-        return false;
-      }
-    }
+  }
+  const tmp = `${n8nLockFile}.${process.pid}.tmp`;
+  try {
     fs.writeFileSync(tmp, JSON.stringify(rec), { encoding: "utf-8", mode: 0o600 });
     fs.renameSync(tmp, n8nLockFile);
     return true;
@@ -1179,718 +1201,147 @@ function writeN8nLock(rec: N8nLockRecord, expected?: N8nLockRecord | null): bool
     appendServerLog(`Не удалось обновить lock n8n: ${e?.message || e}`);
     try { fs.unlinkSync(tmp); } catch {}
     return false;
-  } finally {
-    if (mutexHeld) {
-      releaseReclaimMutex(mutex, mutexToken);
-    }
   }
 }
 
-// Reclaim mutex: a directory created with mkdirSync (atomic, EEXIST when
-// held). BOTH creating the lock and reclaiming a stale one happen only
-// while holding it, so a competing lock cannot appear between the
-// ownership check and the create/delete. A mutex whose owner token shows
-// a DEAD pid is reclaimed by the stuck-mutex recovery below; age (mtime
-// at creation) is only the fallback for absent, unparsable or
-// legacy-format tokens - a token with a LIVE pid is never cleared,
-// however old it is. Removal is always unlink(token) + empty-dir rmdir,
-// never recursive.
-const RECLAIM_MUTEX_STALE_MS = 30000;
-
-function reclaimMutexPath(): string {
-  return `${n8nLockFile}.reclaim-mutex`;
-}
-
-function syncWaitMs(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-// Each mutex acquisition writes a unique token (pid + timestamp + random)
-// into mutex/pid; the finally-path removes the mutex ONLY if the token is
-// still ours - after a fenced recovery or any mix-up the dir at this path
-// may belong to someone else's live critical section. The token starts
-// with the pid, so parseInt-based liveness checks in the stuck-mutex
-// recovery keep working.
-function newReclaimMutexToken(): string {
-  return `${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}`;
-}
-
-// Atomic mutex acquisition: mkdir + owner token. If the token write fails
-// after a successful mkdir, roll back (remove the dir we just created):
-// holding an untagged mutex would leak it - the token-checked release
-// would refuse to remove it and the stuck-recovery would keep it by TTL.
-function tryAcquireReclaimMutex(mutex: string, token: string): boolean {
+// One-time cleanup of the pre-proper-lockfile custom machinery (reclaim
+// mutexes, recovery guards, aside dirs, orphan captures, tmp files).
+// Called ONLY while we hold the manager lock and only after the
+// cross-version record check proved no live old-version owner exists.
+function removeLegacyLockArtifacts(): void {
+  if (!n8nLockFile) return;
+  const dir = path.dirname(n8nLockFile);
+  const base = path.basename(n8nLockFile).replace(/\./g, "\\.");
+  const staleDirs = new RegExp(`^${base}\\.(reclaim-mutex|recovery-guard)(\\.(recovering|removing)-\\d+)?$`);
+  const staleFiles = new RegExp(`^${base}\\.\\d+\\.(reclaim|tmp)$`);
   try {
-    fs.mkdirSync(mutex);
-  } catch {
-    return false;
-  }
-  try {
-    fs.writeFileSync(path.join(mutex, "pid"), token, { encoding: "utf-8", mode: 0o600, flag: "wx" });
-    return true;
-  } catch {
-    // Roll back only what we created. Unlink the token file ONLY while it
-    // still holds our token: a partial failed write leaves a PREFIX of our
-    // token (never a foreign token - a different pid differs from the very
-    // first characters), so prefix-match is exact against foreign content
-    // while still rolling back our own incomplete write. Strict equality
-    // here would leak the mutex until TTL on every partial/empty write.
-    try {
-      const p = path.join(mutex, "pid");
-      let canUnlink = false;
+    for (const f of fs.readdirSync(dir)) {
+      const p = path.join(dir, f);
       try {
-        const cur = fs.readFileSync(p, "utf-8");
-        canUnlink = token.startsWith(cur);
-      } catch (e: any) {
-        if (e?.code === "ENOENT") canUnlink = true; // nothing inside - just rmdir
-      }
-      if (canUnlink) {
-        try { fs.unlinkSync(p); } catch {}
-        try { fs.rmdirSync(mutex); } catch {}
-      }
-    } catch {}
-    return false;
-  }
-}
-
-function releaseReclaimMutex(mutex: string, token: string): void {
-  let cur: string | null = null;
-  try {
-    cur = fs.readFileSync(path.join(mutex, "pid"), "utf-8").trim();
-  } catch {}
-  if (cur !== token) {
-    appendServerLog("reclaim-мьютекс сменил владельца за время критической секции - чужой не удаляем");
-    return;
-  }
-  // Our own mutex contains only our token file: unlink + rmdir (empty-dir
-  // only), never a recursive rm on a shared path.
-  try { fs.unlinkSync(path.join(mutex, "pid")); } catch {}
-  try { fs.rmdirSync(mutex); } catch {}
-}
-
-// Restore lock content captured by a crashed reclaimer, if the lock file
-// is currently absent. Captures are ordered by mtime: newest is
-// authoritative.
-// Restore the newest orphaned reclaim capture. Returns true when the
-// lock file is present afterwards or there was nothing to restore, false
-// on a REAL failure - callers must treat false as fail-closed (keep the
-// stuck mutex, abort the recovery) rather than losing the captured lock.
-function restoreOrphanedReclaimCapture(): boolean {
-  if (!n8nLockFile) return false;
-  if (fs.existsSync(n8nLockFile)) return true; // a live lock is present
-  try {
-    const dir = path.dirname(n8nLockFile);
-    const base = path.basename(n8nLockFile);
-    const captureNames = fs
-      .readdirSync(dir)
-      .filter((f) => f.startsWith(`${base}.`) && f.endsWith(".reclaim"));
-    const captures: { f: string; m: number }[] = [];
-    for (const f of captureNames) {
-      try {
-        captures.push({ f, m: fs.statSync(path.join(dir, f)).mtimeMs });
-      } catch (e: any) {
-        // Fail-closed: an unreadable capture makes the listing untrustworthy
-        // - restore nothing rather than picking by a fake mtime of 0.
-        appendServerLog(`Reclaim n8n lock: не удалось прочитать захват (${f}): ${e?.message || e} - восстановление отменено`);
-        return false;
-      }
-    }
-    captures.sort((a, b) => a.m - b.m);
-    const newest = captures[captures.length - 1]?.f;
-    if (!newest) return true; // nothing to restore
-    // Hard-link, never rename-over: if a fresh lock appeared since our
-    // existsSync check, linkSync fails EEXIST and the fresh lock stays
-    // untouched (the capture remains on disk for a later recovery).
-    try {
-      fs.linkSync(path.join(dir, newest), n8nLockFile);
-      try { fs.unlinkSync(path.join(dir, newest)); } catch {}
-      appendServerLog(`Reclaim n8n lock: восстановлен захваченный lock после сбоя реклеймера (${newest})`);
-      return true;
-    } catch (e: any) {
-      if (e?.code === "EEXIST") return true; // a fresh lock won - fine
-      appendServerLog(`Reclaim n8n lock: не удалось восстановить захват (${newest}): ${e?.message || e}`);
-      return false;
-    }
-  } catch (e: any) {
-    appendServerLog(`Reclaim n8n lock: ошибка восстановления захвата: ${e?.message || e}`);
-    return false;
-  }
-}
-
-// Clear an abandoned reclaim mutex (reclaimer crashed mid-flight). The
-// mutex dir carries its owner's token (starts with the PID): while that
-// PID is ALIVE the mutex is never cleared, however old it is. Recovery
-// runs under an exclusive recovery-guard (a second mkdir mutex with its
-// own owner token), and the stuck mutex is removed IN PLACE - never
-// moved aside - so the mutex path is never observably empty and no fresh
-// mutex can appear mid-recovery (case R08). The guard serializes
-// recoverers; every removal re-checks the exact token and the dead pid
-// (or age, for absent/unparsable tokens) immediately beforehand.
-// Clearing a dead/stale guard itself uses an atomic directory rename to a
-// private path (`guard.cleanup-${process.pid}`): the rename winner cleans
-// its private copy, concurrent cleaners catch ENOENT and back off, and any
-// fresh guard at the canonical path is immune to delayed unlinks.
-// No recursive rm on any shared path: token file unlink + rmdir (empty-dir only).
-function tryClearStuckReclaimMutex(): boolean {
-  if (!n8nLockFile) return true;
-  const mutex = reclaimMutexPath();
-  const guard = `${n8nLockFile}.recovery-guard`;
-
-  // Sweep leftover recovery dirs from the previous fenced design (dead
-  // pid suffix only); new code never creates them.
-  try {
-    const dir = path.dirname(n8nLockFile);
-    const base = path.basename(n8nLockFile);
-    let files: string[];
-    try {
-      files = fs.readdirSync(dir);
-    } catch (e: any) {
-      appendServerLog(`Reclaim n8n mutex: ошибка readdirSync в sweep (${e?.message || e}) - recovery отменено (fail-closed)`);
-      return false;
-    }
-    for (const f of files) {
-      const m = f.match(new RegExp(`^${base.replace(/\./g, "\\.")}\\.reclaim-mutex\\.recovering-(\\d+)$`));
-      if (m) {
-        const expectedPid = parseInt(m[1], 10);
-        if (!pidAlive(expectedPid)) {
-          const p = path.join(dir, f);
-          let asidePid: number | null = null;
-          let unreadable = false;
-          try {
-            const raw = fs.readFileSync(path.join(p, "pid"), "utf-8").trim();
-            const n = parseInt(raw, 10);
-            if (!isNaN(n) && n > 0) asidePid = n;
-          } catch (e: any) {
-            if (e?.code !== "ENOENT") unreadable = true;
+        if (staleDirs.test(f)) {
+          // Legacy dirs hold at most one token file; never recursive.
+          for (const inner of fs.readdirSync(p)) {
+            try { fs.unlinkSync(path.join(p, inner)); } catch {}
           }
-          if (unreadable) {
-            appendServerLog(`Reclaim n8n mutex: токен внутри aside (${f}) не читается - fail-closed`);
-            return false;
-          }
-          // The inner token belongs to the STUCK OWNER, the filename pid
-          // to the crashed recoverer - equality between them can never
-          // hold by design. What matters: never delete while the inner
-          // pid is alive (PID reuse), and never delete blind when the
-          // token is absent or unparsable - keep the dir instead.
-          if (asidePid === null || pidAlive(asidePid)) {
-            continue;
-          }
-          if (!restoreOrphanedReclaimCapture()) {
-            appendServerLog("Reclaim n8n mutex: восстановление захвата не удалось в sweep - recovery отменено (fail-closed)");
-            return false;
-          }
-          try { fs.unlinkSync(path.join(p, "pid")); } catch {}
           try { fs.rmdirSync(p); } catch {}
-        }
-      }
-      const mg = f.match(new RegExp(`^${base.replace(/\./g, "\\.")}\\.recovery-guard\\.(?:removing|cleanup)-(\\d+)$`));
-      if (mg) {
-        const expectedPid = parseInt(mg[1], 10);
-        if (!pidAlive(expectedPid)) {
-          const p = path.join(dir, f);
-          let asidePid: number | null = null;
-          let unreadable = false;
-          try {
-            const raw = fs.readFileSync(path.join(p, "pid"), "utf-8").trim();
-            const n = parseInt(raw, 10);
-            if (!isNaN(n) && n > 0) asidePid = n;
-          } catch (e: any) {
-            if (e?.code !== "ENOENT") unreadable = true;
-          }
-          if (unreadable) return false;
-          // Same asymmetry as above: inner token = dead guard owner,
-          // filename pid = crashed recoverer. Skip when the inner pid is
-          // alive or unknown - never delete blind.
-          if (asidePid === null || pidAlive(asidePid)) {
-            continue;
-          }
-          try { fs.unlinkSync(path.join(p, "pid")); } catch {}
-          try { fs.rmdirSync(p); } catch {}
-        }
-      }
-    }
-  } catch (e: any) {
-    appendServerLog(`Reclaim n8n mutex: сбой sweep (${e?.message || e}) - recovery отменено (fail-closed)`);
-    return false;
-  }
-
-  let mtimeMs: number;
-  try {
-    mtimeMs = fs.statSync(mutex).mtimeMs;
-  } catch (e: any) {
-    if (e?.code === "ENOENT") return true; // no mutex present - nothing to recover
-    appendServerLog(`Reclaim n8n mutex: ошибка statSync мьютекса (${e?.message || e}) - recovery отменено (fail-closed)`);
-    return false;
-  }
-  let ownerPid: number | null = null;
-  let mutexTokenUnreadable = false;
-  try {
-    const raw = fs.readFileSync(path.join(mutex, "pid"), "utf-8").trim();
-    const n = parseInt(raw, 10);
-    if (!isNaN(n) && n > 0) ownerPid = n;
-  } catch (e: any) {
-    // ENOENT = legacy format or mid-creation (age-based fallback below).
-    // Any other read error is NOT expiry: never TTL-delete a mutex whose
-    // owner token we could not read.
-    if (e?.code !== "ENOENT") mutexTokenUnreadable = true;
-  }
-  if (mutexTokenUnreadable) return false;
-  if (ownerPid !== null && pidAlive(ownerPid)) {
-    return true; // the reclaimer is alive and working - never break its mutex
-  }
-  if (ownerPid === null && Date.now() - mtimeMs < RECLAIM_MUTEX_STALE_MS) {
-    return true; // no PID recorded (old format or mid-creation): age-based only
-  }
-
-  // Serialize recoverers under the guard (atomic mkdir: single winner).
-  const token = newReclaimMutexToken();
-  let guardHeld = false;
-  for (let i = 0; i < 3 && !guardHeld; i++) {
-    guardHeld = tryAcquireReclaimMutex(guard, token);
-    if (guardHeld) break;
-    // Guard busy: clear it only when its owner is PROVEN dead, re-checking
-    // the EXACT token immediately before the removal so a fresh guard
-    // (alive owner, or any instance that replaced the one we approved) is
-    // never removed. A live owner: back off.
-    let graw: string | null = null;
-    let gpid: number | null = null;
-    let guardTokenUnreadable = false;
-    let guardPidNotFound = false;
-    try {
-      graw = fs.readFileSync(path.join(guard, "pid"), "utf-8").trim();
-      const n = parseInt(graw, 10);
-      if (!isNaN(n) && n > 0) gpid = n;
-    } catch (e: any) {
-      if (e?.code === "ENOENT") {
-        guardPidNotFound = true;
-      } else {
-        guardTokenUnreadable = true;
-      }
-    }
-    if (guardTokenUnreadable) {
-      // Present but unreadable token is not expiry: back off, never delete.
-      syncWaitMs(40);
-      continue;
-    }
-    if (gpid !== null && graw !== null) {
-      if (pidAlive(gpid)) return true; // another recoverer is working
-      // Atomically move the dead guard aside to a private cleanup path
-      // (`guard.cleanup-${process.pid}`) before removal. The winner of
-      // renameSync owns the private copy, concurrent cleaners catch ENOENT
-      // and abort, and a fresh canonical guard created by another process
-      // is guaranteed never to be touched by a delayed unlink.
-      try {
-        const cur = fs.readFileSync(path.join(guard, "pid"), "utf-8").trim();
-        if (cur === graw && !pidAlive(gpid)) {
-          // Final fence immediately before removal: re-read exact token and re-check dead pid
-          let deadGuardFinalOk = false;
-          try {
-            const curFinal = fs.readFileSync(path.join(guard, "pid"), "utf-8").trim();
-            deadGuardFinalOk = curFinal === graw && !pidAlive(gpid);
-          } catch {}
-          if (deadGuardFinalOk) {
-            const cleanupGuard = `${guard}.cleanup-${process.pid}`;
-            try {
-              fs.renameSync(guard, cleanupGuard);
-            } catch {
-              continue; // Lost rename race to another cleaner
-            }
-            try { fs.unlinkSync(path.join(cleanupGuard, "pid")); } catch {}
-            try { fs.rmdirSync(cleanupGuard); } catch {}
-          }
+        } else if (staleFiles.test(f)) {
+          try { fs.unlinkSync(p); } catch {}
         }
       } catch {}
-      continue;
     }
-    // TTL fallback: allowed when the token file is ABSENT (ENOENT - legacy
-    // format or mid-creation) OR was READ but is unparsable/empty (an
-    // acquisition crashed between mkdir and its token write - there is no
-    // live owner behind such a token). ENOENT-only would brick recovery
-    // forever on a readable-but-corrupt token: nobody could ever clear the
-    // guard. A present but UNREADABLE token (read error) never reaches
-    // here - it backs off above.
-    if (guardPidNotFound || (graw !== null && gpid === null)) {
-      try {
-        if (Date.now() - fs.statSync(guard).mtimeMs >= RECLAIM_MUTEX_STALE_MS) {
-          // Re-verify immediately before removing: the guard must STILL be
-          // the stale one. Re-check its age (a fresh guard created at this
-          // path is younger than the TTL) and re-read its token: a live
-          // owner is never removed, and an UNREADABLE token is not
-          // deletable either (read error != expiry).
-          const curMtime = fs.statSync(guard).mtimeMs;
-          if (Date.now() - curMtime < RECLAIM_MUTEX_STALE_MS) continue; // replaced by a fresh guard
-          let removable = true;
-          let approvedGuardToken: string | null = null;
-          let approvedGuardAbsent = false;
-          try {
-            const raw2 = fs.readFileSync(path.join(guard, "pid"), "utf-8").trim();
-            const n2 = parseInt(raw2, 10);
-            if (!isNaN(n2) && n2 > 0 && pidAlive(n2)) {
-              removable = false; // live owner: never removed
-            } else {
-              // Dead pid, or empty/corrupt content from a crashed
-              // acquisition: approve the EXACT string. The mtime fence
-              // above keeps any freshly created guard, so an old dir with
-              // an unchanged garbage/empty token has no live owner behind
-              // it - refusing to remove it would brick recovery forever
-              // (this branch is the only way such a guard is cleared).
-              approvedGuardToken = raw2;
-            }
-          } catch (e2: any) {
-            if (e2?.code !== "ENOENT") {
-              removable = false; // unreadable != deletable
-            } else {
-              approvedGuardAbsent = true;
-            }
-          }
-          if (removable) {
-            // Final fence immediately before guard removal (matching mutex S10 fence pattern):
-            let guardFinalOk = false;
-            try {
-              const curGuard = fs.readFileSync(path.join(guard, "pid"), "utf-8").trim();
-              if (approvedGuardToken !== null) {
-                const n3 = parseInt(curGuard, 10);
-                // Still the exact approved token, and still no live owner
-                // behind it (unchanged garbage/empty/dead pid - all fine).
-                guardFinalOk = curGuard === approvedGuardToken && (isNaN(n3) || n3 <= 0 || !pidAlive(n3));
-              } else {
-                guardFinalOk = false; // was absent, any token now means a fresh guard
-              }
-            } catch (e3: any) {
-              if (e3?.code === "ENOENT") {
-                guardFinalOk = approvedGuardAbsent;
-              }
-            }
-            if (guardFinalOk) {
-              // Atomic rename to private cleanup path serializes cleaners and protects fresh canonical guard
-              const cleanupGuard = `${guard}.cleanup-${process.pid}`;
-              try {
-                fs.renameSync(guard, cleanupGuard);
-              } catch {
-                continue; // Lost rename race to another cleaner
-              }
-              try { fs.unlinkSync(path.join(cleanupGuard, "pid")); } catch {}
-              try { fs.rmdirSync(cleanupGuard); } catch {}
-            }
-          }
-          continue;
-        }
-      } catch (e: any) {
-        if (e?.code === "ENOENT") continue; // guard vanished mid-check - retry
-        // A stat error is not expiry and not a transient to ignore: fail
-        // closed, the caller aborts the acquire with an honest error.
-        appendServerLog(`Reclaim n8n mutex: ошибка statSync гарда (${e?.message || e}) - recovery отменено (fail-closed)`);
-        return false;
-      }
-    }
-    syncWaitMs(40);
-  }
-  if (!guardHeld) return true;
-
-  try {
-    // Re-verify, now that no other recoverer can interfere: the mutex is
-    // still the approved stuck one (dead owner, or TTL for legacy). While
-    // it sits at its path nobody can create a fresh mutex there, and only
-    // the guard holder removes stuck mutexes - this removal cannot hit a
-    // fresh mutex.
-    let stillStuck = false;
-    let approvedRaw: string | null = null; // exact dead token approved for removal (null = TTL-approved absent/unparsable)
-    try {
-      const raw = fs.readFileSync(path.join(mutex, "pid"), "utf-8").trim();
-      const n = parseInt(raw, 10);
-      if (!isNaN(n) && n > 0) {
-        stillStuck = !pidAlive(n);
-        if (stillStuck) approvedRaw = raw;
-      } else {
-        // Read but unparsable: an acquisition crashed between mkdir and
-        // its token write - no live owner can exist behind it. Age-based,
-        // mirroring the pre-guard check and the guard TTL branch.
-        try {
-          stillStuck = Date.now() - fs.statSync(mutex).mtimeMs >= RECLAIM_MUTEX_STALE_MS;
-          if (stillStuck) approvedRaw = raw; // must match exact unparsable token
-        } catch (e2: any) {
-          if (e2?.code !== "ENOENT") {
-            appendServerLog(`Reclaim n8n mutex: ошибка statSync мьютекса под гардом (${e2?.message || e2}) - recovery отменено (fail-closed)`);
-            return false;
-          }
-        }
-      }
-    } catch (e: any) {
-      // TTL fallback only when the token file is genuinely ABSENT (legacy
-      // format / mid-creation). A present but unreadable token is not
-      // expiry: fail closed, never delete what we cannot read.
-      if (e?.code === "ENOENT") {
-        try {
-          stillStuck = Date.now() - fs.statSync(mutex).mtimeMs >= RECLAIM_MUTEX_STALE_MS;
-        } catch (e2: any) {
-          if (e2?.code !== "ENOENT") {
-            appendServerLog(`Reclaim n8n mutex: ошибка statSync мьютекса под гардом (${e2?.message || e2}) - recovery отменено (fail-closed)`);
-            return false;
-          }
-        }
-      } else {
-        appendServerLog(`Reclaim n8n mutex: токен мьютекса не читается под гардом (${e?.message || e}) - recovery отменено (fail-closed)`);
-        return false;
-      }
-    }
-    if (!stillStuck) return true;
-    if (!restoreOrphanedReclaimCapture()) {
-      // Fail-closed: the captured lock could not be restored. Keep the
-      // stuck mutex in place and abort this recovery - removing the mutex
-      // now could leave a live lock owner without its lock.
-      appendServerLog("Reclaim n8n lock: recovery отменено - захват не восстановлен, зависший мьютекс сохранён");
-      return false;
-    }
-    // Final fence immediately before removal: the mutex must STILL be in
-    // the exact state we approved - the same dead token (pid re-checked),
-    // or still without a live owner for the TTL-approved case. A live pid,
-    // a changed token or a vanished token all mean "hands off": the guard
-    // already serializes recoverers, this is the second line against the
-    // residual guard TOCTOU (S10).
-    let finalOk = false;
-    try {
-      const raw = fs.readFileSync(path.join(mutex, "pid"), "utf-8").trim();
-      if (approvedRaw !== null) {
-        const n = parseInt(raw, 10);
-        finalOk = raw === approvedRaw && (isNaN(n) || n <= 0 || !pidAlive(n));
-      } else {
-        // Mutex was approved while token was absent (legacy empty dir).
-        // Any token appearing now means a new owner took the mutex: fail-closed!
-        finalOk = false;
-      }
-    } catch (e: any) {
-      if (e?.code === "ENOENT") {
-        finalOk = approvedRaw === null; // token vanished: only what we approved
-      } else {
-        appendServerLog(`Reclaim n8n mutex: токен не читается перед снятием (${e?.message || e}) - recovery отменено (fail-closed)`);
-        return false;
-      }
-    }
-    if (!finalOk) {
-      appendServerLog("Reclaim n8n mutex: состояние мьютекса изменилось за время recovery - чужой не удаляем");
-      return true;
-    }
-    try { fs.unlinkSync(path.join(mutex, "pid")); } catch {}
-    try {
-      fs.rmdirSync(mutex); // empty-dir only: unexpected content stays
-    } catch {}
-    appendServerLog("Reclaim n8n lock: убран зависший reclaim-мьютекс (реклеймер умер)");
-    return true;
-  } finally {
-    releaseReclaimMutex(guard, token);
-  }
-}
-
-// Stale-lock takeover, called ONLY while holding the reclaim mutex: rename
-// the lock aside, verify the captured content is exactly the record we
-// judged stale, then delete it - or put it back untouched. Because every
-// create also runs under the mutex, no competing lock can appear in the
-// aside window; the only possible new content is the live owner's own
-// atomic update (writeN8nLock), which is newer than our capture and wins.
-function reclaimStaleN8nLockLocked(expected: N8nLockRecord): boolean {
-  if (!n8nLockFile) return false;
-  const now = readN8nLock();
-  if (!now || now.pid !== expected.pid || now.createdAt !== expected.createdAt) {
-    return false; // changed since the caller's read - leave it alone
-  }
-  const reclaimTmp = `${n8nLockFile}.${process.pid}.reclaim`;
-  let captured: string;
-  try {
-    fs.renameSync(n8nLockFile, reclaimTmp);
-    captured = fs.readFileSync(reclaimTmp, "utf-8");
-  } catch {
-    return false; // already gone, or not ours to take
-  }
-  let isExpected = false;
-  try {
-    const cur = JSON.parse(captured);
-    isExpected = !!cur && cur.pid === expected.pid && String(cur.createdAt || "") === expected.createdAt;
-  } catch {
-    isExpected = false;
-  }
-  if (isExpected) {
-    try { fs.unlinkSync(reclaimTmp); } catch {}
-    return true;
-  }
-  // Content is NOT the stale record we approved for deletion - restore it.
-  try {
-    fs.linkSync(reclaimTmp, n8nLockFile);
-    try { fs.unlinkSync(reclaimTmp); } catch {}
-  } catch (e: any) {
-    if (e?.code === "EEXIST") {
-      // The live owner rewrote the lock while it was aside; the on-disk
-      // record is newer than our capture, so drop the capture and keep theirs.
-      try { fs.unlinkSync(reclaimTmp); } catch {}
-    } else if (!fs.existsSync(n8nLockFile)) {
-      try {
-        fs.renameSync(reclaimTmp, n8nLockFile);
-      } catch {
-        appendServerLog("Reclaim n8n lock: восстановить не удалось - копия сохранена рядом, чужой lock не затираем");
-      }
-    } else {
-      appendServerLog("Reclaim n8n lock: восстановить не удалось - копия сохранена рядом, чужой lock не затираем");
-    }
-  }
-  return false;
+  } catch {}
 }
 
 function releaseN8nLock(pid: number): void {
   if (!n8nLockFile) return;
-  // Serialized under the reclaim mutex: the ownership check and the unlink
-  // are one critical section, so no acquirer can create a fresh lock
-  // between them (TOCTOU). If the mutex stays busy, skip the release:
-  // the record we leave behind goes stale and is reclaimed by PID-death.
-  const mutex = reclaimMutexPath();
-  let mutexHeld = false;
-  const mutexToken = newReclaimMutexToken();
-  for (let i = 0; i < 3 && !mutexHeld; i++) {
-    mutexHeld = tryAcquireReclaimMutex(mutex, mutexToken);
-    if (!mutexHeld) syncWaitMs(50);
-  }
-  if (!mutexHeld) {
-    appendServerLog(`release n8n lock (pid ${pid}): мьютекс занят - lock оставлен, подберётся как stale`);
-    return;
-  }
-  try {
-    const cur = readN8nLock();
-    if (!cur || cur.pid !== pid) return;
-    // Delete only if the CURRENT content is exactly a record we created
-    // ourselves (pid + createdAt): a bare pid match can be a fresh foreign
-    // lock after PID reuse, or our own superseded manager marker.
+  // Delete the status record only if it is still one WE created (pid +
+  // createdAt): a bare pid match can be a fresh foreign record after PID
+  // reuse. The record file is deleted BEFORE releasing the lock dir, while
+  // we still hold exclusivity.
+  const cur = readN8nLock();
+  if (cur && cur.pid === pid) {
     const isOurs = [ownManagerLockRecord, ownChildLockRecord].some(
       (r) => r && r.pid === cur.pid && r.createdAt === cur.createdAt
     );
-    if (!isOurs) {
-      appendServerLog(`release n8n lock: текущая запись (pid ${pid}) не наша или новее - чужой lock не трогаем`);
-      return;
+    if (isOurs) {
+      try { fs.unlinkSync(n8nLockFile); } catch {}
+    } else {
+      appendServerLog(`release n8n lock: текущая запись (pid ${pid}) не наша или новее - чужую запись не трогаем`);
     }
-    try {
-      fs.unlinkSync(n8nLockFile);
-    } catch {}
-  } finally {
-    releaseReclaimMutex(mutex, mutexToken);
+  }
+  if (managerLockRelease) {
+    const release = managerLockRelease;
+    managerLockRelease = null;
+    try { release(); } catch {}
+    ownManagerLockRecord = null;
+    ownChildLockRecord = null;
   }
 }
 
-// Acquire the manager lock. Creation AND stale reclaim are serialized
-// under the reclaim mutex, so the lock file is never observably absent to
-// a competing acquirer: no two owners, no lost restore. The lock file is
-// created WITH its content in one atomic step (tmp + hard-link), and all
-// updates are atomic (tmp + rename): a concurrent reader never sees an
-// empty or half-written lock. Fail-closed: no lock, no start. Stale locks
-// (dead holder, or a PID reused by an unrelated process) are reclaimed
-// without ever signalling the foreign process.
+// Acquire the manager lock. Fail-closed: no lock, no start. A busy lock
+// (ELOCKED) means another live instance: honest error, its processes are
+// never touched. The single escape hatch mirrors the old behavior: when
+// the lock is held but port 5678 is PROVEN free, the holder has no live
+// n8n behind it (e.g. a zombie heartbeat from a reloaded plugin module) -
+// the stale dir is removed once and the acquire retried once; the old
+// holder's heartbeat then fails and its onCompromised fires (its own
+// fail-closed path).
 function acquireN8nManagerLock(): { ok: true } | { ok: false; reason: string } {
   if (!n8nLockFile) {
     return { ok: false, reason: "каталог данных плагина недоступен (lock-файл не инициализирован)" };
   }
-  const myRec: N8nLockRecord = { pid: process.pid, manager: true, createdAt: new Date().toISOString() };
-  const payload = JSON.stringify(myRec);
-  const tmpFile = `${n8nLockFile}.${process.pid}.tmp`;
-  const mutex = reclaimMutexPath();
+  if (managerLockRelease) {
+    return { ok: true }; // this process already holds the manager lock
+  }
+  if (managerLockCompromised) {
+    return {
+      ok: false,
+      reason: `lock n8n был потерян ранее (${managerLockCompromised}) - запуск заблокирован до перезапуска плагина (fail-closed)`,
+    };
+  }
 
-  for (let attempt = 0; attempt < 6; attempt++) {
-    if (!tryClearStuckReclaimMutex()) {
+  const lockPath = n8nLockFile;
+  const options = {
+    stale: N8N_LOCK_STALE_MS,
+    update: N8N_LOCK_UPDATE_MS,
+    realpath: false, // the record file may not exist yet at first acquire
+    retries: 0, // an honest busy error beats silent waiting
+    onCompromised: onManagerLockCompromised,
+  };
+
+  try {
+    managerLockRelease = lockfileLockSync(lockPath, options);
+  } catch (e: any) {
+    if (e?.code !== "ELOCKED") {
+      return { ok: false, reason: `не удалось получить lock n8n: ${e?.message || e}` };
+    }
+    const port = findPortPidTri(5678);
+    if (port.state === "occupied") {
       return {
         ok: false,
-        reason: "ошибка доступа к файлам или сбой восстановления lock n8n при recovery (fail-closed)",
+        reason: isLikelyN8nProcess(port.pid)
+          ? `n8n уже работает (PID ${port.pid}) - запуск отменён`
+          : `порт 5678 занят другим процессом (PID ${port.pid}) - запуск отменён (процесс не трогаем)`,
       };
     }
-    let mutexHeld = false;
-    const mutexToken = newReclaimMutexToken();
-    // Record the mutex owner: a stuck-mutex check must never clear the
-    // mutex of a LIVE reclaimer, no matter how old it looks.
-    mutexHeld = tryAcquireReclaimMutex(mutex, mutexToken);
-    if (!mutexHeld) {
-      syncWaitMs(60); // another acquirer/reclaimer holds it - brief wait, retry
-      continue;
+    if (port.state === "unknown") {
+      return {
+        ok: false,
+        reason: "lock n8n занят, а состояние порта 5678 определить не удалось - запуск отменён (fail-closed)",
+      };
     }
     try {
-      try {
-        fs.writeFileSync(tmpFile, payload, { encoding: "utf-8", mode: 0o600 });
-        // Atomic create-with-content: EEXIST if a holder already exists.
-        fs.linkSync(tmpFile, n8nLockFile);
-        try { fs.unlinkSync(tmpFile); } catch {}
-        ownManagerLockRecord = myRec;
-        return { ok: true };
-      } catch (e: any) {
-        try { fs.unlinkSync(tmpFile); } catch {}
-        if (e?.code !== "EEXIST") {
-          return { ok: false, reason: `не удалось создать lock-файл: ${e?.message || e}` };
-        }
-      }
-
-      // Someone holds the lock: inspect it (still under the mutex). It may
-      // have been released between the failed link attempt and now.
-      if (!fs.existsSync(n8nLockFile)) continue;
-      const rec = readN8nLock();
-      if (!rec) {
-        // Unreadable/corrupt content. Every write in this file is atomic
-        // (tmp+link on create, tmp+rename on update), so a broken lock
-        // means external interference or disk damage - NEVER delete it
-        // automatically: it may belong to a live foreign process. Fail
-        // closed with an honest, actionable error instead.
-        appendServerLog(`Lock n8n нечитаем (${n8nLockFile}) - запуск заблокирован, требуется ручное удаление`);
-        return {
-          ok: false,
-          reason:
-            `lock n8n повреждён или нечитаем: ${n8nLockFile}. ` +
-            `Проверьте, что n8n не запущен, удалите файл вручную (rm "${n8nLockFile}") и повторите запуск. ` +
-            `Автоматически не удаляем: это может быть lock чужого живого процесса.`,
-        };
-      }
-      if (!pidAlive(rec.pid)) {
-        appendServerLog(`Найден устаревший lock n8n (PID ${rec.pid} не существует) - подбираем`);
-        reclaimStaleN8nLockLocked(rec);
-        continue;
-      }
-      if (rec.manager) {
-        if (rec.pid === process.pid && !localN8nProcess) {
-          // Our own manager marker, but no child reference. Absence of the
-          // reference is NOT proof nothing is alive (a previous start may
-          // have spawned n8n without recording it): reclaim only when the
-          // port is PROVEN free. "unknown" (netstat/lsof failure) is
-          // fail-closed. Never kill anything - an n8n found here may
-          // belong to the user.
-          const port = findPortPidTri(5678);
-          if (port.state === "unknown") {
-            return {
-              ok: false,
-              reason: "lock n8n - наша метка, но состояние порта 5678 определить не удалось (ошибка netstat/lsof) - reclaim отменён",
-            };
-          }
-          if (port.state === "occupied") {
-            // Any listener on the port blocks the reclaim: a fresh n8n
-            // could not bind anyway, and we never touch the process.
-            return {
-              ok: false,
-              reason: isLikelyN8nProcess(port.pid)
-                ? `lock n8n - наша метка, но на порту 5678 уже живой n8n (PID ${port.pid}) - запуск отменён`
-                : `lock n8n - наша метка, но порт 5678 занят другим процессом (PID ${port.pid}) - запуск отменён (процесс не трогаем)`,
-            };
-          }
-          appendServerLog("Найден собственный manager-lock, child не жив и порт свободен - подбираем");
-          reclaimStaleN8nLockLocked(rec);
-          continue;
-        }
-        return { ok: false, reason: `другой экземпляр плагина уже запускает n8n (PID ${rec.pid})` };
-      }
-      if (isLikelyN8nProcess(rec.pid)) {
-        return { ok: false, reason: `n8n уже управляется другим процессом (PID ${rec.pid})` };
-      }
-      // PID was reused by an unrelated process: the lock is stale. Reclaim
-      // it and take over - the foreign process is left completely alone.
-      appendServerLog(
-        `Lock n8n указывает на PID ${rec.pid}, но это не n8n - lock устарел, подбираем (процесс не трогаем)`
-      );
-      reclaimStaleN8nLockLocked(rec);
-    } finally {
-      if (mutexHeld) {
-        releaseReclaimMutex(mutex, mutexToken);
-      }
+      fs.rmdirSync(`${lockPath}.lock`);
+    } catch (rmErr: any) {
+      return { ok: false, reason: `lock n8n занят, снять зависший lock при свободном порте не удалось: ${rmErr?.message || rmErr}` };
+    }
+    try {
+      managerLockRelease = lockfileLockSync(lockPath, options);
+    } catch (e2: any) {
+      return { ok: false, reason: `lock n8n занят другим экземпляром: ${e2?.message || e2}` };
     }
   }
-  return { ok: false, reason: "не удалось получить lock n8n (превышено число попыток, активная гонка)" };
+
+  // Cross-version guard: an old-format record naming a LIVE foreign pid
+  // means a pre-proper-lockfile plugin version is running - it holds no
+  // .lock dir, so the mkdir above could not see it. Back off honestly.
+  const rec = readN8nLock();
+  if (rec && rec.pid !== process.pid && pidAlive(rec.pid)) {
+    const release = managerLockRelease;
+    managerLockRelease = null;
+    try { release(); } catch {}
+    return {
+      ok: false,
+      reason: rec.manager
+        ? `другой экземпляр плагина уже запускает n8n (PID ${rec.pid})`
+        : `n8n уже управляется другим процессом (PID ${rec.pid})`,
+    };
+  }
+
+  removeLegacyLockArtifacts();
+  ownManagerLockRecord = { pid: process.pid, manager: true, createdAt: new Date().toISOString() };
+  writeN8nLock(ownManagerLockRecord); // unconditional: we hold the lock
+  return { ok: true };
 }
 
 async function startLocalN8nProcess(): Promise<{ ok: boolean; message: string; pid?: number }> {

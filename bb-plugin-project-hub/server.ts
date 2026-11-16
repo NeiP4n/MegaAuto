@@ -1495,8 +1495,19 @@ function tryClearStuckReclaimMutex(): boolean {
     if (guardPidNotFound || (graw !== null && gpid === null)) {
       try {
         if (Date.now() - fs.statSync(guard).mtimeMs >= RECLAIM_MUTEX_STALE_MS) {
-          try { fs.unlinkSync(path.join(guard, "pid")); } catch {}
-          try { fs.rmdirSync(guard); } catch {}
+          // Re-read the token immediately before removing: if a fresh
+          // guard appeared at this path since our check (its token parses
+          // to a LIVE pid), it is never removed.
+          let fresh = false;
+          try {
+            const raw2 = fs.readFileSync(path.join(guard, "pid"), "utf-8").trim();
+            const n2 = parseInt(raw2, 10);
+            fresh = !isNaN(n2) && n2 > 0 && pidAlive(n2);
+          } catch {}
+          if (!fresh) {
+            try { fs.unlinkSync(path.join(guard, "pid")); } catch {}
+            try { fs.rmdirSync(guard); } catch {}
+          }
           continue;
         }
       } catch (e: any) {
@@ -1521,7 +1532,16 @@ function tryClearStuckReclaimMutex(): boolean {
     try {
       const raw = fs.readFileSync(path.join(mutex, "pid"), "utf-8").trim();
       const n = parseInt(raw, 10);
-      stillStuck = !isNaN(n) && n > 0 && !pidAlive(n);
+      if (!isNaN(n) && n > 0) {
+        stillStuck = !pidAlive(n);
+      } else {
+        // Read but unparsable: an acquisition crashed between mkdir and
+        // its token write - no live owner can exist behind it. Age-based,
+        // mirroring the pre-guard check and the guard TTL branch.
+        try {
+          stillStuck = Date.now() - fs.statSync(mutex).mtimeMs >= RECLAIM_MUTEX_STALE_MS;
+        } catch {}
+      }
     } catch (e: any) {
       // TTL fallback only when the token file is genuinely ABSENT (legacy
       // format / mid-creation). A present but unreadable token is not proof

@@ -397,6 +397,10 @@ export function ProjectHubView() {
           sessionId: aiChatSessionIdRef.current,
         });
         if (res?.ok) {
+          // RPC accepted the message: the optimistic bubble leaves pending.
+          setChatMessages((prev) =>
+            prev.map((m) => (m.id === tempUserMsg.id ? { ...m, status: "sent" } : m))
+          );
           const aiMsg: ChatMessage = {
             id: `ai-msg-bot-${Date.now()}`,
             projectId: "proj-n8n-gemini-chat",
@@ -413,6 +417,14 @@ export function ProjectHubView() {
           return { ok: true };
         } else {
           const errMsg = res?.error || "Ошибка n8n AI воркфлоу";
+          // RPC rejected the message: mark the bubble as failed, not pending.
+          setChatMessages((prev) =>
+            prev.map((m) =>
+              m.id === tempUserMsg.id
+                ? { ...m, status: "failed", metadata: { ...m.metadata, error: errMsg } }
+                : m
+            )
+          );
           const errCard: ChatMessage = {
             id: `ai-msg-err-${Date.now()}`,
             projectId: "proj-n8n-gemini-chat",
@@ -427,6 +439,14 @@ export function ProjectHubView() {
         }
       } catch (err: any) {
         const errMsg = err?.message || "Сетевой сбой при обращении к n8n";
+        // Transport failure: mark the bubble as failed, not pending.
+        setChatMessages((prev) =>
+          prev.map((m) =>
+            m.id === tempUserMsg.id
+              ? { ...m, status: "failed", metadata: { ...m.metadata, error: errMsg } }
+              : m
+          )
+        );
         const errCard: ChatMessage = {
           id: `ai-msg-err-${Date.now()}`,
           projectId: "proj-n8n-gemini-chat",

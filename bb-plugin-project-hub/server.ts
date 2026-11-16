@@ -1112,14 +1112,20 @@ function readN8nLock(): N8nLockRecord | null {
 }
 
 // Atomic replace: tmp file + rename, so a concurrent reader never sees a
-// half-written lock.
-function writeN8nLock(rec: N8nLockRecord): void {
-  if (!n8nLockFile) return;
+// half-written lock. Returns false (and logs) when the update failed -
+// callers must not assume the lock now holds the new record.
+function writeN8nLock(rec: N8nLockRecord): boolean {
+  if (!n8nLockFile) return false;
+  const tmp = `${n8nLockFile}.${process.pid}.tmp`;
   try {
-    const tmp = `${n8nLockFile}.${process.pid}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(rec), { encoding: "utf-8", mode: 0o600 });
     fs.renameSync(tmp, n8nLockFile);
-  } catch {}
+    return true;
+  } catch (e: any) {
+    appendServerLog(`Не удалось обновить lock n8n: ${e?.message || e}`);
+    try { fs.unlinkSync(tmp); } catch {}
+    return false;
+  }
 }
 
 // Atomic stale-takeover: only the process that successfully recreates the
@@ -1130,6 +1136,13 @@ function writeN8nLock(rec: N8nLockRecord): void {
 // raced in, it is put back untouched.
 function removeStaleN8nLock(expected: N8nLockRecord): boolean {
   if (!n8nLockFile) return false;
+  // Re-verify immediately before touching the file: if the content changed
+  // since the caller's read, a live owner rewrote the lock - do not move
+  // anything at all (no rename-aside window in the common race).
+  const now = readN8nLock();
+  if (!now || now.pid !== expected.pid || now.createdAt !== expected.createdAt) {
+    return false;
+  }
   const reclaimTmp = `${n8nLockFile}.${process.pid}.reclaim`;
   let captured: string;
   try {
@@ -1176,10 +1189,6 @@ function releaseN8nLock(pid: number): void {
 // Fail-closed: when the lock cannot be acquired or is corrupted/unreadable, the start
 // must NOT proceed and the lock is never deleted silently. Stale locks (dead holder,
 // or a PID now belonging to an unrelated process) are safely cleaned without signalling.
-// How long an unreadable lock file is treated as "another process may be
-// mid-write": fail-closed within the grace window, garbage-collected after.
-const LOCK_GRACE_MS = 10000;
-
 // Acquire the manager lock atomically. The lock file is created WITH its
 // content in one atomic step (write tmp + hard-link into place): a
 // concurrent acquirer never observes an empty or half-written lock.
@@ -1208,28 +1217,24 @@ function acquireN8nManagerLock(): { ok: true } | { ok: false; reason: string } {
       }
     }
 
-    // Someone holds the lock: inspect it.
-    let mtimeMs = 0;
-    try {
-      mtimeMs = fs.statSync(n8nLockFile).mtimeMs;
-    } catch {
-      continue; // disappeared between link attempt and stat - retry
-    }
+    // Someone holds the lock: inspect it. It may have been released between
+    // the failed link attempt and now - then simply retry.
+    if (!fs.existsSync(n8nLockFile)) continue;
     const rec = readN8nLock();
     if (!rec) {
-      // Unreadable/empty content. Fail closed while fresh: never delete a
-      // lock another process may still be writing. Collect as garbage only
-      // after the grace window.
-      if (Date.now() - mtimeMs < LOCK_GRACE_MS) {
-        appendServerLog("Lock n8n занят (запись формируется другим процессом) - запуск отменён (fail-closed)");
-        return {
-          ok: false,
-          reason: "lock n8n занят (запись формируется другим процессом) - повторите через несколько секунд",
-        };
-      }
-      appendServerLog("Lock n8n содержит нечитаемую запись старше grace-периода - подбираем как мусор");
-      try { fs.unlinkSync(n8nLockFile); } catch {}
-      continue;
+      // Unreadable/corrupt content. Every write in this file is atomic
+      // (tmp+link on create, tmp+rename on update), so a broken lock means
+      // external interference or disk damage - NEVER delete it
+      // automatically: it may belong to a live foreign process. Fail closed
+      // with an honest, actionable error instead.
+      appendServerLog(`Lock n8n нечитаем (${n8nLockFile}) - запуск заблокирован, требуется ручное удаление`);
+      return {
+        ok: false,
+        reason:
+          `lock n8n повреждён или нечитаем: ${n8nLockFile}. ` +
+          `Проверьте, что n8n не запущен, удалите файл вручную (rm "${n8nLockFile}") и повторите запуск. ` +
+          `Автоматически не удаляем: это может быть lock чужого живого процесса.`,
+      };
     }
     if (!pidAlive(rec.pid)) {
       appendServerLog(`Найден устаревший lock n8n (PID ${rec.pid} не существует) - подбираем`);
@@ -1237,6 +1242,14 @@ function acquireN8nManagerLock(): { ok: true } | { ok: false; reason: string } {
       continue;
     }
     if (rec.manager) {
+      if (rec.pid === process.pid && !localN8nProcess) {
+        // Our own leftover manager marker: an earlier child-PID update
+        // failed and the child is gone, so nothing is actually managed.
+        // Reclaim it instead of blocking ourselves forever.
+        appendServerLog("Найден собственный manager-lock без живого child - подбираем");
+        removeStaleN8nLock(rec);
+        continue;
+      }
       return { ok: false, reason: `другой экземпляр плагина уже запускает n8n (PID ${rec.pid})` };
     }
     if (isLikelyN8nProcess(rec.pid)) {
@@ -1309,6 +1322,10 @@ async function startLocalN8nProcess(): Promise<{ ok: boolean; message: string; p
 
       localN8nProcess = child;
       if (child.pid) {
+        // Result is checked and logged inside writeN8nLock. On failure the
+        // lock keeps our manager record: still fail-closed for other
+        // instances, and stop/exit paths release it via the process.pid
+        // fallback below.
         writeN8nLock({ pid: child.pid, manager: false, createdAt: new Date().toISOString() });
       }
 
@@ -1333,6 +1350,8 @@ async function startLocalN8nProcess(): Promise<{ ok: boolean; message: string; p
           serverState = "stopped";
         }
         if (child.pid) releaseN8nLock(child.pid);
+        // Fallback for a failed child-PID update: drop our manager marker too.
+        releaseN8nLock(process.pid);
         healthCache.clear();
       });
 
@@ -1470,12 +1489,10 @@ async function stopLocalN8nProcess(): Promise<{ ok: boolean; message: string }> 
   const deadline = Date.now() + 3000;
   let stillAlive = true;
   while (Date.now() < deadline) {
-    if (child && child.exitCode !== null) {
-      stillAlive = false;
-      break;
-    }
-    const currentPid = findPortPid(5678);
-    if (!currentPid) {
+    // Success means the PID is REALLY gone. A freed port alone is not
+    // proof: n8n may close its listener while still shutting down, and a
+    // parallel start must never race a dying process.
+    if (!pidAlive(targetPid) || (child && child.exitCode !== null)) {
       stillAlive = false;
       break;
     }
@@ -1522,6 +1539,9 @@ async function stopLocalN8nProcess(): Promise<{ ok: boolean; message: string }> 
     };
   }
   releaseN8nLock(targetPid);
+  // Fallback for a failed child-PID update at spawn: drop our manager
+  // marker too (no-op when the lock already holds the child record).
+  releaseN8nLock(process.pid);
   serverState = "stopped";
   healthCache.clear();
   appendServerLog(`Сервер n8n остановлен (PID ${targetPid})`);
@@ -1552,6 +1572,7 @@ function cleanupLocalN8n() {
       appendServerLog(`n8n (PID ${child.pid}) жив после SIGKILL при выходе - lock сохранён`);
     } else {
       releaseN8nLock(child.pid);
+      releaseN8nLock(process.pid); // fallback: manager marker if the update failed
     }
     localN8nProcess = null;
     serverState = "stopped";
@@ -1943,9 +1964,16 @@ async function forwardToN8n(
 // Such a reply is a stub, not an LLM answer.
 function isCannedAiReply(text: string): boolean {
   const t = text.toLowerCase();
+  // The canned template always carries the "Ответ Gemini ..." header; the
+  // body wording varies between workflow edits, so accept any known
+  // template marker instead of requiring one exact phrase. The header
+  // stays mandatory so a real assistant that says "готов помочь" is not
+  // flagged as a stub.
+  if (!t.includes("ответ gemini")) return false;
   return (
-    (t.includes("ответ gemini") && t.includes("я обработал ваш запрос")) ||
-    (t.includes("я обработал ваш запрос") && t.includes("готов помочь"))
+    t.includes("я обработал ваш запрос") ||
+    t.includes("запрос обработан") ||
+    t.includes("готов помочь")
   );
 }
 

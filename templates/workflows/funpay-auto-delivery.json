@@ -1,0 +1,231 @@
+[
+  {
+    "name": "FunPay Auto-Delivery & Telegram Alerts",
+    "nodes": [
+      {
+        "parameters": {
+          "rule": {
+            "interval": [
+              {
+                "field": "seconds",
+                "secondsInterval": 30
+              }
+            ]
+          }
+        },
+        "id": "node-schedule",
+        "name": "Poll Every 30s",
+        "type": "n8n-nodes-base.scheduleTrigger",
+        "typeVersion": 1.2,
+        "position": [
+          200,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "values": {
+            "string": [
+              {
+                "name": "golden_key",
+                "value": "YOUR_FUNPAY_GOLDEN_KEY_HERE"
+              },
+              {
+                "name": "telegram_chat_id",
+                "value": "YOUR_TELEGRAM_CHAT_ID_HERE"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "node-config",
+        "name": "FunPay Credentials Config",
+        "type": "n8n-nodes-base.set",
+        "typeVersion": 3.4,
+        "position": [
+          420,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "url": "https://funpay.com/orders/trade",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Cookie",
+                "value": "golden_key={{ $json.golden_key }}"
+              },
+              {
+                "name": "User-Agent",
+                "value": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "node-funpay-get-orders",
+        "name": "Fetch FunPay Orders",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          640,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "// HTML / Data Parser for FunPay Orders\nconst html = $json.data || $input.first().json.data || \"\";\nconst orders = [];\n\nconst rowRegex = /<a[^>]*href=\"[^\"]*orders\\/([A-Z0-9]+)\\/\"[^>]*class=\"[^\"]*tc-item[^\"]*\"[\\s\\S]*?<div[^>]*class=\"[^\"]*tc-status[^\"]*\">([\\s\\S]*?)<\\/div>[\\s\\S]*?<div[^>]*class=\"[^\"]*tc-title[^\"]*\">([\\s\\S]*?)<\\/div>[\\s\\S]*?<div[^>]*class=\"[^\"]*tc-price[^\"]*\">([\\s\\S]*?)<\\/div>[\\s\\S]*?<div[^>]*class=\"[^\"]*tc-user[^\"]*\">([\\s\\S]*?)<\\/div>/gi;\n\nlet match;\nwhile ((match = rowRegex.exec(html)) !== null) {\n  const id = match[1].trim();\n  const status = match[2].replace(/<[^>]+>/g, \"\").trim();\n  const title = match[3].replace(/<[^>]+>/g, \"\").trim();\n  const price = match[4].replace(/<[^>]+>/g, \"\").trim();\n  const buyer = match[5].replace(/<[^>]+>/g, \"\").trim();\n\n  if (status.toLowerCase().includes(\"оплачен\") || status.toLowerCase().includes(\"paid\")) {\n    orders.push({\n      orderId: id,\n      status,\n      title,\n      price,\n      buyer,\n      requiresDelivery: true\n    });\n  }\n}\n\nreturn orders.map(o => ({ json: o }));"
+        },
+        "id": "node-parse-orders",
+        "name": "Parse Paid Orders",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          860,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "jsCode": "// Stock Pool Allocator & Deduplication Guard\nconst order = $json;\n\nconst staticData = $getWorkflowStaticData(\"global\");\nstaticData.deliveredOrders = staticData.deliveredOrders || [];\n\nif (staticData.deliveredOrders.includes(order.orderId)) {\n  return [];\n}\n\nconst stockPool = [\n  \"STEAM-KEY-X981-2241-ABCD\",\n  \"STEAM-KEY-Y772-9912-EFGH\",\n  \"STEAM-KEY-Z334-5510-IJKL\"\n];\n\nstaticData.usedKeys = staticData.usedKeys || [];\nconst availableKey = stockPool.find(k => !staticData.usedKeys.includes(k)) || \"Товар закончился, свяжитесь с поддержкой\";\n\nif (availableKey !== \"Товар закончился, свяжитесь с поддержкой\") {\n  staticData.usedKeys.push(availableKey);\n  staticData.deliveredOrders.push(order.orderId);\n}\n\nconst chatMessage = \"Здравствуйте, \" + order.buyer + \"! Спасибо за покупку.\\n\\nВаш товар:\\n\" + availableKey + \"\\n\\nПожалуйста, подтвердите заказ!\";\nconst tgAlert = \"🛍️ *Новая продажа на FunPay!*\\n\\n*Товар:* \" + order.title + \"\\n*Заказ:* #\" + order.orderId + \"\\n*Сумма:* \" + order.price + \"\\n*Покупатель:* \" + order.buyer + \"\\n*Ключ:* `\" + availableKey + \"`\\n*Статус:* Автовыдача отправлена\";\n\nreturn [{\n  json: {\n    ...order,\n    deliveredKey: availableKey,\n    chatMessage,\n    tgAlert\n  }\n}];"
+        },
+        "id": "node-allocate-goods",
+        "name": "Allocate Goods & Deduplicate",
+        "type": "n8n-nodes-base.code",
+        "typeVersion": 2,
+        "position": [
+          1080,
+          300
+        ]
+      },
+      {
+        "parameters": {
+          "method": "POST",
+          "url": "https://funpay.com/runner/",
+          "sendHeaders": true,
+          "headerParameters": {
+            "parameters": [
+              {
+                "name": "Cookie",
+                "value": "golden_key={{ $(\"FunPay Credentials Config\").first().json.golden_key }}"
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/x-www-form-urlencoded; charset=UTF-8"
+              }
+            ]
+          },
+          "sendBody": true,
+          "contentType": "form-urlencoded",
+          "bodyParameters": {
+            "parameters": [
+              {
+                "name": "action",
+                "value": "chat_message"
+              },
+              {
+                "name": "node",
+                "value": "order-{{ $json.orderId }}"
+              },
+              {
+                "name": "content",
+                "value": "={{ $json.chatMessage }}"
+              }
+            ]
+          },
+          "options": {}
+        },
+        "id": "node-send-funpay-chat",
+        "name": "Send Delivery in FunPay Chat",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [
+          1300,
+          200
+        ]
+      },
+      {
+        "parameters": {
+          "chatId": "={{ $(\"FunPay Credentials Config\").first().json.telegram_chat_id }}",
+          "text": "={{ $json.tgAlert }}",
+          "additionalFields": {
+            "parse_mode": "Markdown"
+          }
+        },
+        "id": "node-telegram-alert",
+        "name": "Telegram Seller Notification",
+        "type": "n8n-nodes-base.telegram",
+        "typeVersion": 1.2,
+        "position": [
+          1300,
+          400
+        ]
+      }
+    ],
+    "connections": {
+      "Poll Every 30s": {
+        "main": [
+          [
+            {
+              "node": "FunPay Credentials Config",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "FunPay Credentials Config": {
+        "main": [
+          [
+            {
+              "node": "Fetch FunPay Orders",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Fetch FunPay Orders": {
+        "main": [
+          [
+            {
+              "node": "Parse Paid Orders",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Parse Paid Orders": {
+        "main": [
+          [
+            {
+              "node": "Allocate Goods & Deduplicate",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      },
+      "Allocate Goods & Deduplicate": {
+        "main": [
+          [
+            {
+              "node": "Send Delivery in FunPay Chat",
+              "type": "main",
+              "index": 0
+            },
+            {
+              "node": "Telegram Seller Notification",
+              "type": "main",
+              "index": 0
+            }
+          ]
+        ]
+      }
+    },
+    "id": "wf-funpay-auto-delivery"
+  }
+]
